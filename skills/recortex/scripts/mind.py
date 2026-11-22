@@ -1559,7 +1559,7 @@ class Page:
         if not events:
             return ""
         verbs = {"add": "Added", "rename": "Renamed", "move": "Moved", "update": "Updated", "delete": "Removed",
-                 "restore": "Restored", "merge": "Merged", "split": "Split"}
+                 "restore": "Restored", "merge": "Merged", "split": "Split", "seed": "Started the map with"}
         entries = []
         for event in events:
             ident = event.get("node")
@@ -1573,6 +1573,10 @@ class Page:
                 detail = J(detail, " from ", event["origin"], " to ", event["destination"])
             elif action == "merge" and event.get("destination"):
                 detail = J(detail, " into ", event["destination"])
+            elif action == "seed":
+                count = event.get("count")
+                detail = J(" ", "%d branch%s" % (count, "" if count == 1 else "es")) \
+                    if type(count) is int and 0 < count <= 200 else J(" ", "a first set of branches")
             entries.append(E("li", None, verbs.get(action, "Changed"), detail,
                              E("span", {"class": "lab"}, (event.get("at") or "")[:10], " · ",
                                "Observer via " if event.get("source") == "observer" else "", event.get("author") or "")))

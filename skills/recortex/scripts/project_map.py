@@ -17,7 +17,11 @@ ACTIONS = {
     "update": {"id", "description", "evidence", "links"},
     "move": {"id", "parent"}, "delete": {"id", "children"}, "restore": {"id"},
     "merge": {"id", "into"}, "split": {"id", "branches"},
+    # A first map in one operation: only for a map with no branch at all, and only by a user (1.7.0). `id` names the change.
+    "seed": {"id", "branches"},
 }
+SEED_MAX = 200
+SEED_BRANCH = {"id", "title", "parent", "description", "evidence", "links"}
 
 
 class MapError(ValueError):
@@ -74,7 +78,7 @@ def _transform(state, change, source, op_id):
     action = change["action"]
     if action not in ACTIONS or set(change) - ACTIONS[action] - {"action"}:
         raise MapError("Unknown map action or field.")
-    if source not in ("user", "observer") or (source == "observer" and action not in ("add", "rename")):
+    if source not in ("user", "observer") or (source == "observer" and action not in ("add", "rename", "seed")):
         raise MapError("This change requires user review.")
     nodes, changed, touched = state["nodes"], {}, set()
     key = ident(change.get("id"))
@@ -137,15 +141,34 @@ def _transform(state, change, source, op_id):
                         "links": links_for(key, links if links is not None else []), "deleted": False, "manual": False,
                         "aliases": [], "deleted_by": None}
 
-    if source == "observer" and not refs(change.get("evidence")):
+    def seed():
+        """A whole first tree: each branch added in order (a parent comes before its children, and a title is used once under
+        a parent), then the links, which may name any branch of the list."""
+        if source != "user":
+            raise MapError("A first map is made by a user.")
+        if nodes:
+            raise MapError("The map already has branches. Add to it one change at a time.")
+        branches = change.get("branches")
+        if (not isinstance(branches, list) or not 1 <= len(branches) <= SEED_MAX
+                or not all(isinstance(b, dict) and set(b) <= SEED_BRANCH for b in branches)):
+            raise MapError("Choose one to %d branches for the first map." % SEED_MAX)
+        for branch in branches:
+            add(branch.get("id"), branch.get("title"), branch.get("parent"), branch.get("description", ""),
+                branch.get("evidence", []))
+        for branch in branches:
+            edit(branch["id"], links=links_for(branch["id"], branch.get("links", [])))
+
+    if source == "observer" and action != "seed" and not refs(change.get("evidence")):
         raise MapError("Automatic map changes need supporting evidence.")
     if action == "add":
         add(key, change.get("title"), change.get("parent"), change.get("description", ""),
             change.get("evidence", []), change.get("links", []))
         return changed, touched
 
-    node = get(key, active=action != "restore")
-    if action == "rename":
+    node = None if action == "seed" else get(key, active=action != "restore")
+    if action == "seed":
+        seed()
+    elif action == "rename":
         title = words(change.get("title"), 160, True)
         if title == node["title"]:
             raise MapError("The title is already current.")
@@ -245,8 +268,12 @@ def _transform(state, change, source, op_id):
 def prepare(state, change, source="user", op_id=None):
     change = copy.deepcopy(change)
     if isinstance(change, dict):
-        if change.get("action") == "add":
+        if change.get("action") in ("add", "seed"):
             change.setdefault("id", new_id())
+        if change.get("action") == "seed" and isinstance(change.get("branches"), list):
+            for branch in change["branches"]:
+                if isinstance(branch, dict):
+                    branch.setdefault("id", new_id())
         if change.get("action") == "split" and isinstance(change.get("branches"), list):
             for branch in change["branches"]:
                 if isinstance(branch, dict):
@@ -274,9 +301,15 @@ def apply(state, envelope, at="", author="", comment=None):
         raise MapError("The branch changed after preview. Review a new preview.")
     nodes = dict(state["nodes"], **changed)
     change = envelope["change"]
-    event = {"id": op_id, "digest": fingerprint, "node": change["id"], "action": change["action"],
-             "title": nodes[change["id"]]["title"], "before_title": state["nodes"].get(change["id"], {}).get("title"),
-             "affected": sorted(changed), "at": at, "author": author, "comment": comment, "source": envelope["source"]}
+    if change["action"] == "seed":   # the change names no branch: the event names the first one and counts them all
+        first = nodes[change["branches"][0]["id"]]
+        event = {"id": op_id, "digest": fingerprint, "node": first["id"], "action": "seed", "title": first["title"],
+                 "before_title": None, "count": len(change["branches"]), "affected": sorted(changed), "at": at,
+                 "author": author, "comment": comment, "source": envelope["source"]}
+    else:
+        event = {"id": op_id, "digest": fingerprint, "node": change["id"], "action": change["action"],
+                 "title": nodes[change["id"]]["title"], "before_title": state["nodes"].get(change["id"], {}).get("title"),
+                 "affected": sorted(changed), "at": at, "author": author, "comment": comment, "source": envelope["source"]}
     if change["action"] in ("move", "merge"):
         destination = change.get("parent") if change["action"] == "move" else change["into"]
         event["destination"] = nodes[destination]["title"] if destination is not None else "the project root"

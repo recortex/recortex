@@ -14,6 +14,7 @@ import recortex
 import storage
 
 MapError = model.MapError
+TOO_LARGE_SEED = "This first map is too large for one hub comment. Seed fewer branches, then add the rest."
 
 
 def scope(repo, hub):
@@ -185,7 +186,8 @@ def preview(repo, hub, change, source="user", op_id=None):
         operation = model.prepare(state, change, source, op_id)
     after = model.apply(state, operation)
     if len(model.encode(repo, hub, operation).encode("utf-8")) > 62000:
-        raise MapError("This change is too large for one hub comment.")
+        raise MapError(TOO_LARGE_SEED if operation["change"].get("action") == "seed" else
+                       "This change is too large for one hub comment.")
     remember(repo, hub, operation, channel="observer" if source == "observer" else "manual")
     return result(after, operation)
 
@@ -219,7 +221,8 @@ def commit(repo, hub, envelope, guard=None):
             raise MapError("The earlier send is unconfirmed. Reconcile the same preview before sending again.")
         body = model.encode(repo, hub, envelope)
         if len(body.encode("utf-8")) > 62000:
-            raise MapError("This change is too large for one hub comment.")
+            raise MapError(TOO_LARGE_SEED if envelope["change"].get("action") == "seed" else
+                           "This change is too large for one hub comment.")
         command = ["issue", "comment", str(hub), "--repo", repo, "--body-file", "-"]
         if guard:
             guard()
