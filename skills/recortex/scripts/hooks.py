@@ -325,10 +325,15 @@ def subagent_stop(data):
     try:
         approved = observer_sources.approved_path(path, recortex.project_root(), session)
         measured = usage.measure(approved)
-    except (observer_sources.SourceError, OSError, ValueError):
+    except observer_sources.SourceError as error:
+        # not a silent failure: one fixed code is kept, usage.py show and --doctor say so
+        if str(error) in observer_sources.UNREADABLE_CODES:
+            usage.note_unmeasured(found[1], str(error))
         return
-    if measured is not None:
-        usage.note_agent(found[1], agent, measured[1], measured[0])
+    except (OSError, ValueError):
+        return
+    if measured is not None and usage.note_agent(found[1], agent, measured[1], measured[0]):
+        usage.clear_unmeasured(found[1])
 
 
 def note_context(event, text):

@@ -153,6 +153,61 @@ def note_agent(repo, agent, model, usage, now=None):
     return True
 
 
+UNMEASURED = "subagents-unmeasured.json"
+UNMEASURED_CAP = 512
+
+
+def _unmeasured_path(repo, create=False):
+    folder = storage.folder(storage.state_top(), storage.repo_folder(repo), create=create, tighten=create)
+    return folder, None if folder is None else os.path.join(folder, UNMEASURED)
+
+
+def note_unmeasured(repo, code, now=None):
+    """Keep that a subagent's transcript did not pass the ownership checks: {"at": seconds, "code": code}, the code one of
+    the fixed set of observer_sources.UNREADABLE_CODES, in the repository's state folder. True when it was kept; False for
+    another code or a file that cannot be written. Never raises."""
+    try:
+        import observer_sources
+        if code not in observer_sources.UNREADABLE_CODES or not recortex.valid_repo(repo):
+            return False
+        _, path = _unmeasured_path(repo, create=True)
+        storage.write_file(path, json.dumps({"at": int(time.time() if now is None else now), "code": code}) + "\n")
+        return True
+    except (OSError, ValueError, storage.StorageError, ImportError):
+        return False
+
+
+def clear_unmeasured(repo):
+    """Remove the note (a measured run). Never raises."""
+    try:
+        folder, _ = _unmeasured_path(repo)
+        if folder is not None:
+            storage.remove_file(folder, UNMEASURED)
+    except (OSError, ValueError, storage.StorageError):
+        pass
+
+
+def unmeasured(repo):
+    """(at, code) of the note, or None when there is none or it is not exactly what note_unmeasured writes. Read only."""
+    try:
+        import observer_sources
+        folder, path = _unmeasured_path(repo)
+        info = storage.check_path(path, "file") if path else False
+        if not info or info.st_size > UNMEASURED_CAP:
+            return None
+        value = json.loads(storage.read_file(path) or "")
+        if (isinstance(value, dict) and set(value) == {"at", "code"} and type(value["at"]) is int
+                and 0 < value["at"] < 4102444800 and value["code"] in observer_sources.UNREADABLE_CODES):
+            return value["at"], value["code"]
+    except (OSError, ValueError, RecursionError, storage.StorageError, ImportError):
+        pass
+    return None
+
+
+UNMEASURED_LINE = ("The plugin's subagents could not be measured on this machine: their transcripts did not pass the "
+                   "ownership checks (%s). Run hooks.py --doctor.")
+
+
 def note_injected(repo, event, characters, now=None):
     """Add what a hook put into a session's context: the event (of the fixed list) and its character count, to today's row.
     True when written; False for an event off the list, a count that is not a positive whole number, or a file that cannot
@@ -550,8 +605,9 @@ def report(repo, config=None, now=None, rows=None, today=None):
 
 # ---------------------------------------------------------------- the terminal
 
-def lines(data, days=7):
-    """The same numbers as the page, as terminal lines."""
+def lines(data, days=7, unmeasured_code=""):
+    """The same numbers as the page, as terminal lines. `unmeasured_code`, when a subagent's transcript did not pass the
+    ownership checks, adds the one fixed line that says so under the subagents heading."""
     out = ["recortex usage on this machine, as of %s. Tokens and calls, not money: under a Claude subscription these "
            "count against your usage limits, and no price applies." % data["built"]]
     if data["observer"] == "off":
@@ -572,6 +628,8 @@ def lines(data, days=7):
         out.append("  %-6s %-9s %d calls, %d input tokens, %d output tokens" % (row["tier"], row["job"], row["calls"],
                                                                                  row["input"], row["output"]))
     out.append("The plugin's subagents, the last %d days:" % days)
+    if unmeasured_code:
+        out.append("  " + UNMEASURED_LINE % unmeasured_code)
     table = data["agents"][str(days)]
     if not table:
         out.append("  none measured")
@@ -604,7 +662,8 @@ def main(argv=None):
         print(json.dumps(report(repo, config), indent=1, sort_keys=True))
         return 0
     print(recortex.describe(config, repo))
-    print("\n".join(lines(report(repo, config), args.days)))
+    note = unmeasured(repo)
+    print("\n".join(lines(report(repo, config), args.days, note[1] if note else "")))
     return 0
 
 

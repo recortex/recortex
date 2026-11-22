@@ -148,16 +148,29 @@ def take(folder, wanted, now=None):
     return True
 
 
-def start_pass(folder, level, strong, now=None):
+def start_pass(folder, level, strong, now=None, given="session", hosts=""):
     """The word that lets the commands of one chain through, after `take` spent the grants: for the level and the stronger
     model the chain sets (its first command may put posting back to shadow before the last one raises it again, so the
-    pass covers the target, not each command's own need)."""
+    pass covers the target, not each command's own need). The pass also carries what only setup.py can know, because the
+    commands of its chain run with their output captured: `given`, where the chain was started ("terminal" or "session"),
+    and `hosts`, "any" when it was started on the user's own terminal with --hosts any."""
     now = time.time() if now is None else now
     word = secrets.token_hex(16)
     with _writer() as state:
-        state["folders"].setdefault(folder, {})["pass"] = {"word": word, "until": now + SECONDS, "level": level or "",
-                                                   "strong": strong or ""}
+        state["folders"].setdefault(folder, {})["pass"] = {
+            "word": word, "until": now + SECONDS, "level": level or "", "strong": strong or "",
+            "given": given if given in ("terminal", "session") else "session", "hosts": "any" if hosts == "any" else ""}
     return word
+
+
+def pass_entry(folder, word, now=None):
+    """The live pass entry of this folder when `word` is its word, else None."""
+    now = time.time() if now is None else now
+    if not isinstance(word, str) or not PASS.fullmatch(word):
+        return None
+    entries = _read().get(folder)
+    entry = entries.get("pass") if isinstance(entries, dict) else None
+    return entry if _live(entry, now) and entry.get("word") == word else None
 
 
 def in_pass(folder, wanted, word, now=None):

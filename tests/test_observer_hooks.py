@@ -203,6 +203,7 @@ class ObserverHookTests(unittest.TestCase):
         out = Terminal()
         with mock.patch.object(observer.recortex, "load_config", return_value={"repo": REPO, "hub": 1}), \
                 mock.patch.object(observer.sys, "stdin", Terminal()), contextlib.redirect_stdout(out), \
+                mock.patch.object(observer, "on_terminal", return_value=True), \
                 mock.patch("observer_hooks.observer_runtime.gate_valid", return_value=True):
             self.assertEqual(0, observer.main(["enable", "--mode", "automatic", "--model", "sonnet", "--level", "everything", "--yes"]))
         self.assertEqual("terminal", self.folder_entry()["given"])

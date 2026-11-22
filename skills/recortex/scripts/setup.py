@@ -1330,7 +1330,9 @@ def observer_step(answers, root, python, dry):
     given = answers["observer"]
     repo, mode, model, level = answers["repo"], given["mode"], given["model"], given["level"]
     sort_model, strong = given.get("sort_model") or SORT_MODEL, given.get("strong") or ""
-    options = ["--model", model, "--sort-model", sort_model, "--level", level] + (["--strong-model", strong] if strong else [])
+    hosts = given.get("hosts") or ""
+    options = ["--model", model, "--sort-model", sort_model, "--level", level] + (["--strong-model", strong] if strong else []) \
+        + (["--hosts", hosts] if hosts else [])
     models = ", ".join(sorted({model, sort_model} | ({strong} if strong else set())))
     enable = [python, script, "--repo", repo, "enable"]
     steps = [(enable + ["--mode", "shadow"] + options + ["--yes"],
@@ -1341,6 +1343,7 @@ def observer_step(answers, root, python, dry):
     if mode == "automatic":
         steps += [(enable + ["--mode", "automatic"] + options + ["--yes"], "let it post reviewed memories on its own")]
     if dry:
+        print("binding: " + observer_runtime.BINDING_NOTES["any" if hosts == "any" else "shared"])
         for command, what in steps:
             print("would run: %s   # %s" % (" ".join(command), what))
         return
@@ -1355,7 +1358,7 @@ def observer_step(answers, root, python, dry):
     import observer_grants
     folder = observer_runtime.folder_key(root)
     word = chain_pass(folder, level, strong or None, observer_grants.needs(stored_observer(repo, root), level,
-                                                                          strong or None, mode))
+                                                                          strong or None, mode), hosts=hosts)
     if word is None:
         print("observer: not turned on. " + observer_grants.UNANSWERED)
         return
@@ -1365,15 +1368,19 @@ def observer_step(answers, root, python, dry):
         observer_grants.end_pass(folder, word)
 
 
-def chain_pass(folder, level, strong, wanted):
+def chain_pass(folder, level, strong, wanted, hosts=""):
     """The pass for the commands of one chain, or None when the user's answer is missing. Every chain gets one: its first
     command puts posting back to shadow, so that its last one asks again, and a second run with nothing to raise would
-    stop half way. The grants of `wanted` are taken once, unless this runs on the user's own terminal, which needs none."""
+    stop half way. The grants of `wanted` are taken once, unless this runs on the user's own terminal, which needs none.
+    The pass says where the chain was started, because its commands run with their output captured: "terminal" only when
+    this process is on the user's own terminal, and --hosts any (`hosts`) only then too."""
     import observer
     import observer_grants
-    if wanted and not observer.on_terminal() and not observer_grants.take(folder, wanted):
+    here = observer.on_terminal()
+    if wanted and not here and not observer_grants.take(folder, wanted):
         return None
-    return observer_grants.start_pass(folder, level, strong)
+    return observer_grants.start_pass(folder, level, strong, given="terminal" if here else "session",
+                                      hosts="any" if hosts == "any" and here else "")
 
 
 def run_observer_steps(steps, options, level, mode, model, strong, root, environment, word):
@@ -1872,8 +1879,14 @@ def observer_command(args):
     else:
         level, model, sort_model = args.level, args.model or "sonnet", args.sort_model or SORT_MODEL
     strong = args.strong or ("" if level == "notes" else stored.get("strong_model", ""))   # a lower level drops it
+    if args.hosts == "any":
+        import observer
+        if not observer.on_terminal():
+            print("error: " + observer.HOSTS_ANY)
+            return 1
     observer_step({"repo": repo, "observer": {"mode": mode, "model": model, "level": level, "sort_model": sort_model,
-                                              "strong": strong}}, root, sys.executable, args.dry_run)
+                                              "strong": strong, "hosts": args.hosts or ""}}, root, sys.executable,
+                  args.dry_run)
     return 0
 
 
@@ -1927,6 +1940,9 @@ def main(argv=None):
     p.add_argument("--mode", choices=("automatic", "shadow"), help="default: the mode this folder has, else automatic")
     p.add_argument("--model", help="the Claude model of the note-taking calls (default sonnet)")
     p.add_argument("--sort-model", help="the Claude model of the sorting calls (default haiku)")
+    p.add_argument("--hosts", choices=("shared", "any"),
+                   help="where the approval holds: shared (default: this host and any host that sees the same key file) or "
+                        "any (any host that can read this state folder; your own terminal only)")
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="print every step; run none")
     mode.add_argument("--yes", action="store_true", help="the user agreed")

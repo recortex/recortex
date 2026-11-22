@@ -29,6 +29,8 @@ EVENTS = {"session-start": "SessionStart", "subagent-start": "SubagentStart",
           "pre-tool": "PreToolUse", "stop": "Stop"}  # what hooks/hooks.json registers
 NOTICES = {
     "approval": "recortex observer: local approval is missing or settings changed; observation is inactive.",
+    "approval-host": "recortex observer: this folder's approval does not hold on this host; observation is inactive. "
+                     "Run observer.py status.",
     "capture": "recortex observer: capture is incomplete; pending work remains local. Run observer.py status.",
     "source": "recortex observer: transcript sources are unavailable or incomplete; new holds may not be active. Run observer.py status.",
     "runtime": "recortex observer: independent checks are unavailable; captured work remains queued. Run observer.py status.",
@@ -659,7 +661,8 @@ COMMANDS = {"status": "safe", "holds": "safe", "pending": "safe", "log": "safe",
             "runtime-check": "safe", "run-worker": "safe", "record": "safe", "reconcile": "safe", "limits": "safe",
             "pause": "safe",
             "enable": "grant", "act": "grant", "later": "grant", "discard": "grant", "drafts": "grant",
-            "release": "terminal", "disable": "terminal", "resume": "terminal", "undo": "terminal"}
+            "release": "terminal", "disable": "terminal", "resume": "terminal", "undo": "terminal",
+            "trust-ancestor": "terminal"}
 TERMINAL_ONLY = tuple(sorted(name for name, how in COMMANDS.items() if how == "terminal"))
 UNDO = re.compile(r"observer(?:\.py)?\b.*\b(?:%s)\b" % "|".join(TERMINAL_ONLY))
 
@@ -880,12 +883,15 @@ def _handle(event, data, config, repo, decision):
         settings = observer_runtime.settings(config)
         project_root = recortex.project_root()
         if not observer_runtime.approval_valid(repo, config):
-            # This machine's entry for the folder does not hold (another repository or machine key, or settings
-            # that no longer validate). Nothing is created, and the line shows at session start only.
+            reason = observer_runtime.approval_reason(repo, config)
+            # This machine's entry for the folder does not hold (another repository or machine key, settings that no
+            # longer validate, or an approval that does not follow this host). Nothing is created, and the line shows at
+            # session start only.
             if observer_runtime.paused(repo, config):
                 # A 1.4.0 approval holds no level: the observer waits for the user's answer to the level question.
                 return _output(event, lines=[observer_runtime.PAUSED] if event == "SessionStart" else [], denial=held)
-            return _output(event, notices=["approval"] if event == "SessionStart" else [], denial=held)
+            notice = "approval-host" if reason == "host" else "approval"
+            return _output(event, notices=[notice] if event == "SessionStart" else [], denial=held)
         if event == "PreToolUse" and not checked:
             denial = decision["early"] = _held(repo, data)
         with observer_store.Store(repo, max_bytes=settings["max_pending_bytes"], wait=0.1,

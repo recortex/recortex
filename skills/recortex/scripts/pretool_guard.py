@@ -8,6 +8,8 @@ only for a Bash call whose input mentions the ask agent or the observer).
    fails closed: an input it cannot read, for that agent, is a denial. Any other input is left alone.
 2. A Bash call that runs observer.py or setup.py through a pseudo-terminal helper (script, unbuffer, expect, ...) is denied:
    a terminal that a session makes is not the user's.
+   A Bash call of the user's own commands (observer.py trust-ancestor, advisory, disable, release, resume, undo,
+   `--hosts any`, publish.py) is denied too, in every project (USERS_ONLY).
 3. A Bash call that turns the observer on or changes its level or its stronger model (`observer.py enable`, `setup.py
    observer`, `setup.py apply`): when the user answered the session's question about it, a one-time grant is recorded
    (observer_grants) for the level or the model the user chose. Nothing is printed for it.
@@ -44,6 +46,16 @@ PTY_HELPERS = ("script", "unbuffer", "expect", "socat", "faketty", "pty", "openp
 PTY_HELPER = re.compile(r"(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(PTY_HELPERS), re.I)
 USERS_COMMAND = re.compile(r"(?:observer|setup)\.py")
 OBSERVER_UNDER_CLAUDE = re.compile(r"CLAUDECODE")   # a command that names this variable and observer.py or setup.py is working round the check
+# The user's own commands: a Bash call of the main session or of a subagent that names one of these (or `--hosts any`, or
+# publish.py) is stopped in every project, observer on or off, because what they do is the user's own decision. The list
+# is written out here, since this file does not import observer_hooks; a test holds it equal to the terminal rows of
+# observer_hooks.COMMANDS (TERMINAL_ONLY).
+USERS_ONLY = ("advisory", "disable", "map-mode", "release", "resume", "trust-ancestor", "undo")
+USERS_COMMAND_WORDS = re.compile(r"observer\.py\b.*?(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(USERS_ONLY))
+HOSTS_ANY = re.compile(r"(?:observer|setup)\.py\b.*--hosts(?:\s+|=)[\"']?any\b")
+PUBLISH = re.compile(r"(?<![A-Za-z0-9_-])publish\.py\b")
+USERS_DENIAL = ("recortex: this command is the user's own. Ask the user to run it in their own terminal, outside Claude Code; "
+                "a session never runs it.")
 TERMINAL_DENIAL = ("recortex: observer.py and setup.py are not run through a program that makes a terminal or hides where "
                    "they run (script, unbuffer, expect, socat, faketty, pty, tmux, screen, ssh, setsid, nohup): what they ask "
                    "for is the user's own answer. Ask the user to run the command in their own terminal, outside Claude Code.")
@@ -56,6 +68,24 @@ def terminal_decision(data):
     if data.get("tool_name") in ("Bash", "bash") and isinstance(command, str) and USERS_COMMAND.search(command):
         if PTY_HELPER.search(command) or OBSERVER_UNDER_CLAUDE.search(command):   # observer.py or setup.py is named: USERS_COMMAND
             return deny(TERMINAL_DENIAL)
+    return None
+
+
+def users_only_decision(data):
+    """The denial for a Bash call (of the main session or of a subagent) that names `observer.py` followed by one of
+    USERS_ONLY, or `observer.py` or `setup.py` with `--hosts any`, or `publish.py`; else None. The command is read as the
+    shell splits it and as written. A guard against mistakes: a session with shell access can get round it."""
+    tool_input = data.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if data.get("tool_name") not in ("Bash", "bash") or not isinstance(command, str):
+        return None
+    try:
+        spoken = " ".join(shlex.split(command))
+    except ValueError:
+        spoken = command
+    for text in (spoken, command):
+        if USERS_COMMAND_WORDS.search(text) or HOSTS_ANY.search(text) or PUBLISH.search(text):
+            return deny(USERS_DENIAL)
     return None
 
 
@@ -105,7 +135,7 @@ def decide(raw, scripts=HERE):
         return deny(UNREADABLE) if ASK in raw else None
     if data.get("agent_type") == ASK:
         return ask_decision(data, scripts)
-    found = terminal_decision(data)
+    found = terminal_decision(data) or users_only_decision(data)
     if found:
         return found
     record_enable_grant(data)

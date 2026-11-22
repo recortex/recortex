@@ -264,6 +264,17 @@ def key_path():
     return os.path.join(state_top(for_key=True), PRIVATE, KEY_NAME)
 
 
+def key_identity():
+    """(real path, inode) of the user key as this host sees it, the identity that an approval follows from host to host
+    on a shared home folder. The device number is left out on purpose: a network mount gives each client its own.
+    Raises StorageError("...", "no-key") when there is no key, and as check_path does when the file is not safe."""
+    path = key_path()
+    info = check_path(path, "file")
+    if not info:
+        raise StorageError("no key yet at %s" % path, "no-key")
+    return os.path.realpath(path), info.st_ino
+
+
 def user_key(create=True, tighten=True):
     """The per-user secret that marks index files this plugin created; made on first use."""
     private = folder(state_top(for_key=True), create=create, tighten=tighten)

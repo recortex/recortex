@@ -846,7 +846,9 @@ class CliTests(Box):
                            json.dumps({"form": 2, "folders": {root: entry}}))
         self.assertEqual(0, self.run_cli("limits", "--middle", "30")[0])
         saved = self.stored()
-        self.assertEqual(dict(entry, settings=dict(options, max_invocations=30)), saved)
+        # 1.7.0 adds one key to the entry (never to its settings): the identity of the key file, 32 hex digits
+        self.assertRegex(saved["key_file"], "^[0-9a-f]{32}$")
+        self.assertEqual(dict(entry, settings=dict(options, max_invocations=30), key_file=saved["key_file"]), saved)
         self.assertEqual(saved["settings"], old.settings({"observer": saved["settings"]}))
         self.assertTrue(runtime.approval_valid(REPO, runtime.local_config({})))
 

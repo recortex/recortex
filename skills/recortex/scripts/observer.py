@@ -2,6 +2,7 @@
 """Explicit observer controls and bounded hook entry point. No automatic opt-in."""
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -43,6 +44,15 @@ def parser():
     mode.add_argument("--yes", action="store_true", help="save this choice from your own terminal")
     # map-proposals: safe, read the reviewed proposals on this device.
     sub.add_parser("map-proposals", help="read reviewed Project Map changes and shadow outcomes on this device")
+    # trust-ancestor: terminal. It makes a folder above Claude Code's transcripts count as safe for as long as its owner,
+    # group and mode stay as they are now, so it is the user's own decision on their own terminal.
+    trust = sub.add_parser("trust-ancestor", help="trust, exactly as it is now, a folder above Claude Code's transcripts "
+                           "that belongs to another account or is written by a shared group (your own terminal)")
+    trust.add_argument("path", nargs="?", metavar="PATH", help="the folder (an absolute path)")
+    trust.add_argument("--failing", action="store_true", help="every folder the capture check refuses now")
+    trust.add_argument("--list", action="store_true", help="what is trusted, and whether each still matches")
+    trust.add_argument("--forget", metavar="PATH", help="remove one entry")
+    trust.add_argument("--yes", action="store_true", help="trust them (without it nothing is changed)")
     # holds: safe, it only reads. runtime-check: safe, at most one small call per model, counted in the day's caps.
     for name in ("holds", "runtime-check"):
         sub.add_parser(name)
@@ -69,6 +79,10 @@ def parser():
     enable.add_argument("--sort-model", help="the model that sorts each stretch of the conversation (default: the middle model)")
     enable.add_argument("--strong-model", help="the model that drafts the paper's text for the user to accept (default: none, "
                                                "the manuscript keeper stays off)")
+    enable.add_argument("--hosts", choices=("shared", "any"),
+                        help="where the approval holds: shared (the default: this host, and any host that sees the same key "
+                             "file, as a shared home folder does) or any (any host that can read this state folder, also a "
+                             "copy of it; your own terminal only)")
     enable.add_argument("--yes", action="store_true")
     enable.add_argument("--pass", dest="enable_pass", help=argparse.SUPPRESS)   # the word of setup.py's chain (observer_grants)
     # limits: safe, it only lowers the day's caps (a higher number is refused): a session can make the observer do less, never more.
@@ -126,6 +140,15 @@ def parser():
     return root
 
 
+HOSTS_ANY = "Run this enable with --hosts any yourself in a separate terminal, outside Claude Code."
+TRUST_TERMINAL = "Run observer.py trust-ancestor yourself in a separate terminal, outside Claude Code."
+TRUST_NOTE = ("Each folder is accepted only while its owner, group and mode stay as shown; when one changes it is refused "
+              "again. Its owner, and its group where the mode lets the group write, can put another folder in its place. "
+              "Run the same command with --yes to trust them.")
+TRUST_WORLD = ("Anyone on this machine can replace what is below a folder that all may write and that has no sticky bit.")
+TRUST_CHANGED = ("A folder you trusted changed its owner, group or mode and is refused again. Look at it, then run "
+                 "trust-ancestor again.")
+NAME = re.compile(r"[A-Za-z0-9._-]{1,32}")
 REASONS = frozenset(("model_required", "level_required", "folder_name", "observer_settings", "observer_mode",
                      "observer_publisher", "observer_model", "observer_level", "observer_limit", "observer_approvals"))
 NOTES = {
@@ -163,13 +186,14 @@ def _tier_gates_valid(repo, config, options):
 
 
 def enable(repo, config, mode, yes=False, model=None, root=None, confirm=None, given="terminal", level=None,
-           sort_model=None, strong_model=None):
+           sort_model=None, strong_model=None, hosts=None):
     """Preview, or with yes=True record, this machine's settings for this project folder. Nothing is written to the
     project's shared configuration file, and nothing is created before every check has passed. `confirm`, when given,
     is asked last, before anything is written; a code it returns stops the write. The level is the user's choice (one of
     runtime.LEVELS); this folder's earlier choice stands when none is given, and without either nothing is enabled. The
     sort model defaults to the middle model and the strong model to none (the manuscript keeper stays off). Caps the
-    user lowered with `limits` stay lowered when the same repository is enabled again."""
+    user lowered with `limits` stay lowered when the same repository is enabled again. `hosts` is "shared", "any" (the
+    user's own terminal only: the caller checks) or None, which keeps an "any" this folder's entry already holds."""
     root = runtime.folder_key(root)
     problem = runtime.folder_problem(root)
     if problem:
@@ -196,7 +220,15 @@ def enable(repo, config, mode, yes=False, model=None, root=None, confirm=None, g
     except (storage.StorageError, OSError):
         identity = None
     options["publisher_id"] = identity or "allocated_on_explicit_approval"
+    kept = False
+    if hosts is None:
+        try:
+            present = runtime.stored_approval(root)
+        except (ValueError, storage.StorageError, OSError):
+            present = None
+        kept = isinstance(present, dict) and present.get("repo") == repo.lower() and present.get("hosts") == "any"
     preview = {"action": "enable", "repo": repo, "folder": root, "settings": options, "approved": False,
+               "binding": runtime.BINDING_NOTES["any" if hosts == "any" or kept else "shared"],
                "level": level, "level_label": runtime.LEVEL_LABELS[level], "usage": runtime.usage_note(options),
                "note": "Settings stay on this machine for this folder; the project file can only switch the observer "
                        "off. An isolated runtime check must succeed for each model before independent checks or "
@@ -219,7 +251,7 @@ def enable(repo, config, mode, yes=False, model=None, root=None, confirm=None, g
     with observer_store.Store(repo, config=dict(config, observer=options), max_bytes=options["max_pending_bytes"],
                               max_pending=options["max_pending_observations"]):
         pass  # the queue, so that status and the hooks find it
-    runtime.approve(repo, {"observer": options}, root, given=given)
+    runtime.approve(repo, {"observer": options}, root, given=given, hosts=hosts)
     return dict(preview, settings=options, approved=True)
 
 
@@ -515,10 +547,26 @@ def _status(repo, config, loaded, store, options, details):
     last = store.get_control("runtime_last") if store else None
     seen = store.get_control("call_environment", []) if store else []
     called = sorted(set(variables) | {name for name in seen if name in runtime.BILLING})
-    out = {"settings": options, "approved": runtime.approval_valid(repo, config), "folder": runtime.folder_key(),
+    reason = runtime.approval_reason(repo, config)
+    out = {"settings": options, "approved": reason == "", "approval_reason": reason, "folder": runtime.folder_key(),
            "level": options["level"], "level_label": runtime.LEVEL_LABELS.get(options["level"], "not chosen"),
            "paused": runtime.paused(repo, loaded), "usage": runtime.usage_note(options),
            "capture_preflight": observer_sources.preflight(recortex.project_root(), details=details)}
+    try:
+        entry = runtime.stored_approval()
+    except (ValueError, storage.StorageError, OSError):
+        entry = None
+    if reason:
+        out["approval_note"] = runtime.approval_note(reason, entry)
+    out["binding"] = ({"applies": runtime.binding(entry) or "none", "stored": runtime.stored_binding(entry),
+                       "note": runtime.BINDING_NOTES[runtime.stored_binding(entry)]} if isinstance(entry, dict)
+                      else {"applies": "none", "stored": "none", "note": ""})
+    capture = out["capture_preflight"]
+    if capture.get("fix") == "trust-ancestor":
+        out["capture_fix"] = {"commands": observer_sources.trust_commands(os.path.dirname(os.path.abspath(__file__))),
+                              "note": observer_sources.TRUST_RUN}
+    if capture.get("trust") == "changed":
+        out["capture_note"] = TRUST_CHANGED
     if out["paused"]:
         out["note"] = runtime.PAUSED + " Answer the level question (setup.py questions), or run observer.py enable --level."
     if called:
@@ -610,6 +658,95 @@ def _acts(args, store, repo, config, options):
     return int(result["code"] not in ("opened", "closed", "map_applied"))
 
 
+def _account(table, number, field):
+    """The name of an owner or a group from the account database, only when it is plain; else "" (never echoed)."""
+    try:
+        name = getattr(table(number), field)
+    except (KeyError, OverflowError, OSError, AttributeError):
+        return ""
+    return name if isinstance(name, str) and NAME.fullmatch(name) else ""
+
+
+def _trust_rows(rows):
+    try:
+        import grp
+        import pwd
+    except ImportError:
+        grp = pwd = None
+    return [{"path": row["path"], "uid": row["uid"], "owner": _account(pwd.getpwuid, row["uid"], "pw_name") if pwd else "",
+             "gid": row["gid"], "group": _account(grp.getgrgid, row["gid"], "gr_name") if grp else "",
+             "mode": row["mode"], "code": row["code"], "world": row["world"],
+             "trustable": row["trustable"]} for row in rows]
+
+
+def trust_ancestor(args):
+    """observer.py trust-ancestor: one of PATH, --failing, --list or --forget PATH. Without --yes it shows and changes
+    nothing; --yes and --forget are the user's own terminal's."""
+    root = recortex.project_root()
+    chosen = [bool(args.path), args.failing, args.list, bool(args.forget)]
+    if sum(chosen) != 1 or (args.yes and (args.list or args.forget)) or (args.list and args.forget):
+        emit({"code": "invalid-arguments", "note": "Give exactly one of PATH, --failing, --list or --forget PATH."})
+        return 1
+    if args.list:
+        state, rows = observer_sources.trusted_listing()
+        emit({"action": "trust-ancestor", "state": state,
+              "entries": [dict(row, owner=_account(_pwd().getpwuid, row["uid"], "pw_name") if _pwd() else "",
+                               group=_account(_grp().getgrgid, row["gid"], "gr_name") if _grp() else "")
+                          for row in rows]})
+        return 0
+    if args.forget:
+        if not on_terminal():
+            emit({"code": "terminal-required", "note": TRUST_TERMINAL}); return 1
+        try:
+            gone = observer_sources.trust_forget(args.forget)
+        except observer_sources.TrustError as error:
+            emit({"code": str(error)}); return 1
+        emit({"action": "trust-ancestor", "forgotten": gone})
+        return 0 if gone else 1
+    if args.yes and not on_terminal():
+        emit({"code": "terminal-required", "note": TRUST_TERMINAL}); return 1
+    failing = observer_sources.failing(root)
+    if args.failing:
+        rows = failing
+    else:
+        path = args.path
+        if not (os.path.isabs(path) and os.path.normpath(path) == path and os.path.isdir(path) and not os.path.islink(path)
+                and observer_sources.project_directory(root).startswith(path + os.sep)):
+            emit({"code": "not-an-ancestor"}); return 1
+        rows = [row for row in failing if row["path"] == path and row["trustable"]]
+    chosen_rows = [row for row in rows if row["trustable"]]
+    if not chosen_rows:
+        emit({"code": "nothing-to-trust", "entries": _trust_rows(rows)}); return 1
+    note = TRUST_NOTE + (" " + TRUST_WORLD if any(row["world"] for row in chosen_rows) else "")
+    stored = False
+    if args.yes:
+        try:
+            observer_sources.trust_add(chosen_rows, root)
+        except observer_sources.TrustError as error:
+            emit({"code": str(error)}); return 1
+        stored = True
+        note = "Trusted as shown. Run observer.py status to see whether notes can be taken now."
+    emit({"action": "trust-ancestor", "entries": _trust_rows(rows), "approved": stored, "note": note,
+          "capture_preflight": observer_sources.preflight(root)})
+    return 0
+
+
+def _pwd():
+    try:
+        import pwd
+        return pwd
+    except ImportError:
+        return None
+
+
+def _grp():
+    try:
+        import grp
+        return grp
+    except ImportError:
+        return None
+
+
 def main(argv=None):
     args = parser().parse_args(argv)
     if args.command == "hook":
@@ -641,6 +778,12 @@ def main(argv=None):
                     if tty.ask("Holds of %s stop applying in this folder. Type disable to confirm: " % name) != "disable":
                         emit({"code": "not-confirmed"}); return 1
             emit({"action": "disable", "folder": runtime.folder_key(), "was_enabled": runtime.forget()}); return 0
+        if args.command == "trust-ancestor":
+            # It needs a configured, trusted project and no observer approval, so it does not read the approvals.
+            repo = recortex.resolve_repo(args.repo, loaded)
+            if not recortex.allowed_users(repo):
+                emit({"code": "repository-not-trusted"}); return 1
+            return trust_ancestor(args)
         config = runtime.local_config(loaded)
         repo = recortex.resolve_repo(args.repo, config)
         if not recortex.allowed_users(repo):
@@ -707,11 +850,19 @@ def main(argv=None):
             confirm = None
             if entry_holds(keep=repo):
                 confirm = lambda: confirmed("enable", "This replaces this folder's settings while holds apply.")
-            # Where the approval is given: the user's own terminal, or a session (Claude Code's Bash tool has none).
-            given = "terminal" if sys.stdin.isatty() and sys.stdout.isatty() else "session"
-            wanted, folder = [], runtime.folder_key()
-            if args.yes and not on_terminal():
-                import observer_grants
+            # Where the approval is given: the user's own terminal, or a session (Claude Code's Bash tool has none). A command
+            # of setup.py's chain has captured output, so the chain says where it was started (its pass, observer_grants).
+            import observer_grants
+            folder = runtime.folder_key()
+            here = on_terminal()
+            chain = observer_grants.pass_entry(folder, args.enable_pass) if args.enable_pass else None
+            given = chain["given"] if chain and chain.get("given") in ("terminal", "session") else \
+                "terminal" if here else "session"
+            if args.hosts == "any" and args.yes and not (here or chain and chain.get("hosts") == "any"):
+                emit({"code": "terminal-required", "note": HOSTS_ANY})
+                return 1
+            wanted = []
+            if args.yes and not here:
                 wanted = observer_grants.needs(_stored_settings(repo), args.level, args.strong_model, args.mode)
             if wanted:   # asked last, with the hold check, once every setting has been checked: the answer is for this level
                 holds_confirm = confirm
@@ -719,7 +870,7 @@ def main(argv=None):
                                                               or observer_grants.held(folder, wanted))
                                    else holds_confirm() if holds_confirm else None)
             result = enable(repo, loaded, args.mode, args.yes, args.model, confirm=confirm, given=given, level=args.level,
-                            sort_model=args.sort_model, strong_model=args.strong_model)
+                            sort_model=args.sort_model, strong_model=args.strong_model, hosts=args.hosts)
             if wanted and result.get("approved") and not observer_grants.in_pass(folder, wanted, args.enable_pass):
                 observer_grants.take(folder, wanted)   # the user's answer is used once
             if result.get("code") == "enable_unanswered":
@@ -730,7 +881,7 @@ def main(argv=None):
             emit(result)
             return int(args.yes and not result["approved"])
         if args.command == "limits":
-            given = "terminal" if sys.stdin.isatty() and sys.stdout.isatty() else "session"
+            given = "terminal" if on_terminal() else "session"
             result = limits(repo, config, {tier: getattr(args, tier) for tier in runtime.TIERS
                                            if getattr(args, tier) is not None}, given=given)
             emit(result)

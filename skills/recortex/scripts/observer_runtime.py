@@ -766,6 +766,72 @@ def publisher_id(create=False):
     return hmac.new(storage.user_key(create=create, tighten=create), message.encode(), hashlib.sha256).hexdigest()[:32]
 
 
+def key_file_id(create=False):
+    """The identity of the user key file as a shared home folder shows it to every host: its real path and inode (never the
+    device number, which a network mount assigns per client), under an HMAC of the key itself. The same on two hosts that
+    see the same file; a copy of the state folder to another machine has another inode."""
+    if create:
+        storage.user_key(create=True, tighten=True)
+    path, inode = storage.key_identity()
+    return hmac.new(storage.user_key(create=create, tighten=create), canonical(["key-file", path, inode]).encode(),
+                    hashlib.sha256).hexdigest()[:32]
+
+
+def any_host_id(repo, root, publisher, create=False):
+    """What an approval made with --hosts any carries: an HMAC of the repository, the folder and the host id the approval
+    was made for. It holds wherever the state folder with the key can be read, copies included, which the user chose."""
+    message = canonical(["any-host", str(repo).lower(), root, publisher])
+    return hmac.new(storage.user_key(create=create, tighten=create), message.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _same(left, right):
+    return isinstance(left, str) and isinstance(right, str) and hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
+def _binding(approval):
+    """The first binding that holds for this process ("host", "key-file", "any") or "". Raises what the key and the state
+    folder raise: approval_reason needs the difference between "no binding" and "cannot be read"."""
+    if not isinstance(approval, dict):
+        return ""
+    if _same(approval.get("publisher_id"), publisher_id()):
+        return "host"
+    if (isinstance(approval.get("publisher_id"), str) and re.fullmatch(r"[0-9a-f]{32}", approval["publisher_id"])
+            and _same(approval.get("key_file"), key_file_id())):
+        return "key-file"
+    if (approval.get("hosts") == "any" and isinstance(approval.get("repo"), str) and isinstance(approval.get("root"), str)
+            and isinstance(approval.get("publisher_id"), str)
+            and _same(approval.get("any_host"), any_host_id(approval["repo"], approval["root"], approval["publisher_id"]))):
+        return "any"
+    return ""
+
+
+def binding(approval):
+    """Which binding of `approval` holds on this host: "host" (made here, as before 1.7.0), "key-file" (the same key file,
+    the same inode at the same real path: a shared home folder), "any" (made with --hosts any) or "". Any error is ""."""
+    try:
+        return _binding(approval)
+    except (storage.StorageError, OSError, ValueError, TypeError):
+        return ""
+
+
+def stored_binding(approval):
+    """What the entry was made to hold on: "any", "shared" (made by 1.7.0, with the key file) or "host" (an approval of
+    an earlier version, bound to its host only)."""
+    if not isinstance(approval, dict):
+        return "host"
+    if approval.get("hosts") == "any":
+        return "any"
+    return "shared" if isinstance(approval.get("key_file"), str) else "host"
+
+
+BINDING_NOTES = {
+    "host": "this host only (an approval from before 1.7.0)",
+    "shared": "this host, and any host that sees the same key file (a shared home folder); a copy of the state folder to "
+              "another machine does not carry it",
+    "any": "any host that can read this state folder, also a copy of it",
+}
+
+
 def billing_variables(environ=None):
     """The names (never the values) of the variables in BILLING that are set to a non-empty value."""
     environ = os.environ if environ is None else environ
@@ -855,23 +921,65 @@ def approval_record(repo, config, root=None):
             "root": folder_key(root)}
 
 
-def approval_valid(repo, config, approval=None, root=None):
-    """True when the observer is enabled in `config` and this folder's private entry (or `approval`) names this
-    repository, this folder, these exact settings and this machine, and the user has chosen a level. The stored settings
-    are completed with the defaults of the keys added since they were written before they are compared, so a 1.4.0 entry
-    still reads; with no level chosen it is not a working approval (see paused)."""
+APPROVAL_NOTES = {
+    "settings-invalid": "This folder's stored observer settings do not validate.",
+    "unreadable": "This machine's observer approvals or its key cannot be read. Run hooks.py --doctor.",
+    "off": "The observer is not enabled for this folder.",
+    "none": "This folder has no approval on this machine.",
+    "repo": "This folder's approval is for another repository.",
+    "folder": "The approval was made for another folder.",
+    "level": "No level is chosen yet. Answer the level question (setup.py questions).",
+    "settings": "The stored settings changed since they were approved.",
+    "host": "The key file looks different from this host (another inode or path), so the approval does not follow it here. "
+            "In your own terminal, run observer.py enable with your settings and --hosts any --yes.",
+    "host-old": "This approval was made on another host by a version that bound it to that host. Run setup.py observer with "
+                "its level and --yes once; after that it holds on every host that sees the same key file.",
+}
+
+
+def approval_reason(repo, config, approval=None, root=None):
+    """"" when the approval holds, else the first code, in this order, that applies: settings-invalid, unreadable, off,
+    none, repo, folder, level, settings, host (APPROVAL_NOTES says each in fixed words). The stored settings are completed
+    with the defaults of the keys added since they were written before they are compared, so a 1.4.0 entry still reads; with
+    no level chosen it is not a working approval (see paused). The approval holds on the host that made it, on any host
+    that sees the same key file, or anywhere when the user chose --hosts any (see binding)."""
     try:
         configured = settings(config)
+    except ValueError:
+        return "settings-invalid"
+    try:
         if approval is None:
             approval = stored_approval(root)
-        return bool(configured["enabled"] and configured["level"] in LEVELS and isinstance(approval, dict)
-                    and approval.get("repo") == repo.lower()
-                    and approval.get("root") == folder_key(root)
-                    and isinstance(approval.get("settings"), dict)
-                    and complete(approval["settings"]) == configured and configured["publisher_id"] == publisher_id()
-                    and approval.get("publisher_id") == configured["publisher_id"])
+        if configured["enabled"] is not True:
+            return "off"
+        if not isinstance(approval, dict):
+            return "none"
+        if approval.get("repo") != repo.lower():
+            return "repo"
+        if approval.get("root") != folder_key(root):
+            return "folder"
+        if configured["level"] not in LEVELS:
+            return "level"
+        if not (isinstance(approval.get("settings"), dict) and complete(approval["settings"]) == configured
+                and approval.get("publisher_id") == configured["publisher_id"]):
+            return "settings"
+        return "" if _binding(approval) else "host"
     except (ValueError, OSError, storage.StorageError):
-        return False
+        return "unreadable"
+
+
+def approval_note(code, approval=None):
+    """The fixed words for an approval_reason code; for "host" the entry decides which of the two."""
+    if code == "host" and isinstance(approval, dict) and not isinstance(approval.get("key_file"), str):
+        return APPROVAL_NOTES["host-old"]
+    return APPROVAL_NOTES.get(code, "")
+
+
+def approval_valid(repo, config, approval=None, root=None):
+    """True when approval_reason says nothing is wrong: the observer is enabled in `config` and this folder's private entry
+    (or `approval`) names this repository, this folder, these exact settings and a host binding that holds here, and the
+    user has chosen a level."""
+    return approval_reason(repo, config, approval, root) == ""
 
 
 def paused(repo, config, root=None):
@@ -904,16 +1012,31 @@ def _approvals_writer():
                            json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
 
 
-def approve(repo, config, root=None, given="terminal", approved_at=None):
+def approve(repo, config, root=None, given="terminal", approved_at=None, hosts=None):
     """Record this machine's approval of `config`'s observer settings for this folder; other folders are kept.
     `given` says where: "terminal", the user's own, or "session", a Claude Code session such as the setup wizard's,
-    after which the next session start says once that automatic mode was switched on from a session."""
+    after which the next session start says once that automatic mode was switched on from a session. Every record carries
+    the identity of the key file (`key_file`), so that it holds on every host that sees the same key file. `hosts="any"`
+    also makes it hold on any host that can read this state folder; `hosts="shared"` writes no such mark; `hosts=None`
+    keeps one that the folder's present entry holds validly for this repository, and else writes none."""
     if given not in ("terminal", "session"):
+        raise ValueError("observer_settings")
+    if hosts not in (None, "shared", "any"):
         raise ValueError("observer_settings")
     stamp = approved_at if type(approved_at) in (int, float) and math.isfinite(approved_at) else time.time()
     record = dict(approval_record(repo, config, root), approved_at=stamp, given=given)
     if folder_problem(record["root"]):
         raise ValueError("folder_name")
+    record["key_file"] = key_file_id(create=True)
+    if hosts is None:
+        present = stored_approval(root)
+        if (isinstance(present, dict) and present.get("hosts") == "any" and present.get("repo") == record["repo"]
+                and present.get("root") == record["root"] and _same(present.get("any_host"), any_host_id(
+                    present["repo"], present["root"], present.get("publisher_id")))):
+            hosts = "any"
+    if hosts == "any":
+        record["hosts"] = "any"
+        record["any_host"] = any_host_id(record["repo"], record["root"], record["publisher_id"], create=True)
     with _approvals_writer() as data:
         data["folders"][record["root"]] = record
     return record

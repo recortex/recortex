@@ -7,6 +7,8 @@ import re
 import stat
 import time
 
+import storage
+
 try:
     import grp
     import pwd
@@ -22,6 +24,19 @@ EVENTS = {"UserPromptSubmit", "PreToolUse", "Stop", "PreCompact"}  # the capture
 
 class SourceError(ValueError):
     """Fixed reason only, never source contents or filesystem paths."""
+
+
+# The codes a transcript that cannot be read gives (SourceError and preflight): the fixed set that status, the refusals and
+# --doctor may print. `source-missing` is not among them: before any session has run in a folder there is no transcript yet.
+UNREADABLE_CODES = ("source-owner", "source-permissions", "source-symlink", "source-path", "source-file", "source-changed",
+                    "source-incomplete", "source-unavailable", "source-config")
+TRUST_RUN = "Run them in your own terminal, outside Claude Code."
+
+
+def trust_commands(scripts=None):
+    """The two commands that trust the folders now refused, as the user runs them: look first, then the same with --yes."""
+    base = "python3 %s" % os.path.join(scripts or os.path.dirname(os.path.abspath(__file__)), "observer.py")
+    return [base + " trust-ancestor --failing", base + " trust-ancestor --failing --yes"]
 
 
 def _boundary(path, folder, source_file=None):
@@ -132,6 +147,232 @@ Group write is accepted only on a folder, and only for the owner's user private 
     return None
 
 
+# ---------------------------------------------------------------- trusted ancestors (1.7.0)
+#
+# On a shared network filesystem the folders above Claude Code's transcripts belong to another account or are written by a
+# shared group, and no user can change that. The user can trust such a folder exactly as it is: its path, owner, group and
+# mode, recorded by `observer.py trust-ancestor` on their own terminal and bound to the user key. An entry holds only while
+# all three still match. The transcript, its project folder and everything inside it are never accepted this way, and
+# neither is a folder that fails for any reason but its owner or its permissions (a link, a file in place of a folder).
+# What the owner of a trusted folder can still do is put another tree in its place; that tree must still have a project
+# folder and a transcript that belong to the user and are closed to group and others.
+TRUSTED = "trusted-ancestors.json"
+TRUSTED_LOCK = "trusted-ancestors.lock"
+TRUSTED_FORM = 1
+TRUSTED_ENTRIES = 64
+TRUSTED_CAP = 65536
+TRUSTABLE = ("source-owner", "source-permissions")
+ID_MAX = 2 ** 32 - 1
+MAC = re.compile(r"[0-9a-f]{32}")
+CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _trusted_path_ok(path):
+    return (isinstance(path, str) and 0 < len(path) <= 4096 and os.path.isabs(path) and os.path.normpath(path) == path
+            and not CONTROL.search(path))
+
+
+def _mac(path, uid, gid, mode):
+    """The entry's HMAC under the user key: a trusted file restored or edited from elsewhere trusts nothing."""
+    import hmac
+    key = storage.user_key(create=False, tighten=False)
+    return hmac.new(key, _canonical(["ancestor", path, uid, gid, mode]).encode("utf-8"),
+                    hashlib.sha256).hexdigest()[:32]
+
+
+def _valid_entry(path, entry):
+    return (_trusted_path_ok(path) and isinstance(entry, dict) and set(entry) == {"uid", "gid", "mode", "mac", "added"}
+            and all(type(entry[name]) is int and 0 <= entry[name] <= ID_MAX for name in ("uid", "gid"))
+            and type(entry["mode"]) is int and 0 <= entry["mode"] <= 0o7777
+            and isinstance(entry["mac"], str) and MAC.fullmatch(entry["mac"])
+            and type(entry["added"]) in (int, float) and 0 <= entry["added"] < 4102444800)
+
+
+def read_trusted(create=False):
+    """(state, entries): "none" with {} when there is no file; "ok" with the entries; "unreadable" with {} for a file that
+    cannot be read, is too large, is not JSON, does not fit the form or is not safe (storage.check_path). Never raises."""
+    try:
+        private = storage.folder(storage.state_top(for_key=True), create=create, tighten=create)
+        if private is None:
+            return "none", {}
+        path = os.path.join(private, TRUSTED)
+        info = storage.check_path(path, "file")
+        if not info:
+            return "none", {}
+        if info.st_size > TRUSTED_CAP:
+            return "unreadable", {}
+        data = json.loads(storage.read_file(path) or "")
+        if (not isinstance(data, dict) or set(data) != {"form", "entries"} or data["form"] != TRUSTED_FORM
+                or not isinstance(data["entries"], dict) or len(data["entries"]) > TRUSTED_ENTRIES
+                or not all(_valid_entry(key, value) for key, value in data["entries"].items())):
+            return "unreadable", {}
+        return "ok", dict(data["entries"])
+    except (OSError, ValueError, RecursionError, storage.StorageError):
+        return "unreadable", {}
+
+
+class Trust:
+    """The user's trusted ancestors, loaded once, on first use, and never raising: a file that cannot be used trusts
+    nothing (`state` is then "unreadable"). One per walk of a path; the file is read only when a component fails."""
+
+    def __init__(self):
+        self.state, self.entries, self.loaded = "none", {}, False
+        self.used = []   # the paths accepted so far
+
+    def load(self):
+        if not self.loaded:
+            self.loaded = True
+            self.state, self.entries = read_trusted()
+        return self
+
+    @staticmethod
+    def _matches(path, entry, info):
+        import hmac
+        try:
+            same = (entry["uid"], entry["gid"], entry["mode"]) == (info.st_uid, getattr(info, "st_gid", None),
+                                                                   stat.S_IMODE(info.st_mode))
+            return same and hmac.compare_digest(entry["mac"], _mac(path, entry["uid"], entry["gid"], entry["mode"]))
+        except Exception:  # noqa: BLE001 - nothing here may raise: a key that cannot be read trusts nothing
+            return False
+
+    def accepts(self, path, info, folder, source_file=None):
+        """True when `path` is a folder above the project folder that the user trusted exactly as it is now: a directory
+        and no link, an entry for the exact path, its owner, group and mode as recorded, and the HMAC of the entry."""
+        if path == source_file or path == folder or path.startswith(folder + os.sep) or not folder.startswith(path + os.sep):
+            return False
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            return False
+        entry = self.load().entries.get(path)
+        if entry is None:
+            return False
+        if self._matches(path, entry, info):
+            self.used.append(path)
+            return True
+        return False
+
+    def changed(self, path, info):
+        """True when an entry exists for `path` and what `info` shows no longer matches it."""
+        entry = self.load().entries.get(path)
+        if entry is None:
+            return False
+        return not self._matches(path, entry, info)
+
+
+def _problem(path, info, folder, source_file=None, trust=None):
+    """_component_problem, except that an ancestor with a code of TRUSTABLE that the user trusted exactly as it is (Trust)
+    has none. The transcript, the project folder and what is inside it never pass this way."""
+    problem = _component_problem(path, info, folder, source_file)
+    if problem in TRUSTABLE and trust is not None and trust.accepts(path, info, folder, source_file):
+        return None
+    return problem
+
+
+def _trustable(path, info, folder, code):
+    """A directory (no link) strictly above the project folder that fails only for its owner or its permissions."""
+    return (code in TRUSTABLE and stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+            and folder.startswith(path + os.sep))
+
+
+def _world(info):
+    return bool(info.st_mode & stat.S_IWOTH) and not info.st_mode & stat.S_ISVTX
+
+
+def failing(project_root):
+    """The folders the walk to the transcript refuses now, for `observer.py trust-ancestor --failing`: path, code, boundary,
+    uid, gid, mode (four octal digits), `trustable` (see _trustable) and `world` (all may write, no sticky bit). A folder
+    the user trusted and that still matches is not among them. [] when there is no problem or the walk cannot be made."""
+    try:
+        folder = project_directory(project_root)
+        trust = Trust()
+        rows, current = [], folder
+        while True:
+            if os.path.lexists(current):
+                info = os.lstat(current)
+                code = _problem(current, info, folder, None, trust)
+                if code:
+                    rows.append({"path": current, "code": code, "boundary": _boundary(current, folder), "uid": info.st_uid,
+                                 "gid": getattr(info, "st_gid", 0), "mode": format(stat.S_IMODE(info.st_mode), "04o"),
+                                 "trustable": _trustable(current, info, folder, code), "world": _world(info)})
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+        return rows
+    except (OSError, SourceError):
+        return []
+
+
+class TrustError(ValueError):
+    """Fixed code only."""
+
+
+def trust_add(rows, project_root):
+    """Trust each folder of `rows` (dicts with a "path", or paths) exactly as it is now: its owner, group and mode are read
+    again here and stored with their HMAC, under the lock of the file, which is never replaced when it cannot be read. A
+    folder that is not a directory above the project folder, or is a link, is refused whole (TrustError "not-an-ancestor"),
+    as is a file that would hold more than 64. Returns the entries stored: {path: entry}."""
+    import field_sheet
+    folder = project_directory(project_root)
+    paths = [row["path"] if isinstance(row, dict) else row for row in rows]
+    storage.user_key(create=True)   # the HMAC of an entry needs the user key
+    stored = {}
+    for path in paths:
+        if not _trusted_path_ok(path) or not folder.startswith(path + os.sep):
+            raise TrustError("not-an-ancestor")
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise TrustError("not-an-ancestor")
+        uid, gid, mode = info.st_uid, getattr(info, "st_gid", 0), stat.S_IMODE(info.st_mode)
+        stored[path] = {"uid": uid, "gid": gid, "mode": mode, "mac": _mac(path, uid, gid, mode), "added": int(time.time())}
+    with field_sheet.approvals_lock(storage.state_top(for_key=True), TRUSTED_LOCK):
+        state, entries = read_trusted(create=True)
+        if state == "unreadable":
+            raise TrustError("unreadable")
+        entries.update(stored)
+        if len(entries) > TRUSTED_ENTRIES:
+            raise TrustError("too-many")
+        storage.write_file(os.path.join(storage.folder(storage.state_top(for_key=True)), TRUSTED),
+                           json.dumps({"form": TRUSTED_FORM, "entries": entries}, sort_keys=True, indent=1) + "\n")
+    return stored
+
+
+def trust_forget(path):
+    """Remove one entry. True when there was one; TrustError "unreadable" when the file cannot be used (it stays)."""
+    import field_sheet
+    with field_sheet.approvals_lock(storage.state_top(for_key=True), TRUSTED_LOCK):
+        state, entries = read_trusted(create=False)
+        if state == "unreadable":
+            raise TrustError("unreadable")
+        if path not in entries:
+            return False
+        entries.pop(path)
+        storage.write_file(os.path.join(storage.folder(storage.state_top(for_key=True)), TRUSTED),
+                           json.dumps({"form": TRUSTED_FORM, "entries": entries}, sort_keys=True, indent=1) + "\n")
+    return True
+
+
+def trusted_listing():
+    """(state, rows): each entry with its path, uid, gid, mode and whether the folder still matches it now."""
+    state, entries = read_trusted()
+    trust = Trust()
+    trust.loaded, trust.state, trust.entries = True, state, entries
+    rows = []
+    for path, entry in sorted(entries.items()):
+        try:
+            info = os.lstat(path)
+            now = (not stat.S_ISLNK(info.st_mode) and stat.S_ISDIR(info.st_mode) and not trust.changed(path, info))
+        except OSError:
+            now = False
+        rows.append({"path": path, "uid": entry["uid"], "gid": entry["gid"], "mode": format(entry["mode"], "04o"),
+                     "matches": now})
+    return state, rows
+
+
+
 def project_directory(project_root):
     root = os.path.abspath(project_root)
     config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
@@ -147,26 +388,36 @@ def preflight(project_root, details=False):
         folder = project_directory(project_root)
         missing = not os.path.isdir(folder)
         current = folder
-        issues = []
+        issues, trust, fixable, changed = [], Trust(), True, False
         while True:
             if os.path.lexists(current):
                 info = os.lstat(current)
-                problem = _component_problem(current, info, folder)
+                problem = _problem(current, info, folder, None, trust)
                 if problem:
                     issue = {"code": problem, "boundary": _boundary(current, folder),
                              "action": "review-owned-permissions" if problem == "source-permissions" else "review-source-location"}
                     if details:
                         issue.update(path=current, mode=format(stat.S_IMODE(info.st_mode), "04o"),
                                      owner="current-user" if hasattr(os, "getuid") and info.st_uid == os.getuid()
-                                     else "root" if info.st_uid == 0 else "other")
+                                     else "root" if info.st_uid == 0 else "other",
+                                     uid=info.st_uid, gid=getattr(info, "st_gid", 0))
                     issues.append(issue)
+                    fixable = fixable and _trustable(current, info, folder, problem)
+                    changed = changed or problem in TRUSTABLE and trust.changed(current, info)
             parent = os.path.dirname(current)
             if parent == current:
                 break
             current = parent
+        extra = {"trusted": len(trust.used)}
+        if trust.loaded and trust.state == "unreadable":
+            extra["trust"] = "unreadable"
+        elif changed:
+            extra["trust"] = "changed"
         if issues:
-            return dict(issues[0], ready=False, issues=issues)
-        return {"ready": not missing, "code": "source-missing" if missing else "ok"}
+            if fixable:
+                extra["fix"] = "trust-ancestor"
+            return dict(issues[0], ready=False, issues=issues, **extra)
+        return dict({"ready": not missing, "code": "source-missing" if missing else "ok"}, **extra)
     except (OSError, SourceError):
         return {"ready": False, "code": "source-unavailable"}
 
@@ -183,10 +434,10 @@ def approved_path(path, project_root, session_id):
         raise SourceError("source-project")
     if os.path.normpath(path) != path:
         raise SourceError("source-path")
-    current = path
+    current, trust = path, Trust()
     while True:
         info = os.lstat(current)
-        problem = _component_problem(current, info, folder, source_file=path)
+        problem = _problem(current, info, folder, path, trust)
         if problem:
             raise SourceError(problem)
         parent = os.path.dirname(current)
