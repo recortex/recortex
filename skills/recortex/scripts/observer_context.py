@@ -241,6 +241,21 @@ No eligibility decision or derived table is cached by this module.
             db.execute("ROLLBACK")
 
 
+def freshness(db, now=None):
+    """How current the local copy is: {"synced_at", "sync_complete", "live_revalidated", "age_seconds"}. The one place that
+    works it out, for the context packet and for the task reminder (task_reminder)."""
+    synced = index.get_meta(db, "synced_at") or ""
+    moment = now or datetime.datetime.now(datetime.timezone.utc)
+    try:
+        synced_time = datetime.datetime.strptime(synced, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc) \
+            if index.ISO_UTC.fullmatch(synced) else None
+    except ValueError:
+        synced_time = None
+    return {"synced_at": synced if index.ISO_UTC.fullmatch(synced) else None,
+            "sync_complete": index.get_meta(db, "sync_complete") == "1", "live_revalidated": False,
+            "age_seconds": (moment - synced_time).total_seconds() if synced_time is not None else None}
+
+
 def _build(db, repo, allowed, query, issue, max_chars, now, max_resume_age_days):
     found = index.memories(db, allowed)
     items = found["items"]
@@ -265,18 +280,9 @@ def _build(db, repo, allowed, query, issue, max_chars, now, max_resume_age_days)
                  for cid, m in items.items() if m["kind"] == "decision" and m["state"] == "stands"}
     scores = {cid: max([matches[cid]] + [matches[target] for target in governing.get(cid, ())])
               * (1.25 if governing.get(cid) else 1) for cid in items}
-    synced = index.get_meta(db, "synced_at") or ""
-    moment = now or datetime.datetime.now(datetime.timezone.utc)
-    try:
-        synced_time = datetime.datetime.strptime(synced, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc) \
-            if index.ISO_UTC.fullmatch(synced) else None
-    except ValueError:
-        synced_time = None
-    freshness = {"synced_at": synced if index.ISO_UTC.fullmatch(synced) else None,
-                 "sync_complete": index.get_meta(db, "sync_complete") == "1", "live_revalidated": False,
-                 "age_seconds": (moment - synced_time).total_seconds() if synced_time is not None else None}
+    fresh = freshness(db, now)
     node, map_ids, direct_map_ids = None, set(), set()
-    if wanted and freshness["sync_complete"] and freshness["age_seconds"] is not None and 0 <= freshness["age_seconds"] <= 86400:
+    if wanted and fresh["sync_complete"] and fresh["age_seconds"] is not None and 0 <= fresh["age_seconds"] <= 86400:
         node, map_ids, direct_map_ids = map_matches(db, allowed, query, items)
     branch = node["title"] if node else ""
     for cid in map_ids:
@@ -296,7 +302,7 @@ def _build(db, repo, allowed, query, issue, max_chars, now, max_resume_age_days)
     resume, resume_note = checked_resume(db, repo, allowed, now, max_resume_age_days)
     header = [INTRO, BEGIN, "Repository: " + repo,
               "Freshness: cached snapshot at %s; sync %s; sources were not revalidated for this request." %
-              (freshness["synced_at"] or "unknown", "complete" if freshness["sync_complete"] else "partial or unknown")]
+              (fresh["synced_at"] or "unknown", "complete" if fresh["sync_complete"] else "partial or unknown")]
     if resume_note:
         header.append(resume_note)
     reserved = "\n" + " " * 450 + "\n" + END
@@ -420,8 +426,8 @@ def _build(db, repo, allowed, query, issue, max_chars, now, max_resume_age_days)
         advice[0]["branch"] = branch_anchor(node["id"])
     return {"text": text, "groups": [{k: g[k] for k in ("ids", "missing", "reason")} for g in groups],
             "selected": selected, "selected_kinds": {cid: items[cid]["kind"] for cid in selected},
-            "freshness": freshness,
-            "incomplete": bool(omissions or resume_note or any(g["missing"] for g in groups) or not freshness["sync_complete"]),
+            "freshness": fresh,
+            "incomplete": bool(omissions or resume_note or any(g["missing"] for g in groups) or not fresh["sync_complete"]),
             "omitted_groups": len(omissions), "omitted_sources": omitted_sources,
             "selection_limited": limited,
             "resume_id": resume["id"] if resume else None,

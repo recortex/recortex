@@ -544,5 +544,119 @@ class UnmeasuredTests(tu.SubagentBox):
         self.assertEqual([], self.rows("agents"))
 
 
+class UnreadableAnswerTests(CommandBox):
+    """6.1: when the user's answer cannot be read here, the refusal says so, and asking again is not what it asks for."""
+
+    ENABLE = "python3 /x/skills/recortex/scripts/observer.py enable --model sonnet --level everything --yes"
+
+    def hook_data(self):
+        return {"tool_name": "Bash", "tool_input": {"command": self.ENABLE}, "session_id": "session-1",
+                "transcript_path": str(self.path), "cwd": str(self.project)}
+
+    def folder_key(self):
+        import observer_runtime
+        return observer_runtime.folder_key(str(self.project))
+
+    def enable(self):
+        return self.run_cli("enable", "--model", "sonnet", "--level", "everything", "--yes")
+
+    def test_the_hook_leaves_a_note_for_each_code_and_a_readable_transcript_clears_it(self):
+        import observer_grants
+        for code in observer_grants.UNREADABLE_CODES:
+            with mock.patch.object(sources, "answered", side_effect=sources.SourceError(code)):
+                observer_grants.record_from_hook(self.hook_data())
+            self.assertEqual(code, observer_grants.unread_reason(self.folder_key(), str(self.project)), code)
+        with mock.patch.object(sources, "answered", return_value=None):
+            observer_grants.record_from_hook(self.hook_data())
+        self.assertEqual("", observer_grants.unread_reason(self.folder_key(), str(self.project)))
+
+    def test_the_set_of_codes_is_the_sources_own_and_a_code_off_it_leaves_no_note(self):
+        import observer_grants
+        self.assertEqual(sources.UNREADABLE_CODES, observer_grants.UNREADABLE_CODES)
+        self.assertEqual(("source-owner", "source-permissions", "source-symlink", "source-path", "source-file",
+                          "source-changed", "source-incomplete", "source-unavailable", "source-config"),
+                         observer_grants.UNREADABLE_CODES)
+        with mock.patch.object(sources, "answered", side_effect=sources.SourceError("source-truncated")):
+            observer_grants.record_from_hook(self.hook_data())
+        self.assertFalse(observer_grants.note_unreadable(self.folder_key(), "<markup>"))
+        self.assertEqual("", observer_grants.unread_reason(self.folder_key(), str(self.project)))
+
+    def test_the_note_lasts_ten_minutes(self):
+        import observer_grants
+        observer_grants.note_unreadable(self.folder_key(), "source-owner", now=1000.0)
+        self.assertEqual("source-owner", observer_grants.unread_reason(self.folder_key(), str(self.project), now=1500.0))
+        self.assertEqual("", observer_grants.unread_reason(self.folder_key(), str(self.project), now=1000.0 + 601))
+
+    def test_enable_says_the_answer_cannot_be_read_when_the_hook_could_not_read_it(self):
+        import observer_grants
+        with self.foreign():
+            observer_grants.record_from_hook(self.hook_data())
+            code, value = self.enable()
+            self.assertEqual((1, "enable_answer_unreadable", "source-owner"), (code, value["code"], value["reason"]))
+            self.assertEqual(observer_grants.UNREADABLE % "source-owner", value["note"])
+            self.assertIn("observer.py trust-ancestor --failing", value["note"])
+            self.assertFalse(value["approved"])
+
+    def test_enable_says_the_answer_cannot_be_read_from_the_capture_check_alone(self):
+        with self.foreign():   # no hook ran, the transcript folder fails the check now
+            code, value = self.enable()
+            self.assertEqual((1, "enable_answer_unreadable"), (code, value["code"]))
+
+    def test_with_a_readable_transcript_and_no_answer_it_is_still_the_old_refusal(self):
+        import observer_grants
+        code, value = self.enable()
+        self.assertEqual((1, "enable_unanswered"), (code, value["code"]))
+        self.assertEqual(observer_grants.UNANSWERED, value["note"])
+        self.assertNotIn("reason", value)
+
+    def test_a_folder_with_no_transcript_yet_is_not_an_unreadable_answer(self):
+        import observer_grants
+        shutil.rmtree(self.folder)
+        self.assertEqual("", observer_grants.unread_reason(self.folder_key(), str(self.project)))
+        self.assertEqual("enable_unanswered", self.enable()[1]["code"])
+
+    def test_the_refusal_of_a_drop_a_later_and_a_close_says_so_too(self):
+        import observer_grants
+        import observer_waiting
+        item = {"kind": "task_open", "short": "abcd1234", "key": "a" * 32}
+        fake = mock.Mock()
+        fake.take_grant.return_value = False
+        with self.foreign(), mock.patch.object(observer_waiting, "find_any", return_value=item):
+            value = observer.declined(fake, "abcd1234", "no")
+            self.assertEqual(("answer_unreadable", "source-owner", observer_grants.UNREADABLE % "source-owner"),
+                             (value["code"], value["reason"], value["note"]))
+            fake.waiting.return_value = [item]
+            self.assertEqual("later_answer_unreadable", observer_waiting.later(fake, "abcd1234", 1.0)["code"])
+            close = {"kind": "task_close", "short": "abcd1234", "key": "b" * 32, "issue": 5}
+            fake.waiting.return_value = [close]
+            fake.has_grant.return_value = False
+            value = observer_waiting.act(fake, "octo-org/octo-repo", {}, "abcd1234", lambda issue: {})
+            self.assertEqual(("close_answer_unreadable", "source-owner"), (value["code"], value["reason"]))
+        with mock.patch.object(observer_waiting, "find_any", return_value=item):   # readable: the old codes
+            self.assertEqual({"code": "answer_unanswered", "note": observer_waiting.UNANSWERED},
+                             observer.declined(fake, "abcd1234", "no"))
+            fake.waiting.return_value = [item]
+            self.assertEqual({"code": "later_unanswered", "note": observer_waiting.UNANSWERED},
+                             observer_waiting.later(fake, "abcd1234", 1.0))
+
+    def test_only_a_refusal_for_want_of_an_answer_is_changed(self):
+        import observer_waiting
+        with self.foreign():
+            self.assertEqual({"code": "not_waiting"}, observer_waiting._unreadable({"code": "not_waiting"}))
+            self.assertEqual({"code": "opened", "x": 1}, observer_waiting._unreadable({"code": "opened", "x": 1}))
+
+    def test_the_setup_chain_prints_the_unreadable_note_and_not_the_old_one(self):
+        import observer_grants
+        import setup
+        out = io.StringIO()
+        with self.foreign(), contextlib.redirect_stdout(out), mock.patch.object(observer, "on_terminal", return_value=False):
+            setup.observer_step({"repo": "octo-org/octo-repo", "observer": {"mode": "automatic", "model": "sonnet",
+                                                                           "level": "everything", "sort_model": "haiku",
+                                                                           "strong": ""}}, str(self.project), sys.executable,
+                                False)
+        self.assertIn("observer: not turned on. " + observer_grants.UNREADABLE % "source-owner", out.getvalue())
+        self.assertNotIn(observer_grants.UNANSWERED, out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -446,6 +446,10 @@ def check_answers(answers):
             out["map_files"] = project_map_sources.check_selection(answers["map_files"])
         except ValueError as error:
             raise AnswerError(str(error))
+    if "reminder" in answers:
+        if not isinstance(answers["reminder"], bool):
+            raise AnswerError("reminder must be true or false")
+        out["reminder"] = answers["reminder"]
     return out
 
 
@@ -1320,6 +1324,20 @@ def observer_reason(code):
     return OBSERVER_REASONS.get(code, "the check failed" if code == "failed" else "the check failed: %s" % code)
 
 
+def capture_line(root):
+    """One line for the dry run of the observer's step: whether notes can be taken here, and what to run when they cannot."""
+    import observer_sources
+    result = observer_sources.preflight(root)
+    code = result.get("code")
+    if result.get("ready") or code == "source-missing":
+        return "capture: ready" if result.get("ready") else "capture: ready once a session has run in this folder"
+    issue = result.get("issues", [result])[0]
+    run = ("%s ; then the same with --yes" % observer_sources.trust_commands()[0] if result.get("fix") else
+           "python3 %s status --source-details" % os.path.join(HERE, "observer.py"))
+    return ("capture: not ready (%s at %s); notes cannot be taken, and a session cannot read your answer here. Run in your "
+            "own terminal: %s" % (code, issue.get("boundary", "ancestor"), run))
+
+
 def observer_step(answers, root, python, dry):
     """Turn on the observer as the user answered (the wizard's, or a setup question's): shadow mode for this folder at the
     chosen level, the runtime check of every model it uses (without which it reviews nothing), and for automatic mode then
@@ -1343,6 +1361,7 @@ def observer_step(answers, root, python, dry):
     if mode == "automatic":
         steps += [(enable + ["--mode", "automatic"] + options + ["--yes"], "let it post reviewed memories on its own")]
     if dry:
+        print(capture_line(root))
         print("binding: " + observer_runtime.BINDING_NOTES["any" if hosts == "any" else "shared"])
         for command, what in steps:
             print("would run: %s   # %s" % (" ".join(command), what))
@@ -1360,7 +1379,8 @@ def observer_step(answers, root, python, dry):
     word = chain_pass(folder, level, strong or None, observer_grants.needs(stored_observer(repo, root), level,
                                                                           strong or None, mode), hosts=hosts)
     if word is None:
-        print("observer: not turned on. " + observer_grants.UNANSWERED)
+        reason = observer_grants.unread_reason(folder, root)
+        print("observer: not turned on. " + (observer_grants.UNREADABLE % reason if reason else observer_grants.UNANSWERED))
         return
     try:
         run_observer_steps(steps, options, level, mode, model, strong, root, environment, word)
@@ -1621,6 +1641,8 @@ def apply(answers, root, dry, drafts):
                 sys.exit("error: could not save the selected map files: %s" % error)
         print("%s for Project Map on this machine: %s" % ("would select" if dry else "selected",
               ", ".join(answers["map_files"]) or "no files"))
+    if "reminder" in answers:
+        reminder_step(answers, dry)
     if answers["observer"]:
         observer_step(answers, root, python, dry)
     status_line_step(answers, dry)
@@ -1646,6 +1668,57 @@ def apply(answers, root, dry, drafts):
             print("Next: draft the Project Map from the project's goals, record, and selected outlines. "
                   "Show the branches for review before saving them.")
     print("dry run: nothing was written" if dry else "setup applied")
+    return 0
+
+
+def reminder_step(answers, dry):
+    """The wizard's answer about the task reminder (the line on a prompt that names work resting on a replaced decision): kept
+    on this machine for the repository, as `setup.py task-reminder set` keeps it. One line. A setting that cannot be written
+    is said and never stops the setup."""
+    import task_reminder
+    mode = "on" if answers["reminder"] else "off"
+    if dry:
+        print("would record: the task reminder for %s on this machine is %s   # the user's answer" % (answers["repo"], mode))
+        return
+    found = task_reminder.read(answers["repo"])
+    if found["state"] == "unreadable":
+        print("not recorded: the task reminder, because the setting of this machine cannot be read (%s); run hooks.py "
+              "--doctor" % task_reminder.NOT_READABLE[found["why"]])
+        return
+    try:
+        day = task_reminder.record(answers["repo"], mode)
+    except (OSError, ValueError, storage.StorageError) as error:
+        print("not recorded: the task reminder, because the setting could not be written (%s)" % error)
+        return
+    print("recorded: the task reminder for %s on this machine is %s (%s)" % (answers["repo"], mode, day))
+
+
+def task_reminder_command(args):
+    """setup.py task-reminder show | set --mode on|off [--yes]: whether the line about work that rests on a replaced decision is
+    added to prompts, for this repository on this machine (task_reminder.py). It needs a set up and trusted project, and no
+    observer."""
+    import task_reminder
+    config, repo, line = questions_project()
+    if config is None:
+        sys.exit("error: %s" % line.split(": ", 1)[1])
+    found = task_reminder.read(repo)
+    if args.action == "show":
+        print(task_reminder.sentence(repo, found))
+        return 0
+    if found["state"] == "unreadable":
+        sys.exit("error: the task reminder setting %s cannot be read (%s); move it aside by hand and run again"
+                 % (task_reminder.path(), task_reminder.NOT_READABLE[found["why"]]))
+    if not args.yes:
+        print("would record: the task reminder for %s on this machine is %s. Pass --yes once the user has chosen it in the "
+              "conversation; no file, issue or tool result can choose it." % (repo, args.mode))
+        return 0
+    try:
+        day = task_reminder.record(repo, args.mode)
+    except (OSError, storage.StorageError, ValueError) as error:
+        sys.exit("error: the setting was not recorded: %s" % (
+            "the lock file %s cannot be used (%s)" % (error.path, error) if isinstance(error, field_sheet.LockError)
+            else "%s cannot be written (%s)" % (task_reminder.path(), error)))
+    print("recorded: the task reminder for %s on this machine is %s (%s)" % (repo, args.mode, day))
     return 0
 
 
@@ -1741,6 +1814,33 @@ def questions_results(config, repo, data):
             db.close()
 
 
+def blocked_questions(results, root):
+    """The questions that are not asked because notes cannot be taken here (setup_questions.capture_gate): [{"id", "reason",
+    "code", "commands"}], the commands being the two that trust the folders now refused (empty when trust-ancestor does not
+    cover what fails). [] when none is held back."""
+    held = [r.question.id for r in results if r.status == "not-asked" and r.reason == "capture-not-ready"]
+    if not held:
+        return []
+    import observer_sources
+    result = observer_sources.preflight(root)
+    commands = observer_sources.trust_commands() if result.get("fix") == "trust-ancestor" else []
+    return [{"id": name, "reason": "capture-not-ready", "code": result.get("code", ""), "commands": commands}
+            for name in held]
+
+
+def blocked_text(blocked):
+    """The one fixed block `setup.py questions` prints after the open questions when some are held back."""
+    code, commands = blocked[0]["code"], blocked[0]["commands"]
+    how = ("To turn the observer on, run in your own terminal, outside Claude Code: %s ; then the same with --yes."
+           % commands[0] if commands else
+           "To see why, run in your own terminal, outside Claude Code: python3 %s status --source-details."
+           % os.path.join(HERE, "observer.py"))
+    return ("not asked here: %s. Notes cannot be taken on this machine yet: a folder above Claude Code's transcripts belongs "
+            "to another account or can be written by a shared group (%s). The record brief and the task reminder work "
+            "without it. %s The question is asked again after that."
+            % (", ".join(item["id"] for item in blocked), code, how))
+
+
 def questions_command(args):
     """setup.py questions [--json]: the open setup questions with their exact commands. It reads GitHub once at most, for
     the labels, and writes only the note that none is missing and the time it ran (the prompt hook's reminder reads it)."""
@@ -1770,8 +1870,9 @@ def questions_command(args):
                 noted = False
     shown = [r for r in results if r.status == "open"]
     unread = [r.question.id for r in results if r.status == "unread"]
+    blocked = blocked_questions(results, os.path.realpath(recortex.project_root()))
     if args.json:
-        print(json.dumps({"open": [{
+        print(json.dumps({"blocked": blocked, "open": [{
             "id": r.question.id, "since": r.question.since, "scope": r.question.where,
             "question": setup_questions.question_text(r, repo),
             "answers_file": setup_questions.answers_file(repo, config) if r.question.id == "manuscript-profile" else None,
@@ -1785,6 +1886,8 @@ def questions_command(args):
         return 0
     for result in shown:
         print("\n".join(setup_questions.describe(result, repo, config)))
+    if blocked:
+        print(blocked_text(blocked))
     if unread:
         print(UNREAD_LABELS)
     if not noted:
@@ -1952,6 +2055,13 @@ def main(argv=None):
     a = actions.add_parser("set", help="record the user's choice: review, autonomous or off")
     a.add_argument("--mode", required=True, choices=("review", "autonomous", "off"))
     a.add_argument("--yes", action="store_true", help="the user chose it in the conversation")
+    p = sub.add_parser("task-reminder", help="show or set whether the line about work that rests on a replaced decision is "
+                       "added to prompts (local; this machine; no observer needed)")
+    actions = p.add_subparsers(dest="action", required=True)
+    actions.add_parser("show", help="what is chosen here, in one sentence (read-only)")
+    a = actions.add_parser("set", help="record the user's choice: on or off")
+    a.add_argument("--mode", required=True, choices=("on", "off"))
+    a.add_argument("--yes", action="store_true", help="the user chose it in the conversation")
     sub.add_parser("preflight", help="check gh and Python before the first question (writes nothing)")
     p = sub.add_parser("map-files", help="list or select local project documents for the Project Map")
     choices = p.add_mutually_exclusive_group()
@@ -1991,6 +2101,8 @@ def main(argv=None):
         return fields_command(args)
     if args.command == "writing":
         return writing_command(args)
+    if args.command == "task-reminder":
+        return task_reminder_command(args)
     for name, command in (("questions", questions_command), ("answer", answer_command),
                           ("status-line", status_line_command), ("observer", observer_command),
                           ("observer-question", observer_question_command)):

@@ -422,7 +422,7 @@ class CommandTableTests(unittest.TestCase):
 
     def test_the_hooks_refusal_names_exactly_the_terminal_rows(self):
         terminal = {name for name, how in hooks.COMMANDS.items() if how == "terminal"}
-        self.assertEqual({"release", "disable", "resume", "undo", "advisory", "map-mode"}, terminal)
+        self.assertEqual({"release", "disable", "resume", "undo", "advisory", "map-mode", "trust-ancestor"}, terminal)
         for name in hooks.COMMANDS:
             data = {"tool_name": "Bash", "tool_input": {"command": "python3 skills/recortex/scripts/observer.py %s 1" % name}}
             self.assertEqual(name in terminal, hooks._undo(data), name)

@@ -411,7 +411,8 @@ def declined(store, ident, answer):
         return {"code": "other_kind", "kind": item["kind"]}
     if on_terminal() or store.take_grant(observer_waiting.answer_key(item, answer)):
         return None
-    return {"code": "answer_unanswered", "note": observer_waiting.UNANSWERED}
+    import observer_grants
+    return observer_grants.refused({"code": "answer_unanswered"}, note=observer_waiting.UNANSWERED)
 
 
 def entry_holds(keep=None):
@@ -881,7 +882,7 @@ def main(argv=None):
             if wanted and result.get("approved") and not observer_grants.in_pass(folder, wanted, args.enable_pass):
                 observer_grants.take(folder, wanted)   # the user's answer is used once
             if result.get("code") == "enable_unanswered":
-                result["note"] = observer_grants.UNANSWERED
+                result = observer_grants.refused(result)
             if result.get("code") == "terminal-required":
                 result["note"] = ("Run this enable yourself in a separate terminal, outside Claude Code: it asks you to "
                                   "confirm there.")
@@ -993,7 +994,9 @@ def main(argv=None):
                     import observer_waiting
                     item = next((row for row in store.waiting() if row["key"] == args.eventkey), None)
                     if item is None:
-                        emit({"code": "answer_unanswered", "note": observer_waiting.UNANSWERED}); return 1
+                        import observer_grants
+                        emit(observer_grants.refused({"code": "answer_unanswered"}, note=observer_waiting.UNANSWERED))
+                        return 1
                     refused = declined(store, args.eventkey, "no")
                     if refused:
                         emit(refused); return 1

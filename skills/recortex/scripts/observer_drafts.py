@@ -169,9 +169,10 @@ def apply(store, ident, repo, project_root):
     if copy is None:
         return _stale(store, ident)
     if not store.take_grant(keeper_rules.grant_key(ident, content)):
-        emit({"code": "draft_unanswered",
-              "note": "No answer of the user's counts for this draft: ask the question listed by observer.py drafts, "
-                      "and run this command right after the user answers Approve."})
+        import observer_grants
+        emit(observer_grants.refused(
+            {"code": "draft_unanswered"}, note="No answer of the user's counts for this draft: ask the question listed by "
+            "observer.py drafts, and run this command right after the user answers Approve."))
         return 1
     try:
         recortex.write_working_files(copy, {WORDS: "Approve\n"})

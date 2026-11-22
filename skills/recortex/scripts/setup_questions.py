@@ -74,6 +74,8 @@ REASONS = {
     "no-level": "the observer has no level of Assistant or Everything for this folder",
     "approvals-unreadable": "the approvals of the observer cannot be read",
     "check-failed": "the check could not be made",
+    "capture-not-ready": "notes cannot be taken on this machine yet: a folder above Claude Code's transcripts belongs to "
+                         "another account or can be written by a shared group",
 }
 
 
@@ -314,14 +316,28 @@ def observer_entry(ctx):
     return OPEN, "", observer_runtime.complete(approval["settings"])
 
 
+def capture_gate(ctx):
+    """"" when notes can be taken here or no session has run in this folder yet (the transcript folder is missing), else
+    "capture-not-ready": a folder above Claude Code's transcripts belongs to another account or is written by a shared group
+    (observer_sources.preflight). The questions that turn the observer on are not asked then, because the user's answer could
+    not be read and nothing could be noted; `setup.py questions` says so once, with the command that mends it."""
+    import observer_sources
+    result = ctx.once("capture", lambda: observer_sources.preflight(ctx.root))
+    return "" if result.get("ready") or result.get("code") == "source-missing" else "capture-not-ready"
+
+
 def check_observer_level(ctx):
     """Settled when this folder's approval holds a chosen level. A folder enabled before 1.5.0 has an approval with none,
-    so the question is open for it, and the observer stays paused until the user answers (observer_runtime.paused)."""
+    so the question is open for it, and the observer stays paused until the user answers (observer_runtime.paused). Not
+    asked where capture is not ready (capture_gate)."""
     import observer_runtime
     state, reason, found = observer_entry(ctx)
     if state == NOT_ASKED:
         return state, reason, None
-    return (SETTLED if found.get("level") in observer_runtime.LEVELS else OPEN), "", None
+    if found.get("level") in observer_runtime.LEVELS:
+        return SETTLED, "", None
+    gate = capture_gate(ctx)
+    return (NOT_ASKED, gate, None) if gate else (OPEN, "", None)
 
 
 def check_paper_proposals(ctx):
@@ -341,7 +357,10 @@ def check_paper_proposals(ctx):
         return state, reason, None
     if stored.get("level") not in ("assistant", "everything"):
         return NOT_ASKED, "no-level", None
-    return (SETTLED if stored.get("strong_model") else OPEN), "", None
+    if stored.get("strong_model"):
+        return SETTLED, "", None
+    gate = capture_gate(ctx)
+    return (NOT_ASKED, gate, None) if gate else (OPEN, "", None)
 
 
 # ---------------------------------------------------------------- the registry

@@ -96,6 +96,13 @@ def feedback(store, ident, muted, root=None):
         return row
 
 
+# The fixed wording of the pointer. task_reminder.form builds from these, so that the two cannot drift apart.
+POINTER_HEAD = "Decision change. "
+WHY_SUGGESTED = "Possible connection by shared wording. Ask whether this work relies on the old decision."
+WHY_DIRECT = "The current work explicitly refers to the old decision. Check whether it still applies."
+POINTER_TAIL = " before advising. In chat, name the two choices and the affected words and cite their sources."
+
+
 def change_pointer(db, repo, allowed, packet, query):
     """One open target in fresh trusted material that the user specifically named."""
     import decision_impact
@@ -136,12 +143,11 @@ def change_pointer(db, repo, allowed, packet, query):
     _, group, item = matches[0]
     old, new = group["old"], group["successors"][0]
     suggested = item["relation"] == "suggested"
-    why = ("Possible connection by shared wording. Ask whether this work relies on the old decision."
-           if suggested else "The current work explicitly refers to the old decision. Check whether it still applies.")
+    why = WHY_SUGGESTED if suggested else WHY_DIRECT
     return {"reason": "possible_change" if suggested else "decision_change", "issue": old["issue"], "decision": old["id"],
             "successor_kind": new["kind"], "successor_issue": new["issue"], "successor": new["id"],
             "target_issue": item["issue"], "fingerprint": _digest([group["id"], item["id"], item["revision"]]),
-            "text": "Decision change. %s Earlier: %s Current: %s Work: %s. Read guidance.py context %s %s before advising. In chat, name the two choices and the affected words and cite their sources."
+            "text": (POINTER_HEAD + "%s Earlier: %s Current: %s Work: %s. Read guidance.py context %s %s" + POINTER_TAIL)
                     % (why, old["url"], new["url"], item["url"], group["id"], item["id"])}
 
 

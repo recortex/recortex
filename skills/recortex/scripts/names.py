@@ -32,6 +32,9 @@ SETUP_ANSWERS = "setup-answers.json"
 # 1.4.0: when `setup.py questions` last ran for a repository, in its folder of the hook state (the prompt hook's reminder reads it).
 SETUP_RUN = "setup-questions-run.json"
 MANUSCRIPT_BRANCH = "recortex-manuscript"
+# 1.7.0: whether the task reminder (the line about work that rests on a replaced decision) is added to prompts, per repository on
+# this machine (private folder of the configuration top, like the writing modes).
+TASK_REMINDERS = "task-reminders.json"
 # The plugin's environment variables, without the prefix. The three before the last are read only by the tests.
 # LINK_PAUSE is the seconds create_issues.py waits after each sub-issue link it writes (default 1, at most 10);
 # the tests set it to 0. SETUP_QUESTIONS set to 0, off, no or false switches the hook's line about the setup questions off.

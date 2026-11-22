@@ -162,6 +162,15 @@ def print_listing(store, as_json, emit, clean, header):
     return 0
 
 
+def _unreadable(result, note=None):
+    """A refusal for want of an answer says that the answer cannot be read here when that is why (observer_grants.refused);
+    any other result is returned as it is."""
+    if not result.get("code", "").endswith("unanswered"):
+        return result
+    import observer_grants
+    return observer_grants.refused(result, note=note) if note else observer_grants.refused(result, note=UNANSWERED)
+
+
 def act(store, repo, config, short, close):
     """Carry out a "yes" for a task item: open the task (the publisher, with the grant the hook recorded), or close the
     finished task through `close(issue)`. Returns the result as a dict with a `code`."""
@@ -175,7 +184,7 @@ def act(store, repo, config, short, close):
         try:
             result = observer_publisher.publish(repo, item["key"], config, main_session=True)
         except observer_publisher.PublishError as error:
-            return {"code": error.reason}
+            return _unreadable({"code": error.reason})
         # What waited for the task goes on: the events that marked its steps are ready again.
         went = []
         for event in store.events(states=["ready"], limit=8):
@@ -187,7 +196,7 @@ def act(store, repo, config, short, close):
         return {"code": "opened", "state": result.get("state"), "dependents": went}
     if item["kind"] == "task_close":
         if not store.has_grant(item["key"]):
-            return {"code": "close_unanswered"}
+            return _unreadable({"code": "close_unanswered"})
         done = close(item["issue"])
         if done.get("ok"):
             store.take_grant(item["key"])
@@ -209,7 +218,7 @@ def later(store, short, now, answered=False):
     if item["kind"] not in ("task_open", "task_close", "map"):
         return {"code": "other_kind", "kind": item["kind"]}
     if not (answered or store.take_grant(answer_key(item, "later"))):
-        return {"code": "later_unanswered", "note": UNANSWERED}
+        return _unreadable({"code": "later_unanswered"}, UNANSWERED)
     store.put_off(short, now + LATER_SECONDS)
     return {"code": "later", "until": int(now + LATER_SECONDS)}
 

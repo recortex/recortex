@@ -1464,7 +1464,7 @@ class StepCommandTests(Box):
         self.assertIn("question observer-level (added in 1.5.0; the answer is kept for: this machine and this folder)", done.stdout)
         self.put_state(machine={"status-line": self.entry("no")}, repos={REPO: {"observer-level": self.entry("no")}})
         self.assertEqual("no setup question is open\n", self.tool("setup.py", "questions").stdout)
-        self.assertEqual({"open": [], "unread": [], "count": 0, "run_noted": True},
+        self.assertEqual({"blocked": [], "open": [], "unread": [], "count": 0, "run_noted": True},
                          json.loads(self.tool("setup.py", "questions", "--json").stdout))
 
 

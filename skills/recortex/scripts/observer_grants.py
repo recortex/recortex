@@ -22,6 +22,7 @@ import time
 
 import field_sheet
 import observer_runtime as runtime
+import observer_sources
 import recortex
 import storage
 
@@ -38,6 +39,13 @@ UNANSWERED = ("recortex observer: turning the observer on, or raising its level 
               "answer to the question about it. Ask it as setup.py questions prints it (observer-level, or "
               "paper-proposals for the stronger model), and then run the command again. You can also run it yourself "
               "in a terminal outside Claude Code.")
+# The codes of a transcript that cannot be read here (observer_sources.UNREADABLE_CODES: the one fixed set). When the user's
+# answer cannot be read for one of them, asking again cannot help, and the refusal says so (UNREADABLE) instead of UNANSWERED.
+UNREADABLE_CODES = observer_sources.UNREADABLE_CODES
+UNREADABLE = ("recortex observer: your answer could not be read on this machine, so asking again will not help: Claude "
+              "Code's transcript did not pass the ownership checks (%s). In your own terminal, outside Claude Code, run "
+              "observer.py status --source-details to see why and observer.py trust-ancestor --failing to trust the "
+              "folders above it, or run this command there.")
 PASS = re.compile(r"[0-9a-f]{32}")
 ANSWER = re.compile(r"[A-Za-z0-9_-]{1,80}")
 
@@ -146,6 +154,57 @@ def take(folder, wanted, now=None):
         for kind, _ in wanted:
             state["spent"].append(entries.pop(kind)["answer"])
     return True
+
+
+def note_unreadable(folder, code, now=None):
+    """Note, for SECONDS, that the user's answer could not be read for the fixed `code`: {"code", "until"} under the folder's
+    entry. True when kept; False for a code off the set."""
+    if code not in UNREADABLE_CODES:
+        return False
+    now = time.time() if now is None else now
+    with _writer() as state:
+        state["folders"].setdefault(folder, {})["unreadable"] = {"code": code, "until": now + SECONDS}
+    return True
+
+
+def clear_unreadable(folder):
+    """Remove the note once an answer could be read again (it is only written when there is one to remove)."""
+    entries = _read().get(folder)
+    if isinstance(entries, dict) and "unreadable" in entries:
+        with _writer() as state:
+            entries = state["folders"].get(folder)
+            if isinstance(entries, dict):
+                entries.pop("unreadable", None)
+
+
+def unread_reason(folder, root=None, now=None):
+    """The code of the transcript problem that keeps the user's answer from being read, or "": the live note a hook left,
+    else the code that the capture check reports now when it is not ready and the code is in the set (`source-missing` is
+    not: a terminal run before any session has no transcript folder yet). Never raises."""
+    now = time.time() if now is None else now
+    try:
+        entry = _read().get(folder)
+        note = entry.get("unreadable") if isinstance(entry, dict) else None
+        if _live(note, now) and note.get("code") in UNREADABLE_CODES:
+            return note["code"]
+        result = observer_sources.preflight(root or recortex.project_root())
+        if not result.get("ready") and result.get("code") in UNREADABLE_CODES:
+            return result["code"]
+    except Exception:  # noqa: BLE001 - a diagnosis never stops the refusal it explains
+        pass
+    return ""
+
+
+def refused(result, root=None, note=UNANSWERED):
+    """`result`, a refusal whose code ends in `_unanswered`, as it is emitted: unchanged but for `note` when the user's answer
+    was simply not given, and with the code `..._answer_unreadable` (`answer_unreadable` for `answer_unanswered`), the fixed
+    `reason` and the UNREADABLE note when the answer cannot be read on this machine, which asking again does not mend."""
+    code = result.get("code", "")
+    reason = unread_reason(runtime.folder_key(root), root) if code.endswith("unanswered") else ""
+    if not reason:
+        return dict(result, note=note)
+    new = "answer_unreadable" if code == "answer_unanswered" else code.replace("_unanswered", "_answer_unreadable")
+    return dict(result, code=new, reason=reason, note=UNREADABLE % reason)
 
 
 def start_pass(folder, level, strong, now=None, given="session", hosts=""):
@@ -287,6 +346,12 @@ def record_from_hook(data):
         if label is None:
             continue
         text, labels = canonical(kind)
-        answer = observer_sources.answered(data, root, None, question_line(kind), label=label, text_is=text, labels_are=labels)
+        try:
+            answer = observer_sources.answered(data, root, None, question_line(kind), label=label, text_is=text, labels_are=labels)
+        except observer_sources.SourceError as error:
+            if str(error) in UNREADABLE_CODES:
+                note_unreadable(folder, str(error))   # the refusal then says that the answer cannot be read here
+            return
+        clear_unreadable(folder)
         if answer:
             put(folder, kind, value, answer)

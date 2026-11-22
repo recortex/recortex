@@ -632,10 +632,16 @@ def produce(event, data, budget, config, repo, hub):
             state[session] = entry
             save_state(repo, state)
             return text
+        # The task reminder has its own opt-in and needs no observer. It comes last, after what else the prompt carries, also when
+        # the prompt hook is off and when nothing else is printed; it has a cap of its own (task_reminder.CAP).
+        extra, slow = task_reminder_line(repo, config, db, record, data, entry, budget)
+        if slow:
+            extra = guidance.SKIPPED if not entry.get("skip_told") else ""
+            entry["skip_told"] = True
         if settings.get("enabled") is False:
             state[session] = entry
             save_state(repo, state)
-            return ""
+            return extra
         show = entry.get("key") != key or entry["count"] % every == 0
         if show:
             entry["key"] = key
@@ -651,9 +657,39 @@ def produce(event, data, budget, config, repo, hub):
         asked = setup_reminder(repo, config, record, entry, session, brief.CAPS["prompt-submit"] - used)
         state[session] = entry   # the reminder is marked in the entry before it is returned
         save_state(repo, state)
-        return "\n".join(parts + [asked] if asked else parts)
+        return "\n".join(parts + ([asked] if asked else []) + ([extra] if extra else []))
     finally:
         db.close()
+
+
+def observer_delivers(repo, config):
+    """True when this folder's observer approval holds and its advisory mode is `deliver`: the observer's own hook then delivers
+    the reminder about a changed decision, and the brief hook stays quiet so that nothing is said twice. Any doubt (no approval,
+    settings that do not validate, an error) is False."""
+    try:
+        import observer_runtime as runtime
+        effective = runtime.local_config(config)
+        options = runtime.settings(effective)
+        return bool(options["enabled"] and options["advisory_mode"] == "deliver" and runtime.approval_valid(repo, effective))
+    except Exception:  # noqa: BLE001 - a hook never fails over a reminder
+        return False
+
+
+def task_reminder_line(repo, config, db, record, data, entry, budget):
+    """(text, slow): the task reminder for this prompt of the main session, "" when there is none, and whether working it out
+    ran out of time. Nothing is done unless this machine chose it for this repository (task_reminder.read), the input holds no
+    agent_id or agent_type (a subagent's prompt), and the observer does not deliver it itself. It reads only the prompt and the
+    local index: no model call, no network. Any failure gives no line."""
+    try:
+        if not isinstance(data, dict) or data.get("agent_id") or data.get("agent_type"):
+            return "", False
+        import task_reminder
+        found = task_reminder.read(repo)
+        if found["state"] != "chosen" or found["mode"] != "on" or observer_delivers(repo, config):
+            return "", False
+        return task_reminder.line(db, repo, record.allowed, data.get("prompt"), entry, pointer_seconds(budget, "prompt-submit"))
+    except Exception:  # noqa: BLE001 - a hook never fails over a reminder
+        return "", False
 
 
 def pointer_seconds(budget, event):
