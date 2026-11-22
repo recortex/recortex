@@ -218,6 +218,15 @@ class NeverTests(Box):
                 st_mode=stat.S_IFREG | 0o600, st_uid=os.getuid(), st_gid=0), str(self.folder), None, trust))
             self.assertEqual(stat.S_IFDIR, stat.S_IFMT(info.st_mode))
 
+    def test_a_link_with_a_matching_entry_is_still_refused(self):
+        link = SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=FOREIGN, st_gid=0)
+        self.entry_for(self.shared, FOREIGN, 0, 0o777)
+        trust = sources.Trust()
+        self.assertFalse(trust.accepts(str(self.shared), link, str(self.folder)))
+        self.assertEqual("source-symlink", sources._problem(str(self.shared), link, str(self.folder), None, trust))
+        plain = SimpleNamespace(st_mode=stat.S_IFDIR | 0o777, st_uid=FOREIGN, st_gid=0)
+        self.assertTrue(sources.Trust().accepts(str(self.shared), plain, str(self.folder)))   # the same entry holds for a folder
+
     def test_the_project_folder_and_the_transcript_are_refused_by_trust_add(self):
         with self.assertRaises(sources.TrustError):
             sources.trust_add([str(self.folder)], str(self.project))

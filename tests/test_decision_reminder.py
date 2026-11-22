@@ -266,6 +266,27 @@ class HostileTests(Box):
         self.assertTrue(observer_advisory.POINTER_TAIL.endswith("cite their sources."))
 
 
+class CapTests(Box):
+    def test_a_line_of_the_right_form_that_is_over_its_cap_is_not_printed(self):
+        import index
+        repo = "o" * 39 + "/" + "n" * 100
+        self.assertTrue(recortex.valid_repo(repo))
+        url = "https://github.com/%s/issues/%d#issuecomment-%d" % (repo, 10 ** 17, 10 ** 17)
+        text = (observer_advisory.POINTER_HEAD + observer_advisory.WHY_DIRECT + " Earlier: " + url + " Current: " + url +
+                " Work: " + url + ". Read guidance.py context impact-1 " + "a" * 64 + observer_advisory.POINTER_TAIL)
+        self.assertGreater(len(text), task_reminder.CAP)
+        self.assertTrue(task_reminder.form(repo).fullmatch(text))   # the form alone would let it through
+        pointer = {"fingerprint": "b" * 64, "text": text}
+        db = index.connect(self.repo, create=False)
+        self.addCleanup(db.close)
+        with mock.patch.object(observer_advisory, "change_pointer", return_value=pointer):
+            self.assertEqual(("", False), task_reminder.line(db, repo, set(), "x y z", {}, 5))
+            short = dict(pointer, fingerprint="c" * 64, text=text.replace(str(10 ** 17), "1"))
+        self.assertLessEqual(len(short["text"]), task_reminder.CAP)
+        with mock.patch.object(observer_advisory, "change_pointer", return_value=short):
+            self.assertEqual((short["text"], False), task_reminder.line(db, repo, set(), "x y z", {}, 5))
+
+
 class SettingTests(Box):
     def tool(self, *args):
         return self.case.tool("setup.py", "task-reminder", *args, env={"CLAUDE_CONFIG_DIR": None})
