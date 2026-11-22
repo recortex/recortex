@@ -575,6 +575,13 @@ def _status(repo, config, loaded, store, options, details):
         out["project_switch"] = "off"
     if store is None:
         return dict(out, code="empty", action="status", dry_run=False, queue={}, tiers=tiers_report(options, None))
+    import observer_lease
+    held = observer_lease.status(store.folder)
+    if held:
+        out["host_lease"] = held   # another host's worker holds this folder: one fixed line, without the host's name
+    if store.get_control("worker_lease") == "unavailable":
+        out["host_lease_note"] = ("the host lease could not be made on this file system, so a worker of another host is not "
+                                  "kept off; the worker's own lock still applies")
     failed = store.acts_failed()   # acts the log could not take (their posts stand): a count and the UTC day of the last
     return dict(out, runtime_ready=runtime.tier_state(options, store)["middle"]["gate"],
                 tiers=tiers_report(options, store), acts_failed=failed["n"] if failed else 0,

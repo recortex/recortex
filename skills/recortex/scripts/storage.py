@@ -264,6 +264,49 @@ def key_path():
     return os.path.join(state_top(for_key=True), PRIVATE, KEY_NAME)
 
 
+def link_new_file(path, text):
+    """Create the private file `path` holding `text` in one step: written whole to a fresh temporary file with mode 0600 in
+    the same private folder, then hard-linked into place, so that nobody sees it half written and of two creators exactly one
+    wins (a link is atomic on NFS and on the cluster file systems, where an exclusive open is not). True when this call
+    created it, False when something is there already."""
+    target_folder = os.path.dirname(path)
+    check_path(target_folder)
+    descriptor, temporary = tempfile.mkstemp(dir=target_folder, prefix=".part-")
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def replace_file(path, text):
+    """write_file for a target that may be a damaged file or a link: what is there is not looked at and never followed, it is
+    replaced (the rename puts the new file in the place of the name). The folder is checked as for write_file."""
+    target_folder = os.path.dirname(path)
+    check_path(target_folder)
+    descriptor, temporary = tempfile.mkstemp(dir=target_folder, prefix=".part-")
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(temporary, path)
+    except BaseException:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        raise
+
+
 def key_identity():
     """(real path, inode) of the user key as this host sees it, the identity that an approval follows from host to host
     on a shared home folder. The device number is left out on purpose: a network mount gives each client its own.

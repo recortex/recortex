@@ -22,6 +22,7 @@ import observer_context
 import observer_holds
 import observer_jobs
 import observer_keeper
+import observer_lease
 import observer_publisher
 import lint_drafts
 import names
@@ -1564,8 +1565,18 @@ def run_once(repo, config, project_root=None, invoke_fn=None, settle_first=False
     if names.env(runtime.GUARD) == "1" or not options["enabled"] or not recortex.allowed_users(repo):
         return {"code": "disabled", "ready": []}
     with observer_store.Store(repo, config=config, max_bytes=options["max_pending_bytes"], max_pending=options["max_pending_observations"]) as store:
+        # The host lease is a gate in front of the worker's own lock and never replaces it: with one approval valid on every
+        # host of a shared mount, only one host's worker works on this queue at a time (observer_lease). Another host's lease
+        # that holds: leave quietly, take no lock and call no model.
+        if observer_lease.peek(store.folder) is not None:
+            return {"code": "other-host", "ready": []}
+        lease = None
         try:
             with observer_store._exclusive_lock(store.folder, "worker.lock"):
+                lease = observer_lease.acquire(store.folder)
+                if not lease.held:
+                    return {"code": "other-host", "ready": []}
+                store.set_control("worker_lease", "unavailable" if lease.state == "unavailable" else "")
                 if not runtime.approval_valid(repo, config):
                     store.set_control("worker_degraded", "approval")
                     return {"code": "approval", "ready": []}
@@ -1589,6 +1600,8 @@ def run_once(repo, config, project_root=None, invoke_fn=None, settle_first=False
                 if not refresh_record(repo, config, store, options):
                     store.set_control("worker_degraded", "record_unavailable")
                     return {"code": "record-unavailable", "ready": []}
+                if not lease.renew():
+                    return {"code": "other-host", "ready": []}
                 report = _process(repo, config, project_root, invoke_fn)
                 store.set_control("worker_degraded", "" if report["code"] in ("ok", "no-sources", "paused")
                                   else report["code"].replace("-", "_"))
@@ -1601,6 +1614,8 @@ def run_once(repo, config, project_root=None, invoke_fn=None, settle_first=False
                             subprocess.TimeoutExpired):
                         report["map"] = "map_unavailable"
                     store.set_control(observer_map.control("last"), {"at": time.time(), "code": report["map"]})
+                if not lease.renew():
+                    return dict(report, code="other-host")
                 approved = runtime.approval_valid(repo, config)
                 if (approved and runtime.tier_state(options, store)["middle"]["gate"]
                         and options["mode"] == "automatic" and not store.get_control("publication_paused", False)):
@@ -1627,6 +1642,8 @@ def run_once(repo, config, project_root=None, invoke_fn=None, settle_first=False
                                 store.transition(event["eventkey"], "deferred", reason=reason)
                                 continue
                             break
+                    if not lease.renew():
+                        return dict(report, code="other-host")
                     posted = bool(store.get_control("sync_needed", False))   # a verified post set it; the sync clears it
                     # The manuscript keeper (spec 7) is considered here, after the pass and the publisher; it never raises
                     # and never writes the paper's text, it only leaves a draft that waits for the user's answer.
@@ -1650,3 +1667,6 @@ def run_once(repo, config, project_root=None, invoke_fn=None, settle_first=False
                 return {"code": "worker-busy", "ready": []}
             store.set_control("worker_degraded", "store_failure")
             raise
+        finally:
+            if lease is not None:
+                lease.release()
