@@ -58,9 +58,21 @@ printed as they are; without it the JSON of the contents API (type, encoding, si
 commit that is the ref of some key in "files" (it answers itself); any other ref answers "Not Found". The calls are in
 the state's "log" like every other; FAKE_GH_FAIL_ON="api repos/octo-org/octo-repo/contents" fails the fetches alone,
 and FAKE_GH_SLEEP slows every call.
+Publishing a file (publish.py): `api -X PUT repos/<owner>/<name>/contents/<path> --input -` takes the JSON {"message", "branch",
+"content" (base64), "sha"} on standard input and stores the file as state["files"]["<branch>:<path>"]. A branch that is not in
+state["branches"] (default ["main"]) answers 404 "Branch not found"; a file that is there already is refused with 422 "\"sha\"
+wasn't supplied" when no sha comes with it and with 409 when the sha is not the file's own (the git blob hash of its bytes); the
+answer holds {"content": {"path", "sha"}, "commit": {"sha", "message"}}. What each write asked for is kept in state["puts"]
+(path, branch, message, whether a sha was given, the bytes' sha). The contents answer (without the raw media type) gains "sha",
+the blob hash of the file. `api repos/<owner>/<name>/branches/<name>` answers {"name": ...} for a branch in state["branches"] and
+"Not Found" for another. The repository answer gains "permissions": {"push": ...} from the state's "push" (default true; false also
+when FAKE_GH_GIT_NO_PUSH is 403 or 404). A state "repos" entry ("owner/name": {"private": ..., "push": ...}) answers for that
+repository alone. FAKE_GH_PUT_FAIL=1 makes the write itself exit 1 after storing nothing; FAKE_GH_PUT_CORRUPT=1
+stores the file with its last byte changed, as a GitHub that does not keep what it was sent.
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -84,6 +96,11 @@ def load():
 def save(state):
     with open(os.environ["FAKE_GH_STATE"], "w", encoding="utf-8") as handle:
         json.dump(state, handle, indent=1)
+
+
+def blob_sha(data):
+    """The git blob hash of some bytes: what GitHub calls the sha of a file."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
 def option(args, name, default=None, many=False):
@@ -455,8 +472,46 @@ def main():
             fail("gh: %s (HTTP %d)" % (refusal.message, refusal.status))
         jq = option(args, "--jq")
         if re.fullmatch(r"repos/[^/]+/[^/?]+", path):
-            private = bool(state.get("private", True))
-            print(("true" if private else "false") if jq == ".private" else json.dumps({"private": private}))
+            about = state.get("repos", {}).get(path.split("/", 1)[1], {})   # one repository's own "private" and "push"
+            private = bool(about.get("private", state.get("private", True)))
+            push = bool(about.get("push", state.get("push", True))) and os.environ.get("FAKE_GH_GIT_NO_PUSH") not in ("403", "404")
+            print(("true" if private else "false") if jq == ".private" else
+                  json.dumps({"private": private, "permissions": {"push": push}}))
+            return
+        branch = re.fullmatch(r"repos/[^/]+/[^/]+/branches/([^?]+)", path)
+        if branch:
+            if branch.group(1) not in state.get("branches", ["main"]):
+                sys.stdout.write('{"message":"Branch not found","status":"404"}')
+                fail("gh: Branch not found (HTTP 404)")
+            print(json.dumps({"name": branch.group(1)}))
+            return
+        put = re.fullmatch(r"repos/[^/]+/[^/]+/contents/([^?]+)", path)
+        if put and "-X" in args and option(args, "-X") == "PUT":
+            sent = json.loads(sys.stdin.read() or "{}")
+            name, where = str(sent.get("branch", "")), put.group(1)
+            if name not in state.get("branches", ["main"]):
+                sys.stdout.write('{"message":"Branch %s not found","status":"404"}' % name)
+                fail("gh: Branch not found (HTTP 404)")
+            data = base64.b64decode(sent.get("content", ""))
+            key = "%s:%s" % (name, where)
+            old = state.get("files", {}).get(key)
+            if old is not None:
+                held = base64.b64decode(old["base64"] if isinstance(old, dict) else old)
+                if not sent.get("sha"):
+                    sys.stdout.write('{"message":"Invalid request. \\"sha\\" wasn\'t supplied.","status":"422"}')
+                    fail("gh: Invalid request. \"sha\" wasn't supplied. (HTTP 422)")
+                if sent["sha"] != blob_sha(held):
+                    sys.stdout.write('{"message":"%s does not match","status":"409"}' % where)
+                    fail("gh: %s does not match (HTTP 409)" % where)
+            if os.environ.get("FAKE_GH_PUT_FAIL"):
+                fail("gh: simulated failure (HTTP 502)")
+            stored = data[:-1] + bytes([data[-1] ^ 1]) if os.environ.get("FAKE_GH_PUT_CORRUPT") and data else data
+            state.setdefault("files", {})[key] = base64.b64encode(stored).decode("ascii")
+            state.setdefault("puts", []).append({"path": where, "branch": name, "message": sent.get("message"),
+                                                 "sha_given": bool(sent.get("sha")), "sha": blob_sha(data)})
+            print(json.dumps({"content": {"path": where, "sha": blob_sha(stored)},
+                              "commit": {"sha": blob_sha(b"commit" + data), "message": sent.get("message")}}))
+            save(state)
             return
         match = re.fullmatch(r"repos/([^/]+/[^/]+)/issues/comments/(\d+)", path)
         listing = re.fullmatch(r"repos/([^/]+/[^/]+)/issues/(\d+)/comments(\?.*)?", path)
@@ -535,7 +590,7 @@ def main():
                 sys.stdout.flush()
                 sys.stdout.buffer.write(data)
             else:
-                print(json.dumps({"type": "file", "encoding": "base64", "size": len(data),
+                print(json.dumps({"type": "file", "encoding": "base64", "size": len(data), "sha": blob_sha(data),
                                   "content": base64.b64encode(data).decode("ascii")}))
             return
         else:

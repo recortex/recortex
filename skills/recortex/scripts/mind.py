@@ -3746,6 +3746,64 @@ def write_paper(db, config, repo, args):
     return 0
 
 
+class PageError(ValueError):
+    """A page that cannot be built, with one of this module's own fixed lines as its text."""
+
+
+def load_model(config, repo, allowed, early=None):
+    """(model, None) for the page of `repo`, built from its local index: the index is opened, checked and closed here, and the
+    one place that does it for `mind.py` and for `public_text` alike. `early(db)`, when given, runs while the index is open and
+    may return a value that ends the work (main's --paper): then (None, that value). Raises PageError with a fixed line when
+    the index is refused, missing or not ready."""
+    try:
+        db = index.connect(repo, create=False)
+    except storage.StorageError:
+        raise PageError(REFUSED)
+    if db is None:
+        raise PageError(NO_INDEX)
+    try:
+        if not index.mind_ready(db):
+            raise PageError(index.NOT_READY)
+        if early is not None:
+            done = early(db)
+            if done is not None:
+                return None, done
+        return mind_model.build(db, repo, allowed, datetime.date.today(),
+                                recortex.shipped_profiles(config.get("profiles")), config), None
+    finally:
+        db.close()
+
+
+def finish(model, config, repo, fetch=False, public=False):
+    """(the page's text, the reasons figures were not shown) for a built model. The page that is made for the public has none
+    of this machine's own numbers: no usage view and no log of what the observer did. The pictures are the ones kept here, and
+    only with `fetch` are the missing ones fetched (never for a public page)."""
+    if public:
+        model["usage"], model["acts"] = None, []
+    else:
+        try:
+            model["usage"] = usage.report(repo, config)   # numbers and fixed words; the page tells them as they are
+        except Exception:  # noqa: BLE001 - the page is built without the usage view's numbers, never not at all
+            model["usage"] = None
+        try:
+            model["acts"] = usage.acts_report(repo)   # what the observer did, for the end of the to-do view
+        except Exception:  # noqa: BLE001
+            model["acts"] = []
+    wanted = mind_figures.wanted(model)
+    pictures, reasons = mind_figures.load(wanted, repo, None, fetch=fetch and not public)
+    return render(model, pictures), reasons
+
+
+def public_text(config, repo, allowed):
+    """(text, counts) of the static page as it would be published: the same steps as mind.py, from the index to render, with
+    no usage numbers, no log of the observer's acts and no interactive part, and only the pictures that are kept. Nothing is
+    written and no file is read. `counts` holds the numbers of memories and threads. Raises PageError with one of this module's
+    fixed lines when the page cannot be built."""
+    model, _ = load_model(config, repo, allowed)
+    text, _ = finish(model, config, repo, public=True)
+    return text, {"memories": model["counts"]["memories"], "threads": model["counts"]["threads"]}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repo", help="owner/name (default: from .recortex.json)")
@@ -3777,38 +3835,21 @@ def main(argv=None):
             versions.fetch(config, repo)
         except Exception as error:  # noqa: BLE001
             print("versions: the versions of the text could not be fetched (%s); the page shows what is kept." % type(error).__name__)
-    try:
-        db = index.connect(repo, create=False)
-    except storage.StorageError:
-        print(REFUSED)
-        return 1
-    if db is None:
-        print(NO_INDEX)
-        return 1
-    try:
-        if not index.mind_ready(db):
-            print(index.NOT_READY)
-            return 1
+    def early(db):
         if args.version and not args.paper:
             print("mind: --version goes with --paper")
             return 1
         if args.paper:
             return write_paper(db, config, repo, args)
-        model = mind_model.build(db, repo, allowed, datetime.date.today(),
-                                 recortex.shipped_profiles(config.get("profiles")), config)
-    finally:
-        db.close()
+        return None
     try:
-        model["usage"] = usage.report(repo, config)   # numbers and fixed words; the page tells them as they are
-    except Exception:  # noqa: BLE001 - the page is built without the usage view's numbers, never not at all
-        model["usage"] = None
-    try:
-        model["acts"] = usage.acts_report(repo)   # what the observer did, for the end of the to-do view
-    except Exception:  # noqa: BLE001
-        model["acts"] = []
-    wanted = mind_figures.wanted(model)
-    pictures, reasons = mind_figures.load(wanted, repo, None, fetch=bool(args.sync or args.figures))
-    text = render(model, pictures)
+        model, done = load_model(config, repo, allowed, early=early)
+    except PageError as error:
+        print(str(error))
+        return 1
+    if done is not None:
+        return done
+    text, reasons = finish(model, config, repo, fetch=bool(args.sync or args.figures))
     path = os.path.join(index.index_dir(repo), "mind.html")
     try:
         storage.write_file(path, text)
