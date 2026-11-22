@@ -1047,6 +1047,97 @@ def observer_log_lines(repo, config):
             "comments it posted stand in GitHub. observer.py status shows the count." % (failed["n"], failed["day"])]
 
 
+COULD_NOT_CHECK = "could not be checked"
+SEVERAL_HOSTS = "a shared home folder needs file locks that all hosts see (NFS, or Lustre mounted with flock)"
+
+
+def _row(label, work):
+    """One line of the summary: `work()` gives its words, and a part that cannot be worked out says so."""
+    try:
+        return "  %s: %s" % (label, work())
+    except Exception:  # noqa: BLE001 - the summary never raises, whatever it reads
+        return "  %s: %s" % (label, COULD_NOT_CHECK)
+
+
+def machine_summary(repo, config, problems):
+    """What works on this machine, in plain words, for --doctor: the record brief, the task reminder, the line about the dashboard,
+    taking notes, the answers given in a session, the usage of the plugin's subagents, the observer's approval and the hosts.
+    Fixed words, and numbers and codes from fixed sets; a path appears only inside the command to run, which is the plugin's own
+    script. Never raises: a part that cannot be worked out prints that it could not be checked."""
+    import observer_runtime as runtime
+    import observer_sources
+    import task_reminder
+    root = os.path.realpath(recortex.project_root())
+
+    def capture():
+        result = observer_sources.preflight(root)
+        if result.get("ready"):
+            return "ready", "", ""
+        if result.get("code") == "source-missing":
+            return "ready once a session has run here", "", ""
+        issue = result.get("issues", [result])[0]
+        run = ("%s ; then the same with --yes" % observer_sources.trust_commands()[0] if result.get("fix") else
+               "python3 %s status --source-details" % os.path.join(os.path.dirname(os.path.abspath(__file__)), "observer.py"))
+        return ("not ready: %s at %s. Run in your own terminal: %s" % (result.get("code"), issue.get("boundary", "ancestor"), run),
+                result.get("code"), "x")
+
+    def reminder():
+        found = task_reminder.read(repo)
+        if found["state"] == "unreadable":
+            return "cannot be read"
+        if observer_delivers(repo, config):
+            return "delivered by the observer"
+        if found["state"] == "chosen" and found["mode"] == "on":
+            return "on"
+        return "off (setup.py task-reminder set --mode on --yes turns it on)"
+
+    def dashboard():
+        hook = config.get("prompt_hook")
+        return "off with the prompt hook" if isinstance(hook, dict) and hook.get("enabled") is False else "on"
+
+    def grants():
+        words, code, blocked = capture()
+        return ("cannot be read, for the same reason; run the observer's commands in your own terminal until then"
+                if blocked else "can be read")
+
+    def measured():
+        note = usage.unmeasured(repo)
+        if note is None:
+            return "measured"
+        return "not measured since %s (%s)" % (time.strftime("%Y-%m-%d", time.gmtime(note[0])), note[1])
+
+    def approval():
+        local = runtime.local_config(config)
+        entry = runtime.stored_approval()
+        if entry is None:
+            return "none for this folder"
+        reason = runtime.approval_reason(repo, local)
+        if not reason:
+            return "holds here (%s)" % runtime.BINDING_NOTES[runtime.stored_binding(entry)]
+        return "does not hold: %s" % runtime.approval_note(reason, entry)
+
+    lines = ["on this machine:",
+             "  record brief (session start, prompts, subagents): %s" % (
+                 "works" if not problems else "does not work: %d problem(s) below" % len(problems)),
+             _row("task reminder", reminder), _row("line about the dashboard on prompts", dashboard),
+             _row("observer notes (capture)", lambda: capture()[0]),
+             _row("answers given in a session (grants)", grants),
+             _row("usage of the plugin's subagents", measured), _row("observer approval", approval),
+             "  several hosts: %s" % SEVERAL_HOSTS]
+    try:
+        import observer_lease
+        note = observer_lease.mount_note(storage.state_top(for_key=True))
+        if note:
+            lines.append("  several hosts: %s" % note)
+        folder = storage.folder(storage.state_top(), storage.repo_folder(repo.lower()), "observer", create=False, tighten=False)
+        held = observer_lease.status(folder) if folder else ""
+        if held:
+            lines.append("  observer worker: %s" % held)
+    except Exception:  # noqa: BLE001
+        lines.append("  several hosts: %s" % COULD_NOT_CHECK)
+    return lines
+
+
 def doctor():
     """Print what the hooks depend on. Returns 1 when something keeps the brief from being shown."""
     problems = []
@@ -1184,6 +1275,8 @@ def doctor():
         print("last background sync: none recorded")
     if error_line:
         print("last error line of the sync log: %s" % index.clean(error_line, 300))
+    for line in machine_summary(repo, config, problems):
+        print(line)
     for problem in problems:
         print("problem: %s" % problem)
     print("result: %s" % ("the hooks can show the brief" if not problems else "%d problem(s) above" % len(problems)))
