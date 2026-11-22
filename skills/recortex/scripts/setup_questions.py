@@ -74,6 +74,9 @@ REASONS = {
     "no-level": "the observer has no level of Assistant or Everything for this folder",
     "approvals-unreadable": "the approvals of the observer cannot be read",
     "check-failed": "the check could not be made",
+    "reminder-unreadable": "the task reminder setting of this machine cannot be read",
+    "no-map-files": "no project document with a name the map looks for",
+    "no-other-status-line": "the settings have no status line of another tool",
     "capture-not-ready": "notes cannot be taken on this machine yet: a folder above Claude Code's transcripts belongs to "
                          "another account or can be written by a shared group",
 }
@@ -276,26 +279,55 @@ def check_labels(ctx):
     return OPEN, "", None
 
 
-def check_status_line(ctx):
+def claude_settings(ctx):
+    """("missing", None), ("unusable", None) or ("ok", the settings as a dict): the user's Claude Code settings.json, read once
+    for the questions about the status line (a symlink, a file over SETTINGS_CAP, a file that does not parse and one that is not
+    an object are "unusable")."""
     import setup
-    target = setup.claude_settings_file()
-    try:
-        info = os.lstat(target)
-    except FileNotFoundError:
+
+    def read_it():
+        target = setup.claude_settings_file()
+        try:
+            info = os.lstat(target)
+        except FileNotFoundError:
+            return "missing", None
+        except OSError:
+            return "unusable", None
+        if not stat.S_ISREG(info.st_mode) or info.st_size > SETTINGS_CAP:
+            return "unusable", None
+        try:
+            descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+                data = json.loads(handle.read(SETTINGS_CAP + 1))
+        except (OSError, ValueError, RecursionError):
+            return "unusable", None
+        return ("ok", data) if isinstance(data, dict) else ("unusable", None)
+    return ctx.once("claude-settings", read_it)
+
+
+def check_status_line(ctx):
+    state, data = claude_settings(ctx)
+    if state == "missing":
         return OPEN, "", None
-    except OSError:
-        return NOT_ASKED, "settings-unusable", None
-    if not stat.S_ISREG(info.st_mode) or info.st_size > SETTINGS_CAP:
-        return NOT_ASKED, "settings-unusable", None
-    try:
-        descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-            data = json.loads(handle.read(SETTINGS_CAP + 1))
-    except (OSError, ValueError, RecursionError):
-        return NOT_ASKED, "settings-unusable", None
-    if not isinstance(data, dict):
+    if state == "unusable":
         return NOT_ASKED, "settings-unusable", None
     return (SETTLED if "statusLine" in data else OPEN), "", None
+
+
+def check_status_line_combine(ctx):
+    """Asked when the user's settings already hold a status line that is not recortex's: today that case counts as settled for
+    `status-line` and the user never learns of the snippet that combines the two. Settled when the status line is an object
+    whose command holds both `recortex` and `statusline.py`."""
+    state, data = claude_settings(ctx)
+    if state == "unusable":
+        return NOT_ASKED, "settings-unusable", None
+    if state == "missing" or "statusLine" not in data:
+        return NOT_ASKED, "no-other-status-line", None
+    line = data["statusLine"]
+    command = line.get("command") if isinstance(line, dict) else None
+    if isinstance(command, str) and "recortex" in command and "statusline.py" in command:
+        return SETTLED, "", None
+    return OPEN, "", None
 
 
 def observer_entry(ctx):
@@ -363,6 +395,54 @@ def check_paper_proposals(ctx):
     return (NOT_ASKED, gate, None) if gate else (OPEN, "", None)
 
 
+def check_task_reminder(ctx):
+    """Asked until the user chose, here or in a terminal under 1.6.0 (the observer's advisory mode of this folder is shadow or
+    deliver): the reminder has its own setting and needs no observer."""
+    import task_reminder
+    found = task_reminder.read(ctx.repo)
+    if found["state"] == "unreadable":
+        return NOT_ASKED, "reminder-unreadable", None
+    if found["state"] == "chosen":
+        return SETTLED, "", None
+    state, reason, stored = observer_entry(ctx)
+    if state == OPEN and stored.get("advisory_mode") in ("shadow", "deliver"):
+        return SETTLED, "", None
+    return OPEN, "", None
+
+
+def check_map_files(ctx):
+    """Settled once this folder and repository have a selection (an empty one counts). Else asked only when a file of the folder
+    has a name the map looks for (project_map_sources.SUGGESTED_NAMES), found from names alone: no file is read and no program
+    is started."""
+    import project_map_sources
+    import setup
+    try:
+        path = project_map_sources.scope_path(ctx.root, ctx.repo)
+        if path and storage.check_path(path, "file"):
+            return SETTLED, "", None
+    except (storage.StorageError, ValueError, OSError):
+        return NOT_ASKED, "check-failed", None
+
+    def names_found():
+        return [name for name, _ in setup.names_in(ctx.root) if project_map_sources.valid(name)
+                and os.path.splitext(os.path.basename(name))[0].lower() in project_map_sources.SUGGESTED_NAMES]
+    shown = [name for name in ctx.once("map-files", names_found) if EVIDENCE.fullmatch(name)][:6]
+    return (OPEN, "", shown) if shown else (NOT_ASKED, "no-map-files", None)
+
+
+def check_map_upkeep(ctx):
+    """Asked at Assistant and Everything, until the stored map mode is shadow or automatic; not where capture is not ready."""
+    state, reason, stored = observer_entry(ctx)
+    if state == NOT_ASKED:
+        return state, reason, None
+    if stored.get("level") not in ("assistant", "everything"):
+        return NOT_ASKED, "no-level", None
+    if stored.get("map_mode") in ("shadow", "automatic"):
+        return SETTLED, "", None
+    gate = capture_gate(ctx)
+    return (NOT_ASKED, gate, None) if gate else (OPEN, "", None)
+
+
 # ---------------------------------------------------------------- the registry
 
 class Option:
@@ -370,8 +450,9 @@ class Option:
     session recommends, and the commands to run first (each a tuple of words; a word in <angle brackets> is for the
     session to fill in)."""
 
-    def __init__(self, label, answer, commands=(), recommended=False, note=""):
+    def __init__(self, label, answer, commands=(), recommended=False, note="", description=""):
         self.label, self.answer, self.commands, self.recommended, self.note = label, answer, commands, recommended, note
+        self.description = description   # fixed, ASCII, 20 to 120 characters: Claude Code's question tool needs one for each option
 
 
 class Question:
@@ -384,11 +465,14 @@ def dry_then_real(*words):
     return (tuple(words) + ("--dry-run",), tuple(words) + ("--yes",))
 
 
-def level_option(level, label, recommended):
+LATER = "Ask again in seven days."
+
+
+def level_option(level, label, recommended, description=""):
     return Option(label, "yes", dry_then_real("setup.py", "observer", "--level", level), recommended,
                   "Other: \"no\" is recorded as no for good; \"shadow\" turns it on at Notes only without posting "
                   "(--level notes --mode shadow); the user may name other models (--model for the note-taking calls, "
-                  "--sort-model for the sorting calls).")
+                  "--sort-model for the sorting calls).", description)
 
 
 QUESTIONS = (
@@ -397,10 +481,13 @@ QUESTIONS = (
         "Should recortex write the text of this project's paper (Methods, Results, Discussion and Limitations of the "
         "topic bodies, from the plan and the record)? Review: it drafts, shows each change and writes it after your yes "
         "in the chat. Autonomous: it writes without asking. Off: it writes nothing. {consent}",
-        (Option("Review", "yes", (("setup.py", "writing", "set", "--mode", "review", "--yes"),), True),
-         Option("Autonomous", "yes", (("setup.py", "writing", "set", "--mode", "autonomous", "--yes"),)),
-         Option("Off", "no", (("setup.py", "writing", "set", "--mode", "off", "--yes"),)),
-         Option("Later", "later"))),
+        (Option("Review", "yes", (("setup.py", "writing", "set", "--mode", "review", "--yes"),), True,
+                description="Drafts each change, shows it, and writes it after your yes in the chat."),
+         Option("Autonomous", "yes", (("setup.py", "writing", "set", "--mode", "autonomous", "--yes"),),
+                description="Writes the text without asking; every change stays in the record's history."),
+         Option("Off", "no", (("setup.py", "writing", "set", "--mode", "off", "--yes"),),
+                description="Writes nothing; you write the paper's text yourself."),
+         Option("Later", "later", description=LATER))),
     Question(
         "own-paper", "1.3.0", "repo", "the project file", check_own_paper,
         "Does the author keep a manuscript file of their own (LaTeX, Markdown or Word) that recortex should know about? "
@@ -408,32 +495,37 @@ QUESTIONS = (
         "only when the author asks.",
         (Option("Yes", "yes", (("own_paper.py", "where", "--set", "<path of the file>", "--dry-run"),
                                ("own_paper.py", "where", "--set", "<path of the file>", "--yes")),
-                note="The user names the file; no recommendation."),
-         Option("No", "no", (("own_paper.py", "where", "--set", "no", "--yes"),)),
-         Option("Later", "later"))),
+                note="The user names the file; no recommendation.",
+                description="You name the file; recortex only reads it and says when the record's text has moved on."),
+         Option("No", "no", (("own_paper.py", "where", "--set", "no", "--yes"),),
+                description="There is no such file; recortex does not ask again."),
+         Option("Later", "later", description=LATER))),
     Question(
         "manuscript-profile", "1.3.0", "repo", "the project file", check_manuscript_profile,
         "recortex: paper or manuscript files now exist in this project ({evidence}), and its setup has no manuscript profile. Add "
         "it? That adds the profile and its labels to the project file, with the plan of the paper and the writing of "
         "its text to follow; the deliverables the project has stay as they are.",
-        (Option("Yes", "yes", dry_then_real("setup.py", "apply", "--answers", "<the answers file below>"), True),
-         Option("No", "no"),
-         Option("Later", "later"))),
+        (Option("Yes", "yes", dry_then_real("setup.py", "apply", "--answers", "<the answers file below>"), True,
+                description="Adds the manuscript profile and its labels; what the project has stays as it is."),
+         Option("No", "no", description="Keeps the setup as it is; recortex does not ask again."),
+         Option("Later", "later", description=LATER))),
     Question(
         "labels", "1.2.0", "repo", "GitHub, noted on this machine", check_labels,
         "recortex: labels that this project's profiles use are missing on GitHub ({missing}). Create them? setup_labels.py "
         "creates only the missing ones and never changes or deletes an existing label.",
-        (Option("Yes", "yes", (("setup_labels.py", "--dry-run"), ("setup_labels.py",)), True),
-         Option("No", "no"),
-         Option("Later", "later"))),
+        (Option("Yes", "yes", (("setup_labels.py", "--dry-run"), ("setup_labels.py",)), True,
+                description="Creates only the missing labels; never changes or deletes one."),
+         Option("No", "no", description="Leaves the labels on GitHub as they are."),
+         Option("Later", "later", description=LATER))),
     Question(
         "status-line", "1.2.0", "machine", "this machine", check_status_line,
         "Show recortex in the Claude Code status line, with the record's age? It copies one small script to your "
         "configuration folder and adds a statusLine entry to your Claude Code settings.json, only when that file has "
         "none.",
-        (Option("Yes", "yes", dry_then_real("setup.py", "status-line"), True),
-         Option("No", "no"),
-         Option("Later", "later"))),
+        (Option("Yes", "yes", dry_then_real("setup.py", "status-line"), True,
+                description="Copies one small script and adds a statusLine entry to your Claude Code settings."),
+         Option("No", "no", description="Leaves your settings as they are."),
+         Option("Later", "later", description=LATER))),
     Question(
         "observer-level", "1.5.0", "repo", "this machine and this folder", check_observer_level,
         "Turn on the recortex observer (experimental)? It takes notes of the conversation (the prompts you type, the agent's "
@@ -447,19 +539,68 @@ QUESTIONS = (
         "for the project (with an API key or another provider set, they are billed to it instead), and it needs the "
         "repository in your trusted list. An observer you turned on with an earlier version stays paused until you "
         "choose.",
-        (level_option("everything", "Everything (Recommended)", True),
-         level_option("assistant", "Assistant", False),
-         level_option("notes", "Notes only", False),
-         Option("Later", "later"))),
+        (level_option("everything", "Everything (Recommended)", True,
+                      "Notes and to-dos, and it opens and closes tasks and keeps the board and links itself."),
+         level_option("assistant", "Assistant", False,
+                      "Notes and a to-do list with checkmarks; it asks before it opens or closes a task."),
+         level_option("notes", "Notes only", False,
+                      "Memories and the status summary; it asks before it posts a memory it holds."),
+         Option("Later", "later", description=LATER))),
     Question(
         "paper-proposals", "1.5.0", "repo", "this machine and this folder", check_paper_proposals,
         "May recortex draft a change of the paper's text in the background when something notable changes for a part, "
         "and ask you before anything is written? It uses a stronger model (opus), at most {strong} calls a day, and "
         "proposes at most {proposals} changes a day.",
         (Option("Yes (Recommended)", "yes", dry_then_real("setup.py", "observer", "--strong", "opus"), True,
-                "Other: the user names another model, and it replaces opus in both commands."),
-         Option("No", "no"),
-         Option("Later", "later"))),
+                "Other: the user names another model, and it replaces opus in both commands.",
+                description="Drafts changes of the paper's text with opus; nothing is written without your yes."),
+         Option("No", "no", description="No drafts of the paper's text in the background."),
+         Option("Later", "later", description=LATER))),
+    Question(
+        "task-reminder", "1.7.0", "repo", "this machine and this repository", check_task_reminder,
+        "Remind this session when a prompt touches work that rests on a decision the record later changed? recortex "
+        "then adds one line to that prompt with the addresses of the earlier decision, the current one and the work, so "
+        "that the session checks before it advises. It reads your prompt and the local copy of the record on this machine, "
+        "makes no model call, posts nothing, and needs no observer.",
+        (Option("Yes (Recommended)", "yes", (("setup.py", "task-reminder", "set", "--mode", "on", "--yes"),), True,
+                description="Adds one line to a matching prompt; no model call, nothing posted, kept on this machine."),
+         Option("No", "no", (("setup.py", "task-reminder", "set", "--mode", "off", "--yes"),),
+                description="No reminders on prompts."),
+         Option("Later", "later", description=LATER))),
+    Question(
+        "map-files", "1.7.0", "repo", "this machine and this folder", check_map_files,
+        "May recortex read the headings of project documents you choose for the Project Map ({files})? Only the "
+        "files you pick are read, only their headings, on this machine, and nothing is posted until you accept a map "
+        "change.",
+        (Option("Choose files", "yes", (("setup.py", "map-files"), ("setup.py", "map-files", "--select", "<each chosen path>",
+                                                                    "--yes")), True,
+                "Ask which of the listed files as one multi-select question; repeat --select for each.",
+                description="You pick the files; only their headings are read, on this machine."),
+         Option("No files", "no", (("setup.py", "map-files", "--clear", "--yes"),),
+                description="The map is built from your goals and the record only."),
+         Option("Later", "later", description=LATER))),
+    Question(
+        "map-upkeep", "1.7.0", "repo", "this machine and this folder", check_map_upkeep,
+        "Let the recortex observer keep the Project Map current? Automatic: it adds a branch or renames one on its "
+        "own when your typed words and a trusted record both support it and a second check agrees; every move, merge, "
+        "split, deletion and uncertain change waits for your yes. Suggest only: it keeps its proposals on this machine and "
+        "changes nothing. Both use the note-taking calls, within the same daily caps.",
+        (Option("Automatic (Recommended)", "yes", (("observer.py", "map-mode", "automatic"),
+                                                   ("observer.py", "map-mode", "automatic", "--yes")), True,
+                description="Adds and renames branches after a second check; every other change waits for your yes."),
+         Option("Suggest only", "yes", (("observer.py", "map-mode", "shadow"), ("observer.py", "map-mode", "shadow", "--yes")),
+                description="Keeps proposals on this machine for you to read; changes nothing on GitHub."),
+         Option("No", "no", description="The map changes only when you ask."),
+         Option("Later", "later", description=LATER))),
+    Question(
+        "status-line-combine", "1.7.0", "machine", "this machine", check_status_line_combine,
+        "Your Claude Code settings already have a status line that does not show recortex. Show the one line to add "
+        "to it, so that it also shows whether the record is on and how old it is? recortex changes no file for this.",
+        (Option("Show how (Recommended)", "yes", (("setup.py", "status-line", "--dry-run"),), True,
+                "Show the user the snippet it prints; change their status line only if they ask.",
+                description="Prints the one line to add to your own status line; changes no file."),
+         Option("No", "no", description="Leaves your status line as it is."),
+         Option("Later", "later", description=LATER))),
 )
 IDS = tuple(question.id for question in QUESTIONS)
 # A question that a later version replaced: its id is still accepted by `setup.py answer`, and an answers file from an
@@ -753,6 +894,8 @@ def question_text(result, repo):
         text = text.format(sort=observer_runtime.DEFAULTS["max_sort"], middle=observer_runtime.DEFAULTS["max_invocations"],
                            strong=observer_runtime.DEFAULTS["max_strong"],
                            proposals=observer_runtime.DEFAULTS["max_proposals"])
+    if "{files}" in text:
+        text = text.replace("{files}", ", ".join(result.detail or []) or "see setup.py map-files")
     if "{evidence}" in text:
         text = text.replace("{evidence}", ", ".join(result.detail or []) or "see setup.py detect")
     if "{missing}" in text:
@@ -775,7 +918,8 @@ def describe(result, repo, config):
     for option in question.options:
         steps = [render_command(words) for words in option.commands] or ["nothing to run"]
         steps.append(render_command(record_words(question, option.answer)))
-        what = "  - %s%s: %s" % (option.label, " (recommended)" if option.recommended else "", " ; then ".join(steps))
+        what = "  - %s%s: %s Run: %s" % (option.label, " (recommended)" if option.recommended else "", option.description,
+                                          " ; then ".join(steps))
         lines.append(what + (" (%s)" % option.note if option.note else ""))
     lines.append("  record the answer: %s" % render_command(record_words(question, "yes|no|later")))
     return lines

@@ -7,6 +7,7 @@ import re
 import secrets
 import time
 
+import dashboard_notes
 import decision_review as ledger
 import index
 import observer_publisher
@@ -299,6 +300,7 @@ class Service:
                 found = self.append(op, event)
                 op["accepted"] = found["comment"]
                 self.save(op)
+                dashboard_notes.add(self.repo, "verdict", self.hub)   # told to a session once, on its next prompt
             return self.output(op, found)
 
     def body_files(self, op):
@@ -391,4 +393,5 @@ class Service:
                 receipt = {"issue": issue, "sha256": after}
             done = dict(event, id=op["done"], previous=held["comment"], verdict="applied", receipt=receipt)
             verified = self.append(op, done)
+            dashboard_notes.add(self.repo, "edit", receipt["issue"])
             return self.output(op, verified)

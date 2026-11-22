@@ -25,6 +25,7 @@ import sys
 import time
 import webbrowser
 
+import dashboard_notes
 import decision_review_io
 import index
 import observer_advisory
@@ -386,6 +387,7 @@ class Actions:
                                     "url": "https://github.com/%s/issues/%d#issuecomment-%d" % (self.repo, issue, number)}
             operation["refresh"] = "pending"
             self.save(operation)
+            dashboard_notes.add(self.repo, "step", issue)   # a session that began before this learns of it on its next prompt
         except (Exception, SystemExit):
             operation["state"] = "uncertain"
             self.save(operation)
@@ -454,6 +456,9 @@ class Actions:
             raise ActionError("account_changed", 403)
         result = project_map_io.commit(self.repo, self.config["hub"], saved["operation"])
         self.map_edited = True
+        if not saved.get("noted"):   # a replay of the same preview writes no second note
+            saved["noted"] = True
+            dashboard_notes.add(self.repo, "map", self.config["hub"])
         return dict(self.map_response(result["state"]), comment=result["comment"])
 
     def suggestions(self, ident=None, muted=None):

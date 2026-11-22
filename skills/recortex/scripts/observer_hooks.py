@@ -657,7 +657,7 @@ SELF_RELEASE = {"reason": "recortex observer: only the user releases a hold, swi
 # their terminal, and the hook refuses a session's own Bash call to it (UNDO below is made from these rows). A test holds
 # this table, the parser of observer.py and the pattern together; observer.py states each row's reason at its definition.
 COMMANDS = {"status": "safe", "holds": "safe", "pending": "safe", "log": "safe", "context": "safe", "hook": "safe",
-            "advisory": "terminal", "map-mode": "terminal", "map-proposals": "safe",
+            "advisory": "terminal", "map-mode": "grant", "map-proposals": "safe",
             "runtime-check": "safe", "run-worker": "safe", "record": "safe", "reconcile": "safe", "limits": "safe",
             "pause": "safe",
             "enable": "grant", "act": "grant", "later": "grant", "discard": "grant", "drafts": "grant",

@@ -262,7 +262,7 @@ class MapWorkerTests(unittest.TestCase):
         with mock.patch.object(observer.recortex, "load_config", return_value=self.f.config), \
                 mock.patch.object(observer, "on_terminal", return_value=False), mock.patch.object(observer, "emit") as out:
             self.assertEqual(1, observer.main(["map-mode", "automatic", "--yes"]))
-            self.assertEqual("terminal-required", out.call_args[0][0]["code"])
+            self.assertEqual("map_unanswered", out.call_args[0][0]["code"])   # a session needs the user's answer to map-upkeep
 
     def test_revoking_an_approved_file_after_drafting_refuses_the_reviewer_before_spending(self):
         import project_map_sources

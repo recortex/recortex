@@ -302,7 +302,7 @@ class PromptTests(BriefBox):
         self.assertIn("; steps: 2 of 2 done.", outputs[1])
         # the reminder does not fit beside the payload, so it is left out of it and comes alone on the next prompt
         self.assertNotIn("setup question", outputs[1])
-        self.assertIn(brief.SETUP_REMINDER % (2, "s"), outputs[2])
+        self.assertIn(brief.SETUP_REMINDER % (3, "s"), outputs[2])
         self.assertNotIn("steps:", outputs[2])
 
 

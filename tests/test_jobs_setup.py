@@ -98,14 +98,14 @@ class LevelQuestionTests(Programs, tq.Box):
     """`observer-level`: open for a new folder and for an approval of 1.4.0, settled by a level, closed by a 1.4.0 "no"."""
 
     def test_it_is_open_for_a_folder_with_no_approval(self):
-        self.assertEqual(["status-line", LEVEL], self.open_ids())
+        self.assertEqual(["status-line", LEVEL, "task-reminder"], self.open_ids())
         self.assertEqual("1.5.0", setup_questions.find(LEVEL).since)
 
     def test_it_is_open_for_an_approval_written_before_1_5_0_and_the_brief_counts_it(self):
         self.approval(observer_mode="automatic")   # the form 1 entry of 1.4.0: no level
-        self.assertEqual(["status-line", LEVEL], self.open_ids())
+        self.assertEqual(["status-line", LEVEL, "task-reminder"], self.open_ids())
         self.assertIn(LEVEL, self.groups()["open"])
-        self.assertEqual([brief.SETUP_QUESTIONS % (2, "s")], self.lines(self.start()))
+        self.assertEqual([brief.SETUP_QUESTIONS % (3, "s")], self.lines(self.start()))
 
     def test_it_is_settled_by_each_level_in_the_approval(self):
         for level in observer_runtime.LEVELS:
@@ -145,7 +145,7 @@ class LevelQuestionTests(Programs, tq.Box):
     def test_a_1_4_0_answers_file_loads_and_keeps_what_it_holds(self):
         self.put_state(machine={"status-line": self.entry("no")},
                        repos={REPO: {"observer": self.entry("no"), "labels": self.entry("yes")}})
-        self.assertEqual([], self.open_ids())
+        self.assertEqual(["task-reminder"], self.open_ids())   # the one question of 1.7.0 that applies
         done = self.tool("setup.py", "answer", "--id", "status-line", "--answer", "later")
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
         stored = self.stored()
@@ -467,7 +467,7 @@ class PausedUntilALevelTests(Programs, tq.Box):
         self.assertEqual(({}, {}, 0), (queue.get("observations", {}), queue.get("events", {}), queue.get("invocations_24h", 0)))
         # the doctor and the brief say so, and the brief's setup line counts the question
         self.assertIn("paused until you choose a level", self.tool("hooks.py", "--doctor").stdout)
-        self.assertEqual([brief.SETUP_QUESTIONS % (2, "s")], self.lines(self.start()))
+        self.assertEqual([brief.SETUP_QUESTIONS % (3, "s")], self.lines(self.start()))
         self.assertIn(LEVEL, self.open_ids())
         # the user answers with a level: now the observer works
         bin_folder, working_log = self.stand_in()
@@ -477,7 +477,7 @@ class PausedUntilALevelTests(Programs, tq.Box):
         status = self.status(env=self.with_path(bin_folder))
         self.assertEqual((True, False, "notes"), (status["approved"], status["paused"], status["level"]))
         self.assertNotIn(LEVEL, self.open_ids())
-        self.assertEqual([brief.SETUP_QUESTIONS % (1, "")], self.lines(self.start()))   # the status line only
+        self.assertEqual([brief.SETUP_QUESTIONS % (2, "s")], self.lines(self.start()))   # the status line and the task reminder
         self.assertEqual([], self.calls(log))   # the paused stretch made no call; the answer's checks used the other program
         self.assertTrue(self.calls(working_log))
 

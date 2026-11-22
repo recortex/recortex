@@ -629,6 +629,9 @@ def produce(event, data, budget, config, repo, hub):
                 text += "\n" + orientation
             entry.update(brief=True, key=key)
             entry.setdefault("start", entry["seen"])
+            told = dashboard_line(repo, entry, data, settings)
+            if told:
+                text += "\n" + told   # after the brief; it has a cap of its own
             state[session] = entry
             save_state(repo, state)
             return text
@@ -655,11 +658,36 @@ def produce(event, data, budget, config, repo, hub):
         parts = [part for part in (brief.prompt_payload(record) if show else "", nudge) if part]
         used = len("\n".join(parts)) + (1 if parts else 0)
         asked = setup_reminder(repo, config, record, entry, session, brief.CAPS["prompt-submit"] - used)
+        recorded = dashboard_line(repo, entry, data, settings)   # its own cap, no room taken from the setup reminder
         state[session] = entry   # the reminder is marked in the entry before it is returned
         save_state(repo, state)
-        return "\n".join(parts + ([asked] if asked else []) + ([extra] if extra else []))
+        return "\n".join(parts + ([recorded] if recorded else []) + ([asked] if asked else []) + ([extra] if extra else []))
     finally:
         db.close()
+
+
+def dashboard_line(repo, entry, data, settings):
+    """The one fixed line for what the user recorded in the dashboard since this session's last prompt (dashboard_notes.py), or
+    "". The session's cursor is entry["dash"], else the time it started (entry["start"]); with neither, the cursor is set to now
+    and nothing is said. Each note is told once to each session: the cursor then moves to the newest note told. Not for a
+    subagent's prompt, and not when the prompt hook is off. A failure gives no line; nothing here raises."""
+    try:
+        if not isinstance(data, dict) or data.get("agent_id") or data.get("agent_type") or settings.get("enabled") is False:
+            return ""
+        import dashboard_notes
+        cursor = entry.get("dash")
+        if type(cursor) not in (int, float):
+            cursor = entry.get("start")
+        if type(cursor) not in (int, float):
+            entry["dash"] = time.time()
+            return ""
+        notes = dashboard_notes.since(repo, cursor)
+        if not notes:
+            return ""
+        entry["dash"] = max(note["at"] for note in notes)
+        return dashboard_notes.line(notes)
+    except Exception:  # noqa: BLE001 - a hook never fails over a line about the dashboard
+        return ""
 
 
 def observer_delivers(repo, config):

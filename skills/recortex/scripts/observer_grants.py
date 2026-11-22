@@ -34,7 +34,12 @@ KEPT = 20            # entries of the file, the newest
 SPENT = 200          # answers already used for a grant, the newest: the same answer never grants twice
 STRONG_MODEL = "opus"  # the model the paper-proposals question names; another one is the user's own command
 RANK = {"notes": 1, "assistant": 2, "everything": 3}
-LEVEL_QUESTION, STRONG_QUESTION = "observer-level", "paper-proposals"
+LEVEL_QUESTION, STRONG_QUESTION, MAP_QUESTION = "observer-level", "paper-proposals", "map-upkeep"
+QUESTION_OF = {"level": LEVEL_QUESTION, "strong": STRONG_QUESTION, "map": MAP_QUESTION}   # the kinds of grant and their questions
+MAP_RANK = {"off": 0, "shadow": 1, "automatic": 2}
+MAP_UNANSWERED = ("recortex observer: turning Project Map upkeep on, or raising it, needs your answer to the question about "
+                  "it. Ask it as setup.py questions prints it (map-upkeep), and then run the command again. You can also run "
+                  "it yourself in a terminal outside Claude Code.")
 UNANSWERED = ("recortex observer: turning the observer on, or raising its level or its stronger model, needs your "
               "answer to the question about it. Ask it as setup.py questions prints it (observer-level, or "
               "paper-proposals for the stronger model), and then run the command again. You can also run it yourself "
@@ -119,9 +124,10 @@ def _live(entry, now):
 def put(folder, kind, value, answer, now=None):
     """Record the grant for this folder: the user's answer `answer` (a tool id) to the question about `kind`. An answer that
     was already used for a grant grants nothing again, whatever the transcript still holds."""
-    if kind not in ("level", "strong") or not ANSWER.fullmatch(str(answer)):
+    if kind not in QUESTION_OF or not ANSWER.fullmatch(str(answer)):
         return False
-    if kind == "level" and value not in runtime.LEVELS or kind == "strong" and value != STRONG_MODEL:
+    if (kind == "level" and value not in runtime.LEVELS or kind == "strong" and value != STRONG_MODEL
+            or kind == "map" and value not in ("shadow", "automatic")):
         return False
     now = time.time() if now is None else now
     with _writer() as state:
@@ -260,7 +266,7 @@ def _question(identifier):
 def question_line(kind):
     """The fixed first sentence of the question about `kind`: what the session's question must hold for the user's answer
     to count (setup.py questions prints the whole text; the wizard asks the same first sentence)."""
-    text = " ".join(_question(LEVEL_QUESTION if kind == "level" else STRONG_QUESTION).text.split())
+    text = " ".join(_question(QUESTION_OF[kind]).text.split())
     return text.split("?", 1)[0] + "?"
 
 
@@ -269,7 +275,7 @@ def canonical(kind):
     them: a recorded answer counts only to a question that is this one and no other."""
     import types
     import setup_questions
-    question = _question(LEVEL_QUESTION if kind == "level" else STRONG_QUESTION)
+    question = _question(QUESTION_OF[kind])
     text = setup_questions.question_text(types.SimpleNamespace(question=question, detail=None), "")
     return " ".join(text.split()), [option.label for option in question.options]
 
@@ -285,6 +291,11 @@ def label_for(kind, value):
         return None
     if kind == "strong" and value == STRONG_MODEL:
         return next((option.label for option in _question(STRONG_QUESTION).options if option.answer == "yes"), None)
+    if kind == "map":
+        for option in _question(MAP_QUESTION).options:
+            for step in option.commands:
+                if "map-mode" in step and step.index("map-mode") + 1 < len(step) and step[step.index("map-mode") + 1] == value:
+                    return option.label
     return None
 
 
@@ -298,8 +309,9 @@ def _option(words, name):
 
 
 def requested(command):
-    """(level, strong) a Bash `command` would turn on with --yes, read as the shell splits it, or None when it is not an
-    `observer.py enable --yes`, a `setup.py observer --yes` or a `setup.py apply --answers FILE --yes`. Either may be None.
+    """The grants a Bash `command` asks for, read as the shell splits it: a dict of the kinds `level`, `strong` and `map`
+    with the value each names (a kind it does not name is left out), or None when it is not an `observer.py enable --yes`, a
+    `setup.py observer --yes`, a `setup.py apply --answers FILE --yes` or an `observer.py map-mode shadow|automatic --yes`.
     A guard against mistakes: a session with shell access can write what it likes."""
     if not isinstance(command, str) or "observer" not in command and "apply" not in command:
         return None
@@ -313,9 +325,13 @@ def requested(command):
         base = os.path.basename(word)
         rest = [w for w in words[number + 1:] if not w.startswith("--")]
         if base == "observer.py" and "enable" in rest[:2]:
-            return _option(words, "--level"), _option(words, "--strong-model")
+            return _present(level=_option(words, "--level"), strong=_option(words, "--strong-model"))
+        if base == "observer.py" and "map-mode" in rest[:2]:
+            at = words.index("map-mode", number)
+            mode = words[at + 1] if at + 1 < len(words) else None
+            return _present(map=mode if mode in ("shadow", "automatic") else None)
         if base == "setup.py" and rest[:1] == ["observer"]:
-            return _option(words, "--level"), _option(words, "--strong")
+            return _present(level=_option(words, "--level"), strong=_option(words, "--strong"))
         if base == "setup.py" and rest[:1] == ["apply"]:
             path = _option(words, "--answers")
             try:
@@ -326,9 +342,14 @@ def requested(command):
                 return None
             if isinstance(given, dict) and given.get("mode") not in (None, "off"):
                 strong = given.get("strong") if isinstance(given.get("strong"), str) else None
-                return given.get("level") if isinstance(given.get("level"), str) else None, strong
+                return _present(level=given.get("level") if isinstance(given.get("level"), str) else None, strong=strong)
             return None
     return None
+
+
+def _present(**kinds):
+    """The kinds that have a value, as a dict."""
+    return {kind: value for kind, value in kinds.items() if value is not None}
 
 
 def record_from_hook(data):
@@ -341,7 +362,7 @@ def record_from_hook(data):
         return
     root = recortex.project_root()
     folder = runtime.folder_key(root)
-    for kind, value in zip(("level", "strong"), asks):
+    for kind, value in asks.items():
         label = label_for(kind, value) if isinstance(value, str) else None
         if label is None:
             continue

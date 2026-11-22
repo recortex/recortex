@@ -303,7 +303,7 @@ class TranscriptBox(unittest.TestCase):
 
     def ask(self, kind, answer, text=None, labels=None):
         import setup_questions
-        question = next(q for q in setup_questions.QUESTIONS if q.id == ("observer-level" if kind == "level" else "paper-proposals"))
+        question = next(q for q in setup_questions.QUESTIONS if q.id == grants.QUESTION_OF[kind])
         text = text or question.text.format(sort=80, middle=70, strong=8, proposals=2)
         labels = labels or [option.label for option in question.options]
         self.count += 1
@@ -450,6 +450,113 @@ class RecordTests(TranscriptBox):
         os.chmod(self.path, 0o666)   # not the user's own private file: refused
         self.hook(self.SETUP % "everything")
         self.assertFalse(self.held("level", "everything"))
+
+
+class MapGrantTests(TranscriptBox):
+    """7.3: the user's recorded answer to the map-upkeep question lets a session raise the map mode, once."""
+
+    MAP = "python3 /p/skills/recortex/scripts/observer.py --repo octo-org/octo-repo map-mode %s --yes"
+
+    def test_the_answer_automatic_grants_automatic_and_not_the_other_mode(self):
+        self.ask("map", "Automatic (Recommended)")
+        self.hook(self.MAP % "shadow")
+        self.assertFalse(self.held("map", "shadow"))   # a "shadow" request on an "Automatic" answer
+        self.hook(self.MAP % "automatic")
+        self.assertTrue(self.held("map", "automatic"))
+        self.assertFalse(self.held("map", "shadow"))
+
+    def test_suggest_only_grants_shadow_and_not_automatic(self):
+        self.ask("map", "Suggest only")
+        self.hook(self.MAP % "automatic")
+        self.assertFalse(self.held("map", "automatic"))
+        self.hook(self.MAP % "shadow")
+        self.assertTrue(self.held("map", "shadow"))
+
+    def test_no_later_and_a_later_change_of_mind_grant_nothing(self):
+        for answer in ("No", "Later"):
+            self.ask("map", answer)
+            self.hook(self.MAP % "automatic")
+            self.assertFalse(self.held("map", "automatic"), answer)
+        self.ask("map", "Automatic (Recommended)")
+        self.ask("map", "No")
+        self.hook(self.MAP % "automatic")
+        self.assertFalse(self.held("map", "automatic"))
+
+    def test_a_reworded_question_or_other_options_grant_nothing(self):
+        text, labels = grants.canonical("map")
+        for name, asked, offered in (("extra words", text + " It is safe.", labels), ("a missing option", text, labels[:-1]),
+                                     ("another order", text, labels[::-1]), ("the first sentence alone", grants.question_line("map"), labels),
+                                     ("our own wording", "Shall I let the observer keep the map?", labels)):
+            self.ask("map", "Automatic (Recommended)", text=asked, labels=offered)
+            self.hook(self.MAP % "automatic")
+            self.assertFalse(self.held("map", "automatic"), name)
+        self.ask("map", "Automatic (Recommended)")
+        self.hook(self.MAP % "automatic")
+        self.assertTrue(self.held("map", "automatic"))
+
+    def test_a_subagents_call_makes_no_grant_and_the_main_sessions_own_does(self):
+        self.ask("map", "Automatic (Recommended)")
+        for extra in ({"agent_id": "a1b2c3"}, {"agent_type": "general-purpose"}):
+            data = {"hook_event_name": "PreToolUse", "session_id": "session1", "transcript_path": self.path, "cwd": self.project,
+                    "tool_name": "Bash", "tool_input": {"command": self.MAP % "automatic"}}
+            data.update(extra)
+            self.assertIsNone(pretool_guard.decide(json.dumps(data)))
+            self.assertFalse(self.held("map", "automatic"), extra)
+        self.hook(self.MAP % "automatic")
+        self.assertTrue(self.held("map", "automatic"))
+
+    def test_an_answer_grants_once_whatever_the_transcript_still_holds(self):
+        self.ask("map", "Automatic (Recommended)")
+        self.hook(self.MAP % "automatic")
+        self.assertTrue(grants.take(self.folder, [("map", "automatic")]))
+        self.hook(self.MAP % "automatic")
+        self.assertFalse(self.held("map", "automatic"))
+
+    def test_off_asks_for_nothing_and_the_value_must_be_a_mode(self):
+        self.assertFalse(grants.put(self.folder, "map", "off", "toolu_1"))
+        self.assertFalse(grants.put(self.folder, "map", "everything", "toolu_2"))
+        self.assertTrue(grants.put(self.folder, "map", "shadow", "toolu_3"))
+        self.assertEqual({"map": "shadow"}, grants.requested(self.MAP % "shadow"))
+        self.assertIsNone(grants.requested(self.MAP.replace(" --yes", "") % "shadow"))
+        self.assertEqual({}, grants.requested(self.MAP % "off"))
+        self.assertEqual("Automatic (Recommended)", grants.label_for("map", "automatic"))
+        self.assertEqual("Suggest only", grants.label_for("map", "shadow"))
+        self.assertIsNone(grants.label_for("map", "off"))
+
+
+class RequestedTests(unittest.TestCase):
+    def test_a_command_gives_the_kinds_it_names_and_leaves_the_others_out(self):
+        table = (
+            ("python3 /p/observer.py enable --model sonnet --level everything --yes", {"level": "everything"}),
+            ("python3 /p/observer.py enable --level assistant --strong-model opus --yes", {"level": "assistant", "strong": "opus"}),
+            ("python3 /p/observer.py enable --model sonnet --yes", {}),
+            ("python3 /p/setup.py observer --level notes --yes", {"level": "notes"}),
+            ("python3 /p/setup.py observer --strong opus --yes", {"strong": "opus"}),
+            ("python3 /p/observer.py map-mode automatic --yes", {"map": "automatic"}),
+            ("python3 /p/observer.py --repo octo-org/octo-repo map-mode shadow --yes", {"map": "shadow"}),
+            ("python3 /p/observer.py map-mode off --yes", {}),
+            ("python3 /p/observer.py map-mode everything --yes", {}),
+            ("python3 /p/observer.py map-mode", None),
+            ("python3 /p/observer.py map-mode automatic", None),
+            ("python3 /p/observer.py status --yes", None),
+            ("echo hello", None),
+        )
+        for command, expected in table:
+            self.assertEqual(expected, grants.requested(command), command)
+
+    def test_one_table_names_the_question_of_each_kind(self):
+        self.assertEqual({"level": "observer-level", "strong": "paper-proposals", "map": "map-upkeep"}, grants.QUESTION_OF)
+        for kind in grants.QUESTION_OF:
+            text, labels = grants.canonical(kind)
+            self.assertTrue(text.endswith(".") or "?" in text)
+            self.assertIn("Later", labels)
+
+    def test_map_mode_is_a_grant_row_and_a_session_may_run_it(self):
+        self.assertEqual("grant", observer_hooks.COMMANDS["map-mode"])
+        self.assertNotIn("map-mode", observer_hooks.TERMINAL_ONLY)
+        self.assertNotIn("map-mode", pretool_guard.USERS_ONLY)
+        self.assertIsNone(pretool_guard.decide(json.dumps({"tool_name": "Bash", "tool_input": {
+            "command": "python3 /p/skills/recortex/scripts/observer.py map-mode automatic --yes"}})))
 
 
 class SwitchedLineTests(unittest.TestCase):

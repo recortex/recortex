@@ -50,7 +50,7 @@ OBSERVER_UNDER_CLAUDE = re.compile(r"CLAUDECODE")   # a command that names this 
 # publish.py) is stopped in every project, observer on or off, because what they do is the user's own decision. The list
 # is written out here, since this file does not import observer_hooks; a test holds it equal to the terminal rows of
 # observer_hooks.COMMANDS (TERMINAL_ONLY).
-USERS_ONLY = ("advisory", "disable", "map-mode", "release", "resume", "trust-ancestor", "undo")
+USERS_ONLY = ("advisory", "disable", "release", "resume", "trust-ancestor", "undo")
 USERS_COMMAND_WORDS = re.compile(r"observer\.py\b.*?(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(USERS_ONLY))
 HOSTS_ANY = re.compile(r"(?:observer|setup)\.py\b.*--hosts(?:\s+|=)[\"']?any\b")
 PUBLISH = re.compile(r"(?<![A-Za-z0-9_-])publish\.py\b")

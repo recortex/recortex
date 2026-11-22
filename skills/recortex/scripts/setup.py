@@ -1876,7 +1876,8 @@ def questions_command(args):
             "id": r.question.id, "since": r.question.since, "scope": r.question.where,
             "question": setup_questions.question_text(r, repo),
             "answers_file": setup_questions.answers_file(repo, config) if r.question.id == "manuscript-profile" else None,
-            "options": [{"label": o.label, "answer": o.answer, "recommended": o.recommended, "note": o.note,
+            "options": [{"label": o.label, "description": o.description, "answer": o.answer,
+                         "recommended": o.recommended, "note": o.note,
                          "commands": [setup_questions.render_command(words) for words in o.commands],
                          "record": setup_questions.render_command(setup_questions.record_words(r.question, o.answer))}
                         for o in r.question.options],

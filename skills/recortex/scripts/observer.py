@@ -38,7 +38,8 @@ def parser():
                           help="choose a delivery mode, list issued reminders, or edit a reminder preference")
     advisory.add_argument("id", nargs="?", help="reminder ID from advisory list, for mute or unmute")
     advisory.add_argument("--yes", action="store_true", help="save this choice from your own terminal")
-    # map-mode: terminal, this device and project folder own this separate choice.
+    # map-mode: grant. Raising it (off, shadow, automatic) from a session needs the user's recorded answer to the map-upkeep
+    # question (observer_grants, kind "map") or the user's terminal; switching it down or off needs neither.
     mode = sub.add_parser("map-mode", help="choose private Project Map shadow review or automatic maintenance")
     mode.add_argument("mode", choices=("off", "shadow", "automatic"))
     mode.add_argument("--yes", action="store_true", help="save this choice from your own terminal")
@@ -802,8 +803,10 @@ def main(argv=None):
                 emit({"code": "approval", "note": "Choose the Assistant or Everything observer level first."})
                 return 1
             if args.yes:
-                if not on_terminal():
-                    emit({"code": "terminal-required", "note": "Choose map maintenance in your own terminal outside Claude Code."})
+                import observer_grants
+                raised = observer_grants.MAP_RANK[args.mode] > observer_grants.MAP_RANK[options["map_mode"]]
+                if raised and not on_terminal() and not observer_grants.take(runtime.folder_key(), [("map", args.mode)]):
+                    emit(observer_grants.refused({"code": "map_unanswered"}, note=observer_grants.MAP_UNANSWERED))
                     return 1
                 entry = runtime.stored_approval() or {}
                 runtime.approve(repo, {"observer": dict(options, map_mode=args.mode)}, given=entry["given"],

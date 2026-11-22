@@ -410,6 +410,75 @@ class LabelAndPassTests(Box):
         self.assertEqual("terminal", self.entry()["given"])   # limits keeps where it was given
 
 
+class MapModeTests(Box):
+    """7.3 at the command: raising the map mode from a session needs the grant of the user's recorded answer, once."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(0, self.enable(terminal=True)[0])
+        self.folder_key = runtime.folder_key(self.folder)
+
+    def mode(self):
+        return self.entry()["settings"].get("map_mode", "off")
+
+    def map_mode(self, mode, terminal=False):
+        return self.run_cli("map-mode", mode, "--yes", terminal=terminal)
+
+    def test_without_the_users_answer_a_session_cannot_raise_it_and_nothing_changes(self):
+        code, value = self.map_mode("automatic")
+        self.assertEqual((1, "map_unanswered"), (code, value["code"]))
+        self.assertEqual(observer_grants.MAP_UNANSWERED, value["note"])
+        self.assertIn("map-upkeep", value["note"])
+        self.assertEqual("off", self.mode())
+
+    def test_the_grant_of_the_right_mode_raises_it_once_and_keeps_where_it_was_given(self):
+        before = self.entry()
+        observer_grants.put(self.folder_key, "map", "automatic", "toolu_map1")
+        code, value = self.map_mode("automatic")
+        self.assertEqual((0, True), (code, value["approved"]))
+        self.assertEqual("automatic", self.mode())
+        after = self.entry()
+        self.assertEqual((before["given"], before["approved_at"], before["key_file"]),
+                         (after["given"], after["approved_at"], after["key_file"]))
+        self.run_cli("map-mode", "off", "--yes")
+        self.assertEqual("off", self.mode())
+        self.assertEqual("map_unanswered", self.map_mode("automatic")[1]["code"])   # the grant was used once
+
+    def test_a_grant_for_the_other_mode_does_not_raise_it(self):
+        observer_grants.put(self.folder_key, "map", "shadow", "toolu_map2")
+        self.assertEqual("map_unanswered", self.map_mode("automatic")[1]["code"])
+        self.assertEqual("off", self.mode())
+        self.assertEqual(0, self.map_mode("shadow")[0])
+        self.assertEqual("shadow", self.mode())
+
+    def test_lowering_and_the_same_mode_need_nothing_and_a_terminal_needs_no_grant(self):
+        self.assertEqual(0, self.map_mode("automatic", terminal=True)[0])
+        self.assertEqual("automatic", self.mode())
+        self.assertEqual(0, self.map_mode("automatic")[0])      # not raised
+        self.assertEqual(0, self.map_mode("shadow")[0])         # lowered
+        self.assertEqual("shadow", self.mode())
+        self.assertEqual(0, self.map_mode("off")[0])
+        self.assertEqual("off", self.mode())
+
+    def test_a_preview_changes_nothing_and_needs_nothing(self):
+        code, value = self.run_cli("map-mode", "automatic")
+        self.assertEqual((0, False), (code, value["approved"]))
+        self.assertEqual("off", self.mode())
+
+    def test_the_notes_level_has_no_map(self):
+        self.assertEqual(0, self.run_cli("enable", "--model", "sonnet", "--level", "notes", "--yes", terminal=True)[0])
+        observer_grants.put(self.folder_key, "map", "automatic", "toolu_map3")
+        code, value = self.map_mode("automatic")
+        self.assertEqual((1, "approval"), (code, value["code"]))
+
+    def test_when_the_answer_cannot_be_read_the_refusal_says_so(self):
+        with mock.patch.object(observer_grants, "unread_reason", return_value="source-owner"):
+            code, value = self.map_mode("automatic")
+        self.assertEqual((1, "map_answer_unreadable", "source-owner"), (code, value["code"], value["reason"]))
+        self.assertEqual(observer_grants.UNREADABLE % "source-owner", value["note"])
+        self.assertEqual("off", self.mode())
+
+
 class NoticeTests(Box):
     def test_a_host_that_does_not_hold_the_approval_gets_its_own_session_start_line(self):
         import observer_hooks
