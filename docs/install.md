@@ -52,6 +52,10 @@ cp -r recortex/skills/recortex ~/.claude/skills/
 
 Use `<project>/.claude/skills/` in place of `~/.claude/skills/` to install it for one project only. The skill is then available as `/recortex`. After setting up a trusted project, say "open my dashboard" to get its local address. The hook is optional in this mode; to add it, see [the hooks](reference.md#the-hooks-and-the-claudemd-snippet).
 
+## A home folder on shared storage
+
+If your home folder is on a network mount that many hosts see, and a session may start on any of them, the observer's approval follows the key file from host to host (see [the observer](../skills/recortex/references/observer.md)). Where the folders above Claude Code's transcripts belong to another account, run `observer.py trust-ancestor --failing` in your own terminal and then the same with `--yes`. Run sessions for one project on one host at a time where `hooks.py --doctor` says the mount keeps its file locks on the host. For the interactive dashboard on a machine with no browser, forward the port with `ssh -L`, with the same port number on both ends and `127.0.0.1` in the address ([the dashboard](../skills/recortex/references/mind.md)).
+
 ## Body updates from 1.1.0
 
 Scripts that call `post_verified.py body` must now pass `--expected-body-file` with the unchanged body saved before drafting. Keep the draft in a separate file. A changed live body stops the replacement; merge the latest text before retrying. Comments, existing records and the index format are unchanged. See [the posting example](../skills/recortex/references/posting-and-verification.md#4-post).

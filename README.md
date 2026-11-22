@@ -23,7 +23,8 @@ keeps findings, decisions, failures and deliverable text in GitHub issues.
 - Open `/recortex:dashboard` to resume work, trace decisions, and read deliverables offline. Use `/recortex:map` to browse and edit the project hierarchy.
 - Compile the current paper or release notes from topic bodies.
 - The paper's plan, text and versions. The session writes text in the mode you choose, never changes a paragraph you wrote, and keeps every version.
-- Helpers that know your field. A short field sheet tells every subagent what counts as proof and what must stay out of the record.
+- Helpers that know your field, from a short field sheet of what counts as proof.
+- Shared and changing hosts. An approval follows your home folder across nodes.
 - A board that keeps itself current. Sub-issues and a private Projects board follow the record.
 - Tasks with checkmarks. A plan you approve becomes a task with numbered steps, checked off as the agent reports them done.
 - An optional observer. It follows the session in the background, keeps the record and the task list, and drafts the paper's text only for your yes. You choose what it may do on its own. [Controls and limits](skills/recortex/references/observer.md).

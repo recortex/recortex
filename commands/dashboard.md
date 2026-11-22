@@ -10,6 +10,8 @@ For the ordinary project dashboard, run `mind.py --open` from the configured pro
 If it reports a missing or outdated index, run `index.py sync` and retry once after a successful sync.
 For any other failure, tell the user what the script reported.
 
+To put the page on the web, the user runs `publish.py` in their own terminal; never run it for them.
+
 Give the user the dashboard address it printed, even when a browser started. Include its Project Map link for browsing the project hierarchy. If it printed a manuscript
 address, include that direct link too. In a remote session, also give the printed file path so the user
 can copy the standalone page to their own device.

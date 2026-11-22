@@ -8,7 +8,7 @@ The mind page is one local file that tells a project's memory in sentences: what
 
 Every dashboard has a **Project Map** tab next to **Overview**, including on a phone or in an empty project. Open it directly at `#project-map`. Expand a branch to see its children. Selecting its name shows its description, evidence, related branches, and recent changes. The search matches branch names and descriptions. Open a decision from the evidence list and use Back to return to the same branch. Branch addresses survive renaming and moving. The full nested outline also works without JavaScript.
 
-Start an empty map in chat with `/recortex:map`. In a local interactive dashboard, **Edit project map** previews the affected branches before you apply a correction. The standalone page shows the last synced and verified map. A manuscript appears as a branch only in projects that include it.
+Start an empty map in chat with `/recortex:map`: the whole first tree is one `seed` change and one comment on the hub, however many branches it has (up to 200; a longer first map is seeded in part and added to). Each branch has an `id` of your choice so that children can name their parent, a title, and optional description, evidence and links; the preview shows every branch with its parent and evidence, and one `apply` posts them. A seed is only for a map with no branch, by a user, never by the observer; its history line reads "Started the map with 15 branches". A collaborator on 1.6.0 does not know `seed`: it skips that comment, and every later change that names a seeded branch, so their page shows an empty or partial map until they update (update before seeding). In a local interactive dashboard, **Edit project map** previews the affected branches before you apply a correction. The standalone page shows the last synced and verified map. A manuscript appears as a branch only in projects that include it.
 
 ## Open your dashboard
 
@@ -35,6 +35,32 @@ It builds nothing, prints one line and exits 1 when:
 | An older version of the plugin wrote the index last | `the index was last written by an older version of the plugin, or never by this one; run index.py sync` |
 
 An earlier page is then left as it is. A page built while the last sync was unfinished says so in its last lines. `index.py query mind` prints the same counts in one line (`--json` prints the whole model the page is made from, for tests and for a person at a terminal).
+
+## Put the page on the web
+
+The page can be public, for people who have no access to the machine. That is yours to decide and run, in your own terminal, never a session's:
+
+```bash
+python3 scripts/publish.py --to octo-org/octo-pages --branch gh-pages --dry-run
+python3 scripts/publish.py --to octo-org/octo-pages --branch gh-pages --path dashboards/sample-project.html
+python3 scripts/publish.py --list
+```
+
+It builds the static page itself (the same steps as `mind.py`, with none of this machine's usage numbers, no log of the observer and nothing interactive; it takes no path of a page, so it cannot be pointed at another file). It stops, sending nothing, when the page is not the static one, holds text that the project's rules keep off the record (a secret or a restricted pattern), found in the record's own text before any page is made from it, in the page's text (read with and without the line breaks between elements, so that a word split by markup is whole again) and in every attribute of the page, when a hold of yours stops publishing, when your account may not write to the target, when the branch does not exist (it creates no branch, repository or site; the message says how to make the branch), or when the page is larger than 25 MB. It then prints what will be public (the memories and threads, the topic bodies, the tasks and the map of the record, the target and whether it creates or replaces the file) and asks you to type the word `publish`. For a record in a private repository, or one whose visibility could not be read, run it with `--private-record` and type the record repository's full name instead. It sends one commit of one file through GitHub's contents API with the message "Publish the project dashboard page", reads the file back and compares its hash, and keeps the newest 20 receipts on this machine (`--list`). It does not switch GitHub Pages on: serve the branch yourself if you want an address. To take the page down, delete the file from the branch; copies that others made stay. A site published from a private repository can still be public.
+
+## On a machine with no browser
+
+`mind.py` prints the path of the static page: copy it to your own machine (`scp`), or publish it as above. The interactive page (`dashboard_action.py`) listens on `127.0.0.1` of the machine it runs on and checks the Host header, so a forwarded port must have the same number on both ends and the address must say `127.0.0.1`, not `localhost`:
+
+```bash
+# on your own machine: forward port 8765 to the login node
+ssh -N -L 8765:127.0.0.1:8765 login-1
+# on login-1, in your own terminal, in the project folder
+python3 scripts/dashboard_action.py --port 8765
+# open the address it prints in the browser of your own machine
+```
+
+For a service on a compute node: `ssh -N -L 8765:127.0.0.1:8765 -J login-1 node-17`. The address holds the token: do not share it. The service stops after 30 idle minutes.
 
 ## Figures as pictures
 
