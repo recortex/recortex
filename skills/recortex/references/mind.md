@@ -189,7 +189,7 @@ Every page of an edit history is read, for memories and for the text of a topic,
 
 ## In short
 
-"Where we are" opens with the newest "In short": the first field of the newest resume block that an allowed account posted and nobody edited, as two short paragraphs of text, marked "As of" the day the block says it was written. A block from before 1.3.0 has none, and a record with no usable block says so in one fixed line, "No summary of where the project stands has been written yet. The next resume block carries one."; the rest of the view is as it was. The summary is text and never markup, an attribute or an address.
+"Resume work" opens with the newest "In short": the first field of the newest resume block that an allowed account posted and nobody edited, as two short paragraphs of text, marked "As of" the day the block says it was written. A block from before 1.3.0 has none, and a record with no usable block says so in one fixed line, "No summary of where the project stands has been written yet. The next resume block carries one."; the rest of the view is as it was. The summary is text and never markup, an attribute or an address.
 
 ## Printing the paper, and the paper as a page of its own
 

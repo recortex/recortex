@@ -1,5 +1,7 @@
 # Guiding project work
 
+This page shapes handoffs and advice. It does not change when the plugin's own questions are asked: the setup questions and the items that wait for the user are asked as SKILL.md says, each as its own multiple-choice question, whatever the user is working on.
+
 ## First use and return
 
 Use the goal the user already gave you. If it is unclear, ask “What would you most want a fresh session to understand about this project?” Show one real example from their work. Explain how to open the dashboard with `/recortex:dashboard` and give its actual location when generated. A project can contain several outputs, including a manuscript. Start with the part the user is working on.
@@ -12,7 +14,7 @@ On return, say what changed since the last handoff, which judgment is still open
 
 ## Help me decide
 
-Give the user's goal, the viable options and the tradeoff that matters to that goal. Cite the source for each material claim. Make a conditional recommendation and identify what would change it. Ask one question only if the answer would change the next move. For example, if shorter recovery time matters more than storage, favor the smaller checkpoint interval and show the timing that supports it. The user can ask why, correct your reading or defer.
+Give the user's goal, the viable options and the tradeoff that matters to that goal. Cite the source for each material claim. Make a conditional recommendation and identify what would change it. In your own advice, ask one question only if the answer would change the next move. For example, if shorter recovery time matters more than storage, favor the smaller checkpoint interval and show the timing that supports it. The user can ask why, correct your reading or defer.
 
 ## What am I missing?
 

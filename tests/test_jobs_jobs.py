@@ -760,9 +760,9 @@ class HookLines(HookBox):
         self.handle("prompt-submit", prompt="one")
         text = self.context(self.handle("prompt-submit", prompt="two"))
         self.assertEqual(hooks.reminder_line(1), text)
-        self.assertEqual("recortex observer: 1 item still waits for the user's answer. At a pause, load the "
-                         "recortex skill and run its observer.py pending --waiting. Offer the relevant item using its exact "
-                         "question and options.", text)
+        self.assertEqual("recortex observer: 1 item still waits for the user's answer. Before this reply ends, load the "
+                         "recortex skill, run its observer.py pending --waiting and ask each as a multiple-choice "
+                         "question.", text)
         self.hold_memory(1)
         self.handle("prompt-submit", session="session2", prompt="one")
         self.assertEqual(hooks.reminder_line(2), self.context(self.handle("prompt-submit", session="session2", prompt="two")))

@@ -47,13 +47,14 @@ NOTICES = {
 }
 # At session start, for the main session, while anything waits for the user's answer (the number is the only value in
 # it): a held memory, a task to open or close, a draft of the paper's text. The session loads the skill, which gives the
-# scripts folder, and offers a relevant item from the template `observer.py pending --waiting` prints.
+# scripts folder, and asks each item from the template `observer.py pending --waiting` prints.
 WAITING = ("recortex observer: %s for the user's answer. Load the recortex skill first, run its observer.py pending "
-           "--waiting. At a pause, explain the one item that affects the next step. Use its exact question and options.")
+           "--waiting, and ask each as one multiple-choice question from the template it prints. Do not offer them in "
+           "prose.")
 # On a later prompt of the same session, while items wait and `pending --waiting` has not run in the session: 1.4.0's live
 # runs showed that Sonnet and Haiku act on a reminder at the next prompt, not on the line at session start alone.
-REMINDER = ("recortex observer: %s for the user's answer. At a pause, load the recortex skill and run its "
-            "observer.py pending --waiting. Offer the relevant item using its exact question and options.")
+REMINDER = ("recortex observer: %s for the user's answer. Before this reply ends, load the recortex skill, run its "
+            "observer.py pending --waiting and ask each as a multiple-choice question.")
 # The bookkeeping is setup_questions.reminder's (a test holds the numbers equal): at most REMIND_MAX reminders to one
 # session, the first with its REMIND_FROM-th prompt, REMIND_GAP prompts apart, none once `pending --waiting` ran.
 REMIND_MAX, REMIND_FROM, REMIND_GAP = 3, 2, 3

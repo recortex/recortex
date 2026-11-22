@@ -1,5 +1,5 @@
 """Tests of the summary of the project's status (1.3.0, spec section 21): the "In short" field of the resume block, the page that
-shows it after the recorded resume actions, the briefs that carry it, and the staleness judged on activity, never a session ending. The
+opens with it, the briefs that carry it, and the staleness that is judged on activity and never on a session ending. The
 observer's own refresh is tested in test_observer_summary.py. Nothing here reaches GitHub; the scripts run against
 tests/fake_gh.py."""
 
@@ -338,15 +338,17 @@ class SummaryPageTests(SummaryRecord):
     def words(self, text):
         return re.sub(r" ([.,;:])", r"\1", " ".join(" ".join(ts.PageReader(text).texts).split()))
 
-    def test_resume_work_keeps_the_newest_summary_and_date_after_recorded_next_actions(self):
+    def test_resume_work_opens_with_the_newest_in_short_marked_with_its_day(self):
         self.resume(30, short="%s\n\n%s" % (FIRST, SECOND))
         text = self.page()
         self.assertEqual([], ts.page_problems(text))
         view = self.now_view(text)
         self.assertEqual(1, view.count('id="in-short"'))
-        self.assertLess(view.index("We last paused"), view.index('id="in-short"'))
-        self.assertLess(view.index("What we meant to do next"), view.index('id="in-short"'))
-        self.assertIn("Project summary", view)
+        self.assertLess(view.index('id="in-short"'), view.index("We last paused"))   # it opens the view
+        self.assertLess(view.index('id="in-short"'), view.index("What we meant to do next"))
+        self.assertNotIn("Project summary", view)
+        before = view[:view.index('id="in-short"')]
+        self.assertEqual(before.count("<details"), before.count("</details>"))   # it is outside any fold
         said = self.words(view)
         self.assertIn("In short " + FIRST + " " + SECOND, said)
         self.assertRegex(said, r"As of [A-Z][a-z]+ [0-9]{1,2}, 20[0-9]{2}\.")

@@ -7,6 +7,7 @@ session) counts; if GitHub cannot be read it says so in one fixed line and goes 
 
 It prints, under the data header and in this order:
   In short   the first field of the newest resume block the index holds.
+  Judgment   the open judgment about a changed decision, when guidance.return_pointer finds one.
   Tasks      the open tasks, how many of their steps are done, the latest done steps with the memory that checked
              each, and the next open step of each.
   Text       what is due in the paper's text (only when the project has a plan), as write.py status says it.
@@ -217,10 +218,12 @@ def main(argv=None):
         age = index.age_text(index.get_meta(db, "synced_at"))
         say({"failed": SYNC_FAILED, "partly": SYNC_PARTLY, "busy": SYNC_BUSY}[problem] % age if problem else
             "Index: the local copy is %s." % age)
+        for line in in_short(db):
+            say(line)
         judgment = guidance.return_pointer(db, repo, allowed)
         if judgment:
             say(judgment)
-        for part in (in_short(db), task_lines(db, allowed), text_lines(db, config, repo, allowed)):
+        for part in (task_lines(db, allowed), text_lines(db, config, repo, allowed)):
             for line in part:
                 say(line)
     finally:

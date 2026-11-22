@@ -39,8 +39,8 @@ Do this at the start of every session and again whenever the context was compact
 2. Read each open issue labeled `active`, body and newest comments.
 3. Read the hub's tables, then the newest comments of the topic issues the current focus touches.
 4. Compare with the working tree and running jobs. Where the record and reality differ, reality wins and the record is corrected with a new comment.
-5. On return, orient the user to the relevant change, any judgment it leaves open, and one sourced next move. If nothing relevant changed, continue their task. Follow [guidance.md](references/guidance.md) for handoffs and questions.
-6. With the observer on, ask what waits for the user (see "What waits for the user" below): run `observer.py pending --waiting` and surface the one item that affects the user's next move. Leave the rest available at a pause or on request.
+5. Only then act. State in one line what was read. When the user returns to earlier work, also say what changed since the last handoff, any judgment it leaves open and one sourced next move ([references/guidance.md](references/guidance.md)). Guidance shapes handoffs and advice; it never replaces or delays the setup questions or what waits for the user, which are asked as their sections below say.
+6. With the observer on, ask what waits for the user (see "What waits for the user" below): run `observer.py pending --waiting` and ask each item as one multiple-choice question. Do the same at the end of a work stretch.
 
 When GitHub is unreachable, read the newest local snapshot instead and say that it is a copy with its date. Details and the end-of-stretch routine: [references/session-protocol.md](references/session-protocol.md).
 
@@ -54,7 +54,7 @@ For a choice, gap, change in direction, or handoff style, follow [guidance.md](r
 
 ## Commands
 
-The plugin offers these commands in Claude Code. Each loads this skill first.
+The plugin offers these commands in Claude Code. Each loads this skill first. They are `/recortex:` commands, and nothing promises a bare `/record`.
 
 | Command | What it does |
 |---|---|
@@ -143,7 +143,7 @@ A plan the user approved, or a loose "remind me to ...", becomes steps on an `ac
 
 ### What waits for the user
 
-With the observer on, run `python3 ${CLAUDE_SKILL_DIR}/scripts/observer.py pending --waiting` at session start, at the next prompt when a reminder line says items still wait, and at a pause. Explain why the most relevant item matters and offer it at the next natural pause. When the user wants to act, ask that item as one multiple-choice question using the whole question it prints, word for word, and its options exactly and in that order (an answer to a question with any other words or options does not count): a held memory (`Memory <short> (<kind>) on #<issue>: "<line>". It would change: <changes>. Post it, or drop it?`, options Post, Drop; it is also a memory the reviewer kept off the record, which `<changes>` says in fixed words), a task to open (`Task <short>: open a task "<title>" with <n> steps?`, options Open it, Not now, Drop it), a task to close (`Task <short>: every step of #<N> is done. Close it?`, options Close it, Not now) and a draft of the text (below). Do not offer them in prose. After a "yes", run the command the list names right away: `post_verified.py comment --eventkey KEY` for Post, `observer.py act SHORT` for Open it and Close it, `observer.py drafts apply ID` for Approve; for the others `observer.py discard KEY`, `later SHORT`, `drafts later ID` or `drafts drop ID`. Each of those commands works only after the user's recorded answer, with that answer's label, to that exact question, and a command run without it is refused. `observer.py undo ACT` is the user's own, in a terminal of theirs. Details: [references/observer.md](references/observer.md).
+With the observer on, run `python3 ${CLAUDE_SKILL_DIR}/scripts/observer.py pending --waiting` at session start, at the next prompt when a reminder line says items still wait, and at a pause. Ask each item as one multiple-choice question: the whole question it prints, word for word, and its options exactly and in that order (an answer to a question with any other words or options does not count): a held memory (`Memory <short> (<kind>) on #<issue>: "<line>". It would change: <changes>. Post it, or drop it?`, options Post, Drop; it is also a memory the reviewer kept off the record, which `<changes>` says in fixed words), a task to open (`Task <short>: open a task "<title>" with <n> steps?`, options Open it, Not now, Drop it), a task to close (`Task <short>: every step of #<N> is done. Close it?`, options Close it, Not now) a map change (`Project Map <short>: <line>. Apply this change?`, options Apply change, Not now, Drop it) and a draft of the text (below). Do not offer them in prose. You may add one line on why an item matters, never in place of its question. After a "yes", run the command the list names right away: `post_verified.py comment --eventkey KEY` for Post, `observer.py act SHORT` for Open it, Close it and Apply change, `observer.py drafts apply ID` for Approve; for the others `observer.py discard KEY`, `later SHORT`, `drafts later ID` or `drafts drop ID`. Each of those commands works only after the user's recorded answer, with that answer's label, to that exact question, and a command run without it is refused. `observer.py undo ACT` is the user's own, in a terminal of theirs. Details: [references/observer.md](references/observer.md).
 
 ### Drafts that wait
 
@@ -201,7 +201,7 @@ Give the user the printed dashboard address and the direct manuscript address wh
 
 For the existing request to see "the mind", browse the project's memory or read its history as a page, refresh with `index.py sync` before running `mind.py --open`. When the user asks to read the manuscript with its changes or compare versions, run `mind.py --versions --open` and lead with the printed manuscript link.
 
-The page is for a person. To answer a question about history, use `index.py query recall`, `query timeline` and the issues. To report a completed task step in the browser, explicitly start `dashboard_action.py --open`. The user reviews and confirms the checkpoint. Started from a session it prints no address, only the path of a private launch file: give the user that path, do not read the file or call the service, and know that it stops after 30 idle minutes or when the user chooses Stop. See [references/mind.md](references/mind.md).
+The page is for a person. Do not read `mind.html` yourself: to answer a question about history, use `index.py query recall`, `query timeline` and the issues. To report a completed task step in the browser, explicitly start `dashboard_action.py --open`. The user reviews and confirms the checkpoint. Started from a session it prints no address, only the path of a private launch file: give the user that path, do not read the file or call the service, and know that it stops after 30 idle minutes or when the user chooses Stop. See [references/mind.md](references/mind.md).
 
 ### Migrate an older tracker
 

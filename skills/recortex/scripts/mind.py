@@ -1380,6 +1380,7 @@ class Page:
 
     def now_view(self):
         last, out = self.model.get("last"), [self.snapshot_line()]
+        out.append(self.summary_block(last.get("summary") if isinstance(last, dict) else None))
         tasks = self.task_data()
         opened = sorted((task for task in tasks.get("open", []) if isinstance(task, dict)
                          and number(integer(task.get("issue")), ISSUE_NUMBER)),
@@ -1422,7 +1423,6 @@ class Page:
             out.append(E("p", {"class": "quiet"}, "Automatic status: focus and holds were carried forward." if last.get("automatic") is True
                          else "From the latest recorded status, not your last visit."))
             out.append(self.handoff_brief(opened))
-            out.append(self.show("Project summary", self.summary_block(last.get("summary"))))
             if last.get("day"):
                 since = [self.card(self.m[mid]) for mid in self.model.get("since", []) if mid in self.m]
                 out.append(self.show("Since that pause: event sequence", E("div", {"class": "stack"}, *since) if since else
