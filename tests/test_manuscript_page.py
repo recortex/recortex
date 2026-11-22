@@ -28,7 +28,7 @@ import record_format  # noqa: E402
 import recortex  # noqa: E402
 
 PAGE = os.path.join(ROOT, "skills", "recortex", "page")
-EXAMPLE_PAGE_SHA = "e5b183151e67bfbfe4b5e4b49eac1a35e09fe97ed4dff12588d5411bfadd15df"   # fixed example with a hold and portable handoff
+EXAMPLE_PAGE_SHA = "a3f866c7331ac4ee504ce42f034c1e47aed9127b5b1af71ad1afc9e7be3e056c"   # fixed example with a hold and portable handoff; 1.7.0: "In short" opens Resume work again (it was in a folded "Project summary" in 1.6.0), nothing else moved
 
 FORMS = {"autonomous": "Written without asking, under the autonomous mode.",
          "chat": "By the author in the chat, 2026-11-21 09:38 EST:\n\n> Approve",
