@@ -18,6 +18,7 @@ import decision_impact
 import guidance
 import hooks
 import observer_advisory
+import observer_context
 import observer_runtime
 import recortex
 import storage
@@ -138,6 +139,7 @@ class WhenItSpeaksTests(Box):
     def test_a_stale_or_partial_index_gets_none(self):
         self.choose()
         self.started()
+        self.started("s2")   # sessions with their briefs, begun while the copy was fresh: their prompts may carry the line
         db = sqlite3.connect(self.case.index_file())
         try:
             db.execute("UPDATE meta SET value='0' WHERE key='sync_complete'")
@@ -149,6 +151,15 @@ class WhenItSpeaksTests(Box):
             self.assertEqual("", self.line(self.prompt(DIRECT, "s2")))
         finally:
             db.close()
+
+    def test_the_age_of_the_copy_is_asked_of_observer_context_and_a_day_old_copy_gives_none(self):
+        self.choose()
+        self.started()
+        stale = {"synced_at": None, "sync_complete": True, "live_revalidated": False, "age_seconds": 90000.0}
+        with mock.patch.object(observer_context, "freshness", return_value=stale) as asked:
+            self.assertEqual("", self.line(self.prompt(DIRECT)))
+        asked.assert_called()
+        self.assertTrue(self.line(self.prompt(DIRECT)))   # the same item, with the copy as it is: told, since nothing was told
 
     def test_work_that_has_a_review_verdict_gets_none(self):
         self.choose()

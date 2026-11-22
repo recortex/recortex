@@ -502,6 +502,39 @@ class NoticeTests(Box):
         self.assertNotIn(observer_hooks.NOTICES["approval-host"], out.get("systemMessage", ""))
 
 
+class CaptureLineTests(Box):
+    def line(self, result):
+        import observer_sources
+        import setup
+        with mock.patch.object(observer_sources, "preflight", return_value=result):
+            return setup.capture_line(self.folder)
+
+    def test_the_dry_run_says_whether_notes_can_be_taken_and_what_to_run(self):
+        self.assertEqual("capture: ready", self.line({"ready": True, "code": "ok"}))
+        self.assertEqual("capture: ready once a session has run in this folder",
+                         self.line({"ready": False, "code": "source-missing"}))
+        text = self.line({"ready": False, "code": "source-owner", "boundary": "native-projects", "fix": "trust-ancestor",
+                          "issues": [{"code": "source-owner", "boundary": "native-projects"}]})
+        self.assertRegex(text, r"^capture: not ready \(source-owner at native-projects\); notes cannot be taken, and a session "
+                               r"cannot read your answer here\. Run in your own terminal: python3 \S+/observer\.py "
+                               r"trust-ancestor --failing ; then the same with --yes$")
+        other = self.line({"ready": False, "code": "source-symlink", "boundary": "source-directory",
+                           "issues": [{"code": "source-symlink", "boundary": "source-directory"}]})
+        self.assertIn("observer.py status --source-details", other)
+        self.assertNotIn("trust-ancestor", other)
+
+    def test_the_capture_line_comes_before_the_binding_line_and_the_steps(self):
+        import setup
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            setup.observer_step({"repo": REPO, "observer": {"mode": "automatic", "model": "sonnet", "level": "everything",
+                                                           "sort_model": "haiku", "strong": ""}}, self.folder, sys.executable, True)
+        lines = out.getvalue().splitlines()
+        self.assertTrue(lines[0].startswith("capture: "), lines[0])
+        self.assertTrue(lines[1].startswith("binding: "), lines[1])
+        self.assertTrue(lines[2].startswith("would run: "), lines[2])
+
+
 class DryRunTests(Box):
     def test_the_dry_run_prints_the_binding_the_approval_will_get(self):
         import setup

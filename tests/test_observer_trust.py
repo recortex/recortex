@@ -35,8 +35,9 @@ import test_jobs_usage as tu  # noqa: E402
 FOREIGN = 4000011
 
 
-def seen_as(path, uid=None, gid=None, mode=None):
-    """What lstat says about `path`: another owner, group or mode (the folder itself is not changed)."""
+def seen_as(path, uid=None, gid=None, mode=None, kind=None):
+    """What lstat says about `path`: another owner, group or mode, and with `kind` (stat.S_IFLNK) another kind of file (the folder
+    itself is not changed)."""
     real = os.lstat
     target = os.fspath(path)
 
@@ -44,7 +45,7 @@ def seen_as(path, uid=None, gid=None, mode=None):
         info = real(candidate, *args, **kwargs)
         if os.fspath(candidate) != target:
             return info
-        return SimpleNamespace(st_mode=(stat.S_IFMT(info.st_mode) | mode) if mode is not None else info.st_mode,
+        return SimpleNamespace(st_mode=((kind or stat.S_IFMT(info.st_mode)) | mode) if mode is not None else info.st_mode,
                                st_uid=info.st_uid if uid is None else uid, st_gid=info.st_gid if gid is None else gid,
                                st_dev=info.st_dev, st_ino=info.st_ino, st_size=info.st_size)
 
@@ -226,6 +227,12 @@ class NeverTests(Box):
         self.assertEqual("source-symlink", sources._problem(str(self.shared), link, str(self.folder), None, trust))
         plain = SimpleNamespace(st_mode=stat.S_IFDIR | 0o777, st_uid=FOREIGN, st_gid=0)
         self.assertTrue(sources.Trust().accepts(str(self.shared), plain, str(self.folder)))   # the same entry holds for a folder
+
+    def test_an_ancestor_that_is_a_link_is_refused_by_trust_add_even_when_it_is_above_the_project_folder(self):
+        with seen_as(self.shared, uid=FOREIGN, mode=0o777, kind=stat.S_IFLNK):
+            with self.assertRaises(sources.TrustError):
+                sources.trust_add([str(self.shared)], str(self.project))
+        self.assertFalse(self.trusted_file().exists())
 
     def test_the_project_folder_and_the_transcript_are_refused_by_trust_add(self):
         with self.assertRaises(sources.TrustError):

@@ -1819,6 +1819,23 @@ class DescriptionTests(Box):
             self.assertTrue(observer_sources.OWN_DIALOG.search(question.text), question.id)
 
 
+class PaperProposalsGateTests(Box):
+    KIND = "plan"
+
+    def test_the_stronger_model_question_is_not_asked_where_notes_cannot_be_taken(self):
+        self.assertEqual(0, self.tool("setup.py", "writing", "set", "--mode", "review", "--yes").returncode)
+        self.approval(level="everything")
+        self.assertIn("paper-proposals", self.groups()["open"])   # notes can be taken: it is asked
+        os.makedirs(self.fixture.claude, mode=0o700, exist_ok=True)
+        os.chmod(self.fixture.claude, 0o777)
+        self.addCleanup(os.chmod, self.fixture.claude, 0o700)
+        found = self.groups()
+        self.assertIn("paper-proposals", found["not-asked"])
+        self.assertNotIn("paper-proposals", self.open_ids())
+        self.assertIn("paper-proposals", [item["id"] for item in
+                                          json.loads(self.tool("setup.py", "questions", "--json").stdout)["blocked"]])
+
+
 class CaptureGateTests(Box):
     def refuse(self, mode=0o777):
         """The folder of Claude Code's configuration is writable by all: capture cannot be ready here."""
