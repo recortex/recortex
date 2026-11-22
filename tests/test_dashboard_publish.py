@@ -333,6 +333,104 @@ class StopTests(Box):
         self.assertEqual([], publish.read_receipts(RECORD))
 
 
+class SplitPatternTests(Box):
+    """A restricted pattern or a secret that the markup splits, hides in an attribute or keeps only in the model is still found."""
+
+    def restrict(self, pattern):
+        self.write_config(dict(self.config, restricted_patterns=[{"name": "identifier", "pattern": pattern}]))
+
+    def refused(self, text, **kwargs):
+        before = len(self.puts())
+        code, out = self.go(**kwargs)
+        self.assertEqual((1, True), (code, publish.NOT_PRIVATE in out), out)
+        self.assertEqual(before, len(self.puts()))
+        self.assertNotIn("0042", out)   # what was found is never printed
+        return out
+
+    def test_a_pattern_split_across_two_inline_elements_is_found(self):
+        self.restrict("SAMPLE-0042")
+        page = PAGE.replace("We chose", "Participant SAMPLE-<mark>0042</mark> said we chose")
+        self.assertNotIn("SAMPLE-0042", publish.page_texts(page)[0])   # joined with a line break it is split ...
+        self.assertIn("SAMPLE-0042", publish.page_texts(page)[1])      # ... joined with nothing it is whole
+        self.refused(page, page=page)
+
+    def test_a_pattern_only_in_an_attribute_is_found_in_each_kind_of_attribute(self):
+        self.restrict("SAMPLE-0042")
+        for attribute in ("title", "alt", "aria-label", "value", "data-note", "placeholder"):
+            page = PAGE.replace("<p>We chose", '<p %s="Participant SAMPLE-0042">We chose' % attribute)
+            self.assertIn("SAMPLE-0042", publish.page_texts(page)[2], attribute)
+            self.refused(page, page=page)
+        self.assertEqual(0, self.go()[0])   # the page without it goes
+
+    def test_a_secret_in_an_attribute_is_found_too(self):
+        token = "ghp_" + "A1b2C3d4" * 5
+        self.refused(PAGE, page=PAGE.replace("<p>We chose", '<p title="%s">We chose' % token))
+
+    def test_style_and_script_are_still_left_out(self):
+        self.restrict("SAMPLE-0042")
+        page = PAGE.replace("var a = 1;", "var note = 'SAMPLE-0042';").replace(".x{color:red}", ".x::after{content:'SAMPLE-0042'}")
+        for text in publish.page_texts(page):
+            self.assertNotIn("SAMPLE-0042", text)
+        code, out = self.go(page=page)
+        self.assertEqual(0, code, out)
+
+    def test_a_pattern_only_in_the_model_is_found_before_any_page_is_made(self):
+        self.restrict("strict quoting")
+        made = []
+        real = mind.finish
+
+        def finish(*args, **kwargs):
+            made.append(1)
+            return real(*args, **kwargs)
+        with mock.patch.object(mind, "finish", side_effect=finish):
+            self.refused(None, page=False)
+        self.assertEqual([], made)   # the refusal came before the page was built
+
+    def test_a_pattern_in_the_model_that_the_page_does_not_show_in_a_matching_form_is_found(self):
+        self.restrict("strict quoting")
+        with mock.patch.object(mind, "finish", return_value=(PAGE, [])):   # a page that shows nothing of it
+            self.refused(None, page=False)
+
+    def test_the_model_check_alone_stops_it_and_the_page_check_alone_stops_it(self):
+        self.restrict("strict quoting")
+        with mock.patch.object(publish, "page_problem", return_value=False):   # only the check of the record's own text is left
+            self.refused(None, page=False)
+        with mock.patch.object(publish, "source_problem", return_value=False):   # only the check of the page is left
+            self.refused(None, page=False)
+        self.write_config(dict(self.config))   # no rule: both pass and the page goes
+        self.assertEqual(0, self.go(page=False)[0])
+
+    def test_a_check_that_fails_stops_it_and_never_sends(self):
+        import observer_worker
+        with mock.patch.object(observer_worker, "privacy_problem", side_effect=RuntimeError("boom")):
+            self.assertTrue(publish.source_problem(["x"], self.config))
+            self.assertTrue(publish.page_problem(PAGE, self.config))
+            self.refused(None, page=False)
+        self.assertEqual([], self.puts())
+
+    def test_the_clean_page_still_publishes_through_the_fake(self):
+        self.restrict("SAMPLE-0042")
+        code, out = self.go(page=False)   # the real page, built from the record, checked in every form
+        self.assertEqual(0, code, out)
+        self.assertEqual(1, len(self.puts()))
+
+    def test_model_strings_reaches_everything_once_and_survives_a_cycle(self):
+        loop = {"name": "loop"}
+        loop["self"] = loop
+        model = {"a": ["one", ("two", {"three"})], "b": {"key": "four", 5: [None, True, 1.5, "five"]}, "c": loop,
+                 "d": frozenset(["six"]), "e": object.__new__(type("Odd", (), {"__str__": lambda self: "seven"}))}
+        found = mind.model_strings(model)
+        for word in ("one", "two", "three", "key", "four", "five", "six", "loop", "self", "seven", "a", "b", "c"):
+            self.assertIn(word, found, word)
+        self.assertEqual(1, found.count("loop"))   # a container that holds itself is walked once
+        self.assertEqual([], [part for part in found if part in ("None", "True", "1.5")])   # numbers and flags are no text
+
+    def test_the_real_models_strings_include_the_memories_text(self):
+        strings = []
+        mind.public_text(recortex.load_config(), RECORD, recortex.allowed_users(RECORD), refuse=lambda found: strings.extend(found) or False)
+        self.assertTrue(any("strict quoting" in text for text in strings))
+
+
 class PrivateRecordTests(Box):
     def private(self, value=True):
         data = self.repo()

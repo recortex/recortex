@@ -3794,12 +3794,40 @@ def finish(model, config, repo, fetch=False, public=False):
     return render(model, pictures), reasons
 
 
-def public_text(config, repo, allowed):
+class PrivateError(PageError):
+    """The record's own text, before any page is built from it, holds what the project's privacy rules refuse."""
+
+
+def model_strings(model):
+    """Every string of a built model, whatever it holds: the dictionary keys and values, the members of lists, tuples and sets,
+    and the text of any other object, each once. The page is made from these, so a rule applied to them looks at the record's
+    text itself and not at the markup it becomes (a word split by an element, a value kept in an attribute). Iterative, and
+    safe against a container that holds itself."""
+    found, seen, todo = [], set(), [model]
+    while todo:
+        item = todo.pop()
+        if isinstance(item, str):
+            found.append(item)
+        elif isinstance(item, (dict, list, tuple, set, frozenset)):
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            todo.extend(list(item.keys()) + list(item.values()) if isinstance(item, dict) else list(item))
+        elif item is not None and not isinstance(item, (bool, int, float)):
+            found.append(str(item))
+    return found
+
+
+def public_text(config, repo, allowed, refuse=None):
     """(text, counts) of the static page as it would be published: the same steps as mind.py, from the index to render, with
     no usage numbers, no log of the observer's acts and no interactive part, and only the pictures that are kept. Nothing is
-    written and no file is read. `counts` holds the numbers of memories and threads. Raises PageError with one of this module's
-    fixed lines when the page cannot be built."""
+    written and no file is read. `counts` holds the numbers of memories and threads. `refuse`, when given, is called with
+    model_strings of the built model before any page is made, and a true answer raises PrivateError. Raises PageError with one
+    of this module's fixed lines when the page cannot be built."""
     model, _ = load_model(config, repo, allowed)
+    model["usage"], model["acts"] = None, []
+    if refuse is not None and refuse(model_strings(model)):
+        raise PrivateError("the record's own text holds what the project's privacy rules keep off the record")
     text, _ = finish(model, config, repo, public=True)
     return text, {"memories": model["counts"]["memories"], "threads": model["counts"]["threads"]}
 

@@ -66,16 +66,18 @@ SERVICE_ADDRESS = re.compile(r"http://127\.0\.0\.1:[0-9]{1,5}/[0-9a-f]{32}")
 
 
 class Visible(html.parser.HTMLParser):
-    """The page's visible text: tags taken out, entities resolved, and the style and the script left out (they hold no text
-    of the record; the page's own rules keep it out of them)."""
+    """The page's text as a reader could meet it: the text of every element, with tags taken out and entities resolved, and
+    every attribute value (a title, an alt, an aria-label, a value, a data attribute: anything the page keeps in markup); the
+    style and the script are left out (they hold no text of the record; the page's own rules keep it out of them)."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.parts, self.skip = [], 0
+        self.parts, self.attributes, self.skip = [], [], 0
 
     def handle_starttag(self, tag, attrs):
         if tag in ("script", "style"):
             self.skip += 1
+        self.attributes.extend(value for _, value in attrs if isinstance(value, str) and value)
 
     def handle_endtag(self, tag):
         if tag in ("script", "style") and self.skip:
@@ -86,11 +88,38 @@ class Visible(html.parser.HTMLParser):
             self.parts.append(data)
 
 
-def visible_text(page):
+def page_texts(page):
+    """The texts the page is checked as, each by the privacy rules: the text of its elements joined with a line break (as a
+    reader sees blocks), the same joined with nothing (so that a word split by an inline element, `SAMPLE-<mark>0042</mark>`, is
+    whole again) and every attribute value."""
     parser = Visible()
     parser.feed(page)
     parser.close()
-    return "\n".join(parser.parts)
+    return ["\n".join(parser.parts), "".join(parser.parts), "\n".join(parser.attributes)]
+
+
+def visible_text(page):
+    return page_texts(page)[0]
+
+
+def source_problem(strings, config):
+    """True when a string of the record's own text, before any markup is made of it, holds what the privacy rules keep off the
+    record (a secret or a restricted pattern). Any failure of the check is a problem: it fails closed."""
+    import observer_worker
+    try:
+        return any(observer_worker.privacy_problem(text, config) for text in strings)
+    except Exception:  # noqa: BLE001 - a check that cannot be made is a stop, never a send
+        return True
+
+
+def page_problem(page, config):
+    """True when the page's text, in any of the forms of page_texts, holds what the privacy rules keep off the record. Any
+    failure of the check is a problem."""
+    import observer_worker
+    try:
+        return any(observer_worker.privacy_problem(text, config) for text in page_texts(page))
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def public_problem(page):
@@ -226,7 +255,11 @@ def run(args):
     import mind
     allowed = recortex.allowed_users(record)
     try:
-        page, counts = mind.public_text(config, record, allowed)
+        # the record's own text is checked before any page is made from it
+        page, counts = mind.public_text(config, record, allowed, refuse=lambda strings: source_problem(strings, config))
+    except mind.PrivateError:
+        print(NOT_PRIVATE)
+        return 1
     except (mind.PageError, OSError, ValueError, storage.StorageError) as error:
         print(str(error) if isinstance(error, mind.PageError) else "publish: the page could not be built; nothing was sent.")
         return 1
@@ -238,12 +271,7 @@ def run(args):
     if problem:
         print(problem)
         return 1
-    import observer_worker
-    try:
-        private_text = observer_worker.privacy_problem(visible_text(page), config)
-    except Exception:  # noqa: BLE001 - a check that cannot be made is a stop, never a send
-        private_text = True
-    if private_text:
+    if page_problem(page, config):
         print(NOT_PRIVATE)
         return 1
     try:
