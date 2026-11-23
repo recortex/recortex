@@ -6031,7 +6031,9 @@ class CurrentNameTests(RecordSandbox):
                                                     "index.sqlite")))
         self.assertEqual([], os.listdir(os.path.join(self.dir, "xdg-cache", first)))  # nothing was made in it
         self.assertEqual([], os.listdir(os.path.join(self.dir, "xdg-state", first)))
-        self.assertNotIn(first, self.tool("hooks.py", "--doctor", env=env).stdout)
+        # the checkout's own path may hold the first name (a folder of the developer's); only what the doctor says counts
+        said = self.tool("hooks.py", "--doctor", env=env).stdout.replace(self.dir, "").replace(ROOT, "")
+        self.assertNotIn(first, said)
         settings = os.path.join(self.dir, "xdg-config", first, "settings.json")
         with open(settings, "w") as handle:
             handle.write('{"discovery": false}')
@@ -9922,6 +9924,13 @@ class MindPageTests(MindSandbox):
         icon = recortex.read_text(os.path.join(page, "icon.txt"))
         for word in SCRIPT_BANNED:
             self.assertNotIn(word, script)
+        live = recortex.read_text(os.path.join(page, "live.js"))   # the live dashboard's own script: it asks its server and reloads
+        for word in SCRIPT_BANNED:
+            if word != "fetch(":
+                self.assertNotIn(word, live)
+        self.assertEqual(1, live.count("fetch("))
+        self.assertNotIn("</", live)
+        self.assertNotIn("<!--", live)
         for word in ("url(", "@import", "expression("):
             self.assertNotIn(word, style)
         for text in (script, style):
