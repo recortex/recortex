@@ -20,6 +20,7 @@ only for a Bash call whose input mentions the ask agent or the observer).
 
 Only the Python standard library; the observer's own modules are imported only for the second job."""
 
+import itertools
 import json
 import os
 import re
@@ -252,7 +253,8 @@ def publish_only_reads(command):
         if os.path.basename(words[number]) != "publish.py" or re.search(r"[\s$`]", words[number]) or number > 1 \
                 or (number == 1 and not os.path.basename(words[0]).startswith("python")):
             return False
-        if not any(word in ("--dry-run", "--list") for word in words[number + 1:]):
+        # the flag counts only before the first word that starts with #: the shell never passes what follows it to the script
+        if not any(word in ("--dry-run", "--list") for word in itertools.takewhile(lambda word: not word.startswith("#"), words[number + 1:])):
             return False
     return True
 

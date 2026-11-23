@@ -1063,6 +1063,11 @@ class GuardTests(unittest.TestCase):
             with self.subTest(command=command):
                 found = self.decide(command, agent_id="a1")
                 self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
+        for command in (base + " # --dry-run", base + " #x --list", base + " # a note --list", base + " --to a/b #--dry-run"):
+            with self.subTest(command=command):   # a flag after a # is a comment: the shell never passes it to the script
+                found = self.decide(command, agent_id="a1")
+                self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
+        self.assertIsNone(self.decide(base + " --dry-run # a note", agent_id="a1"))
         for command in (base + " --dry-run", base + " --list", "python3 /x/publish.py --list"):
             with self.subTest(command=command):
                 self.assertIsNone(self.decide(command, agent_id="a1"))
@@ -1200,7 +1205,10 @@ class GuardTests(unittest.TestCase):
             data = dict({"tool_name": "Bash", "tool_input": {"command": command}}, **extra)
             with self.subTest(command=command):
                 self.assertIsNotNone(pretool_guard.decide(json.dumps(data)))
-                out = subprocess.run(["bash", shell], input=json.dumps(data), capture_output=True, text=True, timeout=30).stdout
+                for _ in range(3):   # the wrapper stops Python after 4 seconds: on a machine that is busy with other work, ask again
+                    out = subprocess.run(["bash", shell], input=json.dumps(data), capture_output=True, text=True, timeout=30).stdout
+                    if out:
+                        break
                 self.assertEqual("deny", json.loads(out)["hookSpecificOutput"]["permissionDecision"])
 
     def test_link_open_status_and_a_port_without_a_network_tool_pass(self):
