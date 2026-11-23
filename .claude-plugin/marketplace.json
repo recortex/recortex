@@ -11,8 +11,5 @@
       "source": "./",
       "description": "An observer that follows each Claude Code session, a record of the project in GitHub issues, and a cortex that works from it in every session."
     }
-  ],
-  "renames": {
-    "gh-issues-manager": "recortex"
-  }
+  ]
 }

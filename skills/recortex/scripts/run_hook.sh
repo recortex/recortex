@@ -11,9 +11,9 @@ event="${1:-}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 cd "${CLAUDE_PROJECT_DIR:-$PWD}" 2>/dev/null || exit 0
-# Seconds the Python side plans for: half for the sync, the rest for the brief. GHIM_HOOK_TIMEOUT is the name the
-# variable had before version 0.5.0, read when RECORTEX_HOOK_TIMEOUT is unset or empty (as names.env does).
-limit="${RECORTEX_HOOK_TIMEOUT:-${GHIM_HOOK_TIMEOUT:-10}}"
+# Seconds the Python side plans for: half for the sync, the rest for the brief. RECORTEX_HOOK_TIMEOUT is used when it
+# is set and not empty (as names.env does).
+limit="${RECORTEX_HOOK_TIMEOUT:-10}"
 case "$limit" in ''|*[!0-9]*) limit=10;; esac   # digits only; never evaluated as an expression
 case "$limit" in ????*) limit=10;; esac         # and short
 limit=$((10#$limit))                            # base 10, so 08 and 09 are numbers

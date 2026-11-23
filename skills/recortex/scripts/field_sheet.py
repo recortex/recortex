@@ -48,7 +48,7 @@ DOTTED = re.compile(r"[A-Za-z0-9]\.[A-Za-z]{2}|(?:^|[^A-Za-z0-9.])\.[A-Za-z]|[0-
 # server:/srv/data); "and/or" and "mg/kg" pass.
 PATH = re.compile(r"(?:^|[ (\"'=:;,])\.{0,2}/[A-Za-z0-9]")
 RUNS = ("==", "://")
-PHRASES = ("field guidance", "project status data", names.NAME, names.OLD_NAME)
+PHRASES = ("field guidance", "project status data", names.NAME)
 RESERVED = ("what counts as proof", "numbers", "failures", "never write down", "across fields", "field", "fields")
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -264,9 +264,9 @@ def lines(entry):
 
 
 def pointer_name(config):
-    """The configuration file the pointer line names: its own name when it is one of the plugin's, else fixed words."""
+    """The configuration file the pointer line names: its own name when it is the plugin's, else fixed words."""
     name = recortex.config_name(config)
-    return name if name in (names.CONFIG_NAME, names.OLD_CONFIG_NAME) else OTHER_FILE
+    return name if name == names.CONFIG_NAME else OTHER_FILE
 
 
 def frame(entry, date, config_name=names.CONFIG_NAME, clean=None):
@@ -292,30 +292,16 @@ def real_day(value):
 
 
 def approval_tops():
-    """The top folders whose approvals are read, as the trusted list reads both folder names: the one
-    storage.config_top() chooses, where approvals are written, then the folder of the other name when it is there."""
-    chosen = storage.config_top()
-    name = names.OLD_NAME if os.path.basename(chosen) == names.NAME else names.NAME
-    other = os.path.join(os.path.dirname(chosen), name)
-    return [chosen, other] if os.path.lexists(other) else [chosen]
+    """The top folder whose approvals are read and written: the one storage.config_top() chooses, as a list of one."""
+    return [storage.config_top()]
 
 
 def approvals_with(repo):
-    """The approvals that hold this repository's entry: those of the chosen folder first, then those of the folder of
-    the other name; an empty top level when neither does. Raises as read_approvals does when the chosen folder cannot
-    be read. The folder of the other name is no longer written: a file there that cannot be read, or an entry there
-    that does not fit, counts as no approval, so that it never blocks a new approval in the chosen folder."""
-    tops = approval_tops()
-    data = read_approvals(top=tops[0])
+    """The approvals that hold this repository's entry; an empty top level when they do not. Raises as read_approvals
+    does when the folder cannot be read."""
+    data = read_approvals(top=approval_tops()[0])
     if repo.lower() in data["approvals"]:
         return data
-    for top in tops[1:]:
-        try:
-            other = read_approvals(top=top)
-            if approval_of(repo, other) is not None:
-                return other
-        except (storage.StorageError, ValueError):
-            pass
     return {"form": FORM, "approvals": {}}
 
 
@@ -434,20 +420,12 @@ def record_approval(repo, entry, day=None):
 
 
 def forget_approval(repo):
-    """Remove this repository's approval from each configuration folder that holds one (approval_tops), so that an
-    entry in the folder of the other name is not read again once the sheet was removed. True when there was one. Each
+    """Remove this repository's approval from the configuration folder (approval_tops). True when there was one. The
     folder is read first without creating anything, so that a machine with no approval for it ("No particular field"
-    and no mark) is left as it is; the folder of the other name is skipped when it cannot be read, as approvals_with
-    skips it."""
+    and no mark) is left as it is."""
     found = False
     for top in approval_tops():
-        try:
-            held = repo.lower() in read_approvals(top=top)["approvals"]
-        except (storage.StorageError, ValueError):
-            if top == storage.config_top():
-                raise
-            continue
-        if not held:
+        if repo.lower() not in read_approvals(top=top)["approvals"]:
             continue
         with approvals_lock(top):
             data = read_approvals(create=True, top=top)

@@ -38,10 +38,6 @@ TITLE_CAP = 80
 URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/[0-9]+", re.ASCII)
 PROTOCOL = ("recortex: follow the session protocol of the recortex skill before acting: this brief, "
             "the open active issues, then the newest comments of the topics in play.")
-# For projects whose CLAUDE.md still names the skill by the plugin's name before 0.5.0. Fixed wording, outside the
-# data frame, in the session-start and subagent payloads only; it says nothing about what this machine has.
-ALIAS = ("%s was named %s before version 0.5.0; where a project file names the %s skill, use the %s skill."
-         % (names.NAME, names.OLD_NAME, names.OLD_NAME, names.NAME))
 # One fixed sentence, in the head of the session-start payload only and outside the data frame: it asks the session to
 # say when an answer draws on the record. About 40 tokens once per session start; the marker costs about 4 per answer.
 SAY = ('When an answer uses what this record holds (this brief, an issue or a comment of it), start that part with '
@@ -537,7 +533,7 @@ def session_payload(record, fresh, reserve=0):
     field = field_sheet.session_line(record.field)  # fixed wording; FIELD_ON holds only the checked day
     board = record.board_note()  # fixed wording, outside the data frame; empty for a project without a board
     head = ["recortex record brief for %s (%s)." % (record.repo, record.freshness(fresh)),
-            "Rules: " + RULES % record.repo, ALIAS, SAY] + ([field] if field else []) + ([board] if board else []) + \
+            "Rules: " + RULES % record.repo, SAY] + ([field] if field else []) + ([board] if board else []) + \
         record.plan_lines() + record.writing_lines() + record.own_paper_lines() + record.task_lines()
     reports = record.report_lines()   # fixed words and numbers; they give way after the task lines below
     opening = ["", BEGIN, DATA_NOTE, ""]
@@ -615,7 +611,7 @@ def subagent_payload(record, fresh=None):
     ]
     if record.plan_issue():
         head.append("The %s has a plan (#%d)." % (record.plan()["noun"], record.plan_issue()))
-    tail = [ALIAS, BEGIN, DATA_NOTE]
+    tail = [BEGIN, DATA_NOTE]
     frame = field_frame(record.field, record.config)
     # The issue list gives way first, one issue at a time; the frame and both END lines are never cut. If even no
     # issue leaves room for the frame, it is left out whole and the brief is the one without a sheet.

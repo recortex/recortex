@@ -5,7 +5,7 @@
 
 Prints one line, `recortex on · read 2 h ago`, `recortex on · read 2 h ago · steps 7/12` (while open tasks have steps),
 `recortex on · reading`, `recortex off · not trusted` and the like, or
-nothing at all when the folder holds no project file (.recortex.json, or the name from before the rename). With no state
+nothing at all when the folder holds no project file (.recortex.json). With no state
 file for the folder it prints `recortex · starting` only when the JSON Claude Code gives shows that no request has been
 answered yet (`cost.total_api_duration_ms` is 0, or `context_window.current_usage` is null, which Claude Code's
 documentation says it is before the first API call); the first hook replaces it. When the JSON does not show that, or
@@ -30,7 +30,7 @@ import stat
 import sys
 import time
 
-CONFIG_NAMES = (".recortex.json", ".gh-issues-manager.json")   # names.CONFIG_NAME and names.OLD_CONFIG_NAME
+CONFIG_NAME = ".recortex.json"   # names.CONFIG_NAME
 SHORT = {  # the same codes as hooks.STATUS_REASONS, in a few words (a test holds the code sets equal)
     "not-trusted": "not trusted",
     "no-hub": "no hub",
@@ -100,11 +100,10 @@ def ago(stamp, now):
 
 
 def state_top(environ):
-    """The state folder of the plugin for this user: the test folder when RECORTEX_TESTING is 1 (or the name from before
-    the rename), else $XDG_STATE_HOME or ~/.local/state under the current name, or under the name from before the
-    rename when only that folder is there; the rule of storage.state_top, held equal by a test."""
+    """The state folder of the plugin for this user: the test folder when RECORTEX_TESTING is 1, else
+    $XDG_STATE_HOME or ~/.local/state, under the plugin's name; the rule of storage.state_top, held equal by a test."""
     def read(name):
-        return environ.get("RECORTEX_" + name) or environ.get("GHIM_" + name) or ""
+        return environ.get("RECORTEX_" + name) or ""
 
     home = read("DATA_HOME")
     if read("TESTING") == "1" and home and os.path.isabs(home):
@@ -112,8 +111,7 @@ def state_top(environ):
     base = environ.get("XDG_STATE_HOME") or ""
     if not (base and os.path.isabs(base)):
         base = os.path.join(os.path.expanduser("~"), ".local", "state")
-    current, earlier = os.path.join(base, "recortex"), os.path.join(base, "gh-issues-manager")
-    return current if os.path.lexists(current) or not os.path.lexists(earlier) else earlier
+    return os.path.join(base, "recortex")
 
 
 def project_folder(payload, environ):
@@ -192,7 +190,7 @@ def line(stdin_text="", environ=None, now=None):
     except ValueError:
         payload = {}
     root = project_folder(payload, environ)
-    if not any(os.path.isfile(os.path.join(root, name)) for name in CONFIG_NAMES):
+    if not os.path.isfile(os.path.join(root, CONFIG_NAME)):
         return ""
     data = read_state(status_file(root, environ))
     if data is MISSING and unanswered(payload):

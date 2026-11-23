@@ -56,8 +56,7 @@ BINARY = (".docx", ".doc", ".odt", ".pdf", ".rtf", ".pages", ".pptx", ".xlsx")
 PLACE_EXTENSIONS = (".tex", ".md", ".markdown", ".txt", ".rst", ".qmd", ".rmd", ".docx")
 # Folders and files that steer a tool, never a manuscript: git's own files, a workflow, the session's instructions.
 KEPT_AWAY = (".git", ".github", ".claude")
-KEPT_NAMES = ("claude.md", "agents.md", "gemini.md",
-              names.CONFIG_NAME, names.OLD_CONFIG_NAME)
+KEPT_NAMES = ("claude.md", "agents.md", "gemini.md", names.CONFIG_NAME)
 NOT_EDITED = "recortex does not edit this kind of file"
 WORDS_CAP = 600
 

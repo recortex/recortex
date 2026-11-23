@@ -1168,7 +1168,7 @@ def write_text(path, text, dry, what, base):
 
 def add_trusted(repo):
     """Add a repository to the user's trusted list through a temporary file; the file keeps its mode. The list is
-    the one recortex.trusted_target() names: an existing list of the earlier name is added to, not copied."""
+    the one recortex.trusted_target() names."""
     path = recortex.trusted_target()
     if os.path.islink(path) or os.path.lexists(path) and not os.path.isfile(path):
         raise SystemExit("error: %s is a symlink or not a plain file; add %s to it by hand" % (path, repo))
@@ -1193,10 +1193,8 @@ def add_trusted(repo):
 
 
 def config_target(root):
-    """The configuration file `apply` writes: the file under its name from before the rename when only that one is
-    there, so a rerun in an older project adds to it and makes no second file; else .recortex.json."""
-    new, old = os.path.join(root, names.CONFIG_NAME), os.path.join(root, names.OLD_CONFIG_NAME)
-    return old if os.path.lexists(old) and not os.path.lexists(new) else new
+    """The configuration file `apply` writes: .recortex.json in the project root."""
+    return os.path.join(root, names.CONFIG_NAME)
 
 
 def board_step(board, root, python, dry):
@@ -1494,17 +1492,13 @@ def apply(answers, root, dry, drafts):
     drafts_base = os.path.dirname(drafts) if outside(drafts, root) else root
     workflow = os.path.join(root, ".github", "workflows", names.WORKFLOW)
     labeler = answers["triage_workflow"] and answers["record"] == "this"
-    # A labeler installed under its name from before the rename does the same work: it is kept, and no second one is
-    # written beside it.
-    installed = os.path.join(root, ".github", "workflows", names.OLD_WORKFLOW)
-    keep_installed = labeler and os.path.isfile(installed)
     claude_md = os.path.join(root, "CLAUDE.md")
     # Every file this run may write is checked before anything is changed.
     refuse_unsafe(root, config_path)
     for name in ("hub.md", "resume-1.md", "manifest.json"):
         refuse_unsafe(drafts_base, os.path.join(drafts, name), "; pass --drafts <folder> to keep the hub drafts in a "
                       "plain folder elsewhere")
-    if labeler and not keep_installed:
+    if labeler:
         refuse_unsafe(root, workflow)
     if answers["claude_md"]:
         refuse_unsafe(root, claude_md)
@@ -1606,8 +1600,6 @@ def apply(answers, root, dry, drafts):
     if answers["triage_workflow"] and answers["record"] != "this":
         print("not written: the triage labeler runs in the repository that holds the issues (%s), not in this project; "
               "commit templates/recortex-triage.yml there as .github/workflows/recortex-triage.yml" % answers["repo"])
-    elif keep_installed:
-        print("kept: %s already labels new issues; no second labeler is written" % installed)
     elif answers["triage_workflow"]:
         text = recortex.read_text(os.path.join(TEMPLATES, "recortex-triage.yml"))
         if os.path.exists(workflow) and recortex.read_text(workflow) != text:
@@ -1618,10 +1610,6 @@ def apply(answers, root, dry, drafts):
         current = recortex.read_text(claude_md) if os.path.isfile(claude_md) else ""
         if "## Project record" in current:
             print("not written: CLAUDE.md already has a Project record section")
-            section = current.split("## Project record", 1)[1].split("\n## ", 1)[0]
-            if names.OLD_NAME in section:
-                print("note: that section names the %s skill, which is now called %s; change the name there by hand"
-                      % (names.OLD_NAME, names.NAME))
         else:
             write_text(claude_md, (current.rstrip("\n") + "\n\n" if current else "") + snippet(config), dry,
                        "the CLAUDE.md snippet", root)

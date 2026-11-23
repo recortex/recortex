@@ -10,23 +10,16 @@ for hooks but not for the session's Bash tool, so it would split the storage
 between the two. An index left in an older plugin data folder is ignored; the
 first sync builds a new one.
 
-The plugin had another name before version 0.5.0 (names.OLD_NAME).
-Each top folder is chosen by itself: the folder of the current name when
-anything is at that path, or when nothing is at the path of the earlier name;
-else the folder of the earlier name, used in place and never moved. An old and
-a new version of the plugin on one machine then share one index, one lock and
-one key, and the index keeps its mark, which covers its path. Whatever is
-chosen gets every check below; a symlink or a file at the current name is
-chosen and refused, so the earlier folder is never a way around a refused one.
+Each top folder is <base>/recortex. Whatever is there gets every check below; a
+symlink or a file at that name is refused.
 
 RECORTEX_DATA_HOME is for tests only, and is read only when RECORTEX_TESTING=1
 is also set: the index and the state then go to $RECORTEX_DATA_HOME/recortex (the
-key stays under XDG_STATE_HOME), with no earlier name. Like every top folder,
-only the folder the plugin names (recortex, or the earlier name where that one
-is used) is created or tightened, never a folder above it.
+key stays under XDG_STATE_HOME). Like every top folder, only the folder the
+plugin names is created or tightened, never a folder above it.
 
-A third top folder, $XDG_CONFIG_HOME/recortex (by default ~/.config/recortex,
-or the earlier name where only that one is there), is the folder of the user's
+A third top folder, $XDG_CONFIG_HOME/recortex (by default ~/.config/recortex),
+is the folder of the user's
 trusted list. The plugin keeps one file of its own in its private folder: the
 user's approvals of field sheets (field_sheet.py), under the same checks,
 written by one process at a time (a lock file beside it). The hooks only read
@@ -82,8 +75,7 @@ def _env_dir(name, default):
 
 def test_home():
     """$RECORTEX_DATA_HOME/recortex, for tests only: one top folder for the index and the state. Read only when
-    RECORTEX_TESTING=1 is also set and the value is an absolute path; None otherwise. Either variable may have its
-    name from before the rename (names.env)."""
+    RECORTEX_TESTING=1 is also set and the value is an absolute path; None otherwise."""
     value = names.env("DATA_HOME")
     if names.env("TESTING") != "1" or not value or not os.path.isabs(value):
         return None
@@ -91,30 +83,25 @@ def test_home():
 
 
 def choose_top(base):
-    """<base>/recortex, or <base>/<names.OLD_NAME> when nothing is at the first path and something is at the
-    second. os.path.lexists, so that a symlink or a file at the current name is chosen, and then refused by
-    check_top."""
-    current, earlier = os.path.join(base, names.NAME), os.path.join(base, names.OLD_NAME)
-    return current if os.path.lexists(current) or not os.path.lexists(earlier) else earlier
+    """<base>/recortex. A symlink or a file at that path is refused by check_top."""
+    return os.path.join(base, names.NAME)
 
 
 def cache_top():
-    """The top folder of the index: $XDG_CACHE_HOME/recortex (or the earlier name, see above), the same for hooks
-    and the terminal."""
+    """The top folder of the index: $XDG_CACHE_HOME/recortex, the same for hooks and the terminal."""
     return test_home() or choose_top(_env_dir("XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")))
 
 
 def state_top(for_key=False):
-    """The top folder of the state: $XDG_STATE_HOME/recortex (or the earlier name, see above). The key always lives
-    there."""
+    """The top folder of the state: $XDG_STATE_HOME/recortex. The key always lives there."""
     if not for_key and test_home():
         return test_home()
     return choose_top(_env_dir("XDG_STATE_HOME", os.path.join(os.path.expanduser("~"), ".local", "state")))
 
 
 def config_top():
-    """The plugin's top folder in the user's configuration folder: $XDG_CONFIG_HOME/recortex (or the earlier name,
-    see above), where the trusted list is. It holds the field approvals in its private folder. RECORTEX_DATA_HOME and
+    """The plugin's top folder in the user's configuration folder: $XDG_CONFIG_HOME/recortex,
+    where the trusted list is. It holds the field approvals in its private folder. RECORTEX_DATA_HOME and
     RECORTEX_TRUSTED_FILE do not move it."""
     return choose_top(_env_dir("XDG_CONFIG_HOME", os.path.join(os.path.expanduser("~"), ".config")))
 
@@ -122,8 +109,7 @@ def config_top():
 def status_path(root):
     """The file where the hooks write whether the record is on for the project folder `root`, for the status line:
     <state top>/private/status/<first 32 hex digits of the SHA-256 of the folder's path>.json, under the same top as
-    every other state file (state_top: the current name's folder, or the earlier one when only that one exists, so no
-    new folder appears beside it). The status line, which imports nothing, repeats this rule in statusline.py and a
+    every other state file (state_top). The status line, which imports nothing, repeats this rule in statusline.py and a
     test holds the two equal."""
     import hashlib
     folder_path = folder(state_top(), "status")

@@ -134,19 +134,15 @@ def find_config():
     """Path of the project's configuration file, or None.
 
     RECORTEX_CONFIG, set by the user, names a file explicitly. Otherwise only
-    the project root is considered: <project root>/.recortex.json, else the
-    file under the name it had before the rename (names.OLD_CONFIG_NAME), which
-    is read as before. A parent folder is never searched under either name.
+    the project root is considered: <project root>/.recortex.json. A parent
+    folder is never searched.
     """
     env = names.env("CONFIG")
     if env:
         return env if os.path.isfile(env) else None
     root = project_root()
-    for name in (names.CONFIG_NAME, names.OLD_CONFIG_NAME):
-        candidate = os.path.join(root, name)
-        if os.path.isfile(candidate):
-            return candidate
-    return None
+    candidate = os.path.join(root, names.CONFIG_NAME)
+    return candidate if os.path.isfile(candidate) else None
 
 
 def load_config():
@@ -169,27 +165,22 @@ def config_home():
 
 
 def trusted_files():
-    """The trusted lists that are read: RECORTEX_TRUSTED_FILE alone when it is an absolute path (neither default list
-    is then read); else <config home>/recortex/trusted-repos, then the list under the folder name from before the
-    rename (names.OLD_NAME). Both default lists belong to the user, and a repository listed in either is trusted."""
+    """The trusted lists that are read: RECORTEX_TRUSTED_FILE alone when it is an absolute path (the default list
+    is then not read); else <config home>/recortex/trusted-repos, which belongs to the user."""
     env = names.env("TRUSTED_FILE")
     if env and os.path.isabs(env):
         return [env]
-    return [os.path.join(config_home(), name, "trusted-repos") for name in (names.NAME, names.OLD_NAME)]
+    return [os.path.join(config_home(), names.NAME, "trusted-repos")]
 
 
 def trusted_target():
-    """The trusted list a new entry goes to: RECORTEX_TRUSTED_FILE when it is set; else the current default list when
-    something is there, else the earlier one when something is there, else the current default list (made new)."""
-    files = trusted_files()
-    return next((path for path in files if os.path.lexists(path)), files[0])
+    """The trusted list a new entry goes to: RECORTEX_TRUSTED_FILE when it is set, else the default list."""
+    return trusted_files()[0]
 
 
 def settings_file():
-    """The user's settings (`"discovery": false`): <config home>/recortex/settings.json, or the file under the folder
-    name from before the rename when only that one is there."""
-    current, earlier = (os.path.join(config_home(), name, "settings.json") for name in (names.NAME, names.OLD_NAME))
-    return earlier if os.path.lexists(earlier) and not os.path.lexists(current) else current
+    """The user's settings (`"discovery": false`): <config home>/recortex/settings.json."""
+    return os.path.join(config_home(), names.NAME, "settings.json")
 
 
 def read_trusted_file(path):
@@ -220,9 +211,8 @@ def trusted_from_variable():
 def trusted_repos():
     """Repositories the user has trusted, as {"owner/name": {extra allowed logins}}.
 
-    Read from every list of trusted_files() and from RECORTEX_TRUSTED_REPOS. All
-    belong to the user; nothing inside a project can add to them. The logins
-    listed for one repository in two lists are merged. Keys and logins are
+    Read from trusted_files() and from RECORTEX_TRUSTED_REPOS. Both belong to the
+    user; nothing inside a project can add to them. Keys and logins are
     lowercase.
     """
     trusted = {}
@@ -238,8 +228,7 @@ def trusted_sources(repo):
     """For --doctor and setup: the trusted lists that list `repo`, and the name of the variable when it lists it."""
     found = [path for path in trusted_files() if repo.lower() in read_trusted_file(path)]
     if repo.lower() in trusted_from_variable():
-        old = names.env_source("TRUSTED_REPOS") == "old"
-        found.append((names.OLD_ENV_PREFIX if old else names.ENV_PREFIX) + "TRUSTED_REPOS")
+        found.append(names.ENV_PREFIX + "TRUSTED_REPOS")
     return found
 
 

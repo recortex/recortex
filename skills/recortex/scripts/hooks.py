@@ -19,8 +19,7 @@ when there is no index yet, or on any error, with two exceptions of fixed
 wording: at session start in the top folder of a git checkout with a GitHub
 remote and no .recortex.json, one line offers to set up the record,
 once per project (off with RECORTEX_DISCOVERY=0 or "discovery": false in
-~/.config/recortex/settings.json, or the file of the name from before 0.5.0
-when only that one is there); and in a project that is set up and
+~/.config/recortex/settings.json); and in a project that is set up and
 trusted, one line says why the brief is not shown. Nothing here writes to GitHub.
 
 A project's field sheet (field_sheet.py) reaches a subagent brief only when the
@@ -842,28 +841,6 @@ def lock_lines(repo, active, problems):
           "two seconds" % (claim, age))
 
 
-def earlier_name_lines(config):
-    """For --doctor: notes on the names from before the rename that are in use. Only file, folder and variable names
-    from names.py and paths are printed, never a variable's value. They are notes, never problems."""
-    path = config.get("_path")
-    root = recortex.project_root()
-    lines = []
-    if path and not names.env("CONFIG"):
-        if os.path.basename(path) == names.OLD_CONFIG_NAME:
-            lines.append("note: this is the file name from before the rename; it is read as before. Rename it to %s "
-                         "once everyone on the project has %s 0.5.0 or later." % (names.CONFIG_NAME, names.NAME))
-        elif os.path.lexists(os.path.join(root, names.OLD_CONFIG_NAME)):
-            lines.append("note: %s also exists and is ignored." % names.OLD_CONFIG_NAME)
-    for variable in names.VARIABLES:
-        new, old = names.ENV_PREFIX + variable, names.OLD_ENV_PREFIX + variable
-        source = names.env_source(variable)
-        if source == "old":
-            lines.append("environment: %s is set and read (earlier name; %s is not set)" % (old, new))
-        elif source == "both":
-            lines.append("environment: %s and %s are both set; %s is used" % (old, new, new))
-    return lines
-
-
 def field_line(config, repo):
     """For --doctor: one line on the field guidance. Never a problem, and never text of a sheet that is not approved:
     field names only when approved; places, codes, fingerprints and sizes otherwise."""
@@ -886,10 +863,8 @@ def field_line(config, repo):
                 "with setup.py fields show" % (info["approved"], info["approved_fingerprint"][:12],
                                                info["fingerprint"][:12]))
     elif kind == "new":
-        tops = field_sheet.approval_tops()
-        where = field_sheet.approvals_path() if len(tops) == 1 else "your configuration folders (%s)" % ", ".join(
-            os.path.join(top, storage.PRIVATE, field_sheet.APPROVALS) for top in tops)
-        text = "not shown: no approval for this repository in %s. Review it with setup.py fields show" % where
+        text = ("not shown: no approval for this repository in %s. Review it with setup.py fields show"
+                % field_sheet.approvals_path())
     elif kind == "malformed":
         text = "not shown: the fields entry is refused: %s" % field_sheet.problem_text(info["problems"])
     else:
@@ -1042,12 +1017,6 @@ def gh_line():
     return "gh: found (%s); %s" % (shown, GH_STATES[state] % login if state == "ready" else GH_STATES[state])
 
 
-def top_note(path):
-    """For the storage line of --doctor: whether a top folder has the name from before the rename."""
-    return " (the folder name from before the rename, used in place)" if os.path.basename(path) == names.OLD_NAME \
-        else ""
-
-
 def observer_log_lines(repo, config):
     """For --doctor: one line when the observer's log of what it did could not take a post (observer_store.note_act_failure):
     fixed words, the count and the UTC day of the last failure, never text. Nothing when there is no failure, no
@@ -1184,8 +1153,6 @@ def doctor():
         print("config: unreadable (%s)" % error)
         return 1
     print("config: %s" % (config.get("_path") or "none found at the project root (%s)" % recortex.project_root()))
-    for line in earlier_name_lines(config):
-        print(line)
     repo, hub = config.get("repo"), config.get("hub")
     print("repository: %s   hub: %s" % (repo or "not set", hub if hub is not None else "not set"))
     if not config.get("_path"):
@@ -1196,8 +1163,7 @@ def doctor():
         return 1
     trusted = repo.lower() in recortex.trusted_repos()
     allowed = sorted(recortex.allowed_users(repo))
-    variable = (names.OLD_ENV_PREFIX if names.env_source("TRUSTED_REPOS") == "old" else names.ENV_PREFIX) + \
-        "TRUSTED_REPOS"
+    variable = names.ENV_PREFIX + "TRUSTED_REPOS"
     sources = recortex.trusted_sources(repo)
     print("trusted: %s (trusted lists read: %s; %s %s%s); allowed authors: %s"
           % ("yes" if trusted else "no", ", ".join(path + ("" if os.path.lexists(path) else " (missing)")
@@ -1207,9 +1173,8 @@ def doctor():
     if not trusted:
         problems.append("the repository is not trusted, so the hooks stay silent")
     print(gh_line())
-    print("storage: index under %s%s, state and key under %s%s; hooks and terminal scripts resolve the same folders "
-          "(CLAUDE_PLUGIN_DATA is not used)%s" % (storage.cache_top(), top_note(storage.cache_top()),
-                                                 storage.state_top(for_key=True), top_note(storage.state_top(True)),
+    print("storage: index under %s, state and key under %s; hooks and terminal scripts resolve the same folders "
+          "(CLAUDE_PLUGIN_DATA is not used)%s" % (storage.cache_top(), storage.state_top(for_key=True),
                                                  "; RECORTEX_TESTING and RECORTEX_DATA_HOME are set (for tests only): index and state under %s"
                                                  % storage.test_home() if storage.test_home() else ""))
     name = storage.repo_folder(repo)

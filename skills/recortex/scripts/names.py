@@ -1,13 +1,12 @@
-"""The plugin's names: the current ones, and the ones it had before it was renamed to recortex in version 0.5.0.
+"""The plugin's names: its own name, the configuration file, the workflow, the variable prefix and the file names of
+its local state.
 
-Every other module takes a name that changed from here, and reads the plugin's
-environment variables only through env(). A name from before the rename is
-read where the current one is absent, and nothing is moved or rewritten.
+Every other module takes a name from here, and reads the plugin's environment variables only through env().
 
 The comment markers `<!-- ghim:event ... -->` and `<!-- ghim:resume:start -->`
 are not names in this sense: they are the record format, defined in
-record_format.py and recortex.py, and they are not renamed, so that comments
-posted before and after the rename are one format.
+record_format.py and recortex.py, and they never change, so that comments
+posted by every version are one format.
 
 Standard library only, and nothing but `os`, so that storage.py can use it.
 """
@@ -15,14 +14,10 @@ Standard library only, and nothing but `os`, so that storage.py can use it.
 import os
 
 NAME = "recortex"
-OLD_NAME = "gh-issues-manager"
 CONFIG_NAME = ".recortex.json"
-OLD_CONFIG_NAME = ".gh-issues-manager.json"
 ENV_PREFIX = "RECORTEX_"
-OLD_ENV_PREFIX = "GHIM_"
 WORKFLOW = "recortex-triage.yml"
-OLD_WORKFLOW = "ghim-triage.yml"
-# Names of 1.3.0 that have no earlier name: the user's writing mode per repository, the paper kept outside the project
+# The user's writing mode per repository, the paper kept outside the project
 # folder (both in the private folder of the configuration top, like the field approvals), and the branch that holds the
 # versions of the plugin's own manuscript in the record's repository.
 WRITING_MODES = "writing-modes.json"
@@ -43,22 +38,9 @@ VARIABLES = ("GH", "CONFIG", "TRUSTED_FILE", "TRUSTED_REPOS", "HOOK_TIMEOUT", "D
 
 
 def env(name, default=None):
-    """RECORTEX_<name> when set to a non-empty value, else GHIM_<name> when non-empty, else default.
+    """RECORTEX_<name> when set to a non-empty value, else default.
 
     A value of spaces is not empty, as in the shell's ${VAR:-default}, which run_hook.sh uses for the same rule.
     """
-    for prefix in (ENV_PREFIX, OLD_ENV_PREFIX):
-        value = os.environ.get(prefix + name)
-        if value:
-            return value
-    return default
-
-
-def env_source(name):
-    """For --doctor: "new", "old", "both" or None, by which names of the variable are set to a non-empty value.
-    It says which names are set, never a value."""
-    new = bool(os.environ.get(ENV_PREFIX + name))
-    old = bool(os.environ.get(OLD_ENV_PREFIX + name))
-    if new and old:
-        return "both"
-    return "new" if new else "old" if old else None
+    value = os.environ.get(ENV_PREFIX + name)
+    return value if value else default
