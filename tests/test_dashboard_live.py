@@ -330,8 +330,30 @@ class LifetimeTests(LiveBox):
         thread.join(5)
         self.assertEqual(["idle"], result)
 
+    def test_the_launch_folder_is_looked_for_at_each_tick_and_the_day_runs_on_the_wall_clock(self):
+        second = action.Server(("127.0.0.1", 0), action.Handler, MOUNT, VIEW, CHANGE)
+        self.addCleanup(second.server_close)
+        self.assertIs(time.time, second.clock)   # a laptop's sleep counts toward the 24 hours
+        self.assertIsNone(action.launch_folder(create=False))   # the folder does not exist when the server starts
+        thread = threading.Thread(target=lambda: action.serve(second, tick=0.02), daemon=True)
+        thread.start()
+        time.sleep(0.2)
+        folder = action.launch_folder()   # the first `open` makes it, after the server started
+        old = os.path.join(folder, "launch-00000000.html")
+        storage.write_file(old, "x")
+        os.utime(old, (time.time() - 120, time.time() - 120))
+        deadline = time.time() + 10
+        while os.path.lexists(old) and time.time() < deadline:
+            time.sleep(0.05)
+        second.stop_requested = True
+        thread.join(5)
+        self.assertFalse(os.path.lexists(old))   # removed by the loop, with no `open` to do it
+
     def test_a_real_server_stops_on_a_valid_stop_and_leaves_no_state_and_a_free_lock(self):
         done = []
+        quiet = mock.patch.object(sys, "stdout", io.StringIO())   # the server says "was stopped" when it ends
+        quiet.start()
+        self.addCleanup(quiet.stop)
         thread = threading.Thread(target=lambda: done.append(action.serve_command(types.SimpleNamespace(port=0))), daemon=True)
         thread.start()
         deadline = time.time() + 10
@@ -521,6 +543,23 @@ class LiveTests(LiveBox):
             self.call("GET", "/snapshot", level="view")
             self.assertEqual([False, True, False], built)
 
+    def test_the_page_cache_follows_who_may_be_told_as_well_as_the_mark(self):
+        built = []
+        real = action.Actions.snapshot
+
+        def counting(actions, *args, **kwargs):
+            built.append(1)
+            return real(actions, *args, **kwargs)
+
+        with mock.patch.object(action.Actions, "snapshot", counting):
+            self.call("GET", "/snapshot", level="view")
+            self.call("GET", "/snapshot", level="view")
+            self.assertEqual(1, len(built))   # the same mark, the same accounts: served again
+            with open(self.trusted, "w", encoding="utf-8") as handle:   # an account that is not the owner leaves, another comes
+                handle.write("octo-org/octo-repo hubot\n")
+            self.call("GET", "/snapshot", level="view")
+            self.assertEqual(2, len(built))   # the page that was built for the earlier accounts is not served
+
     def test_the_live_script_holds_none_of_the_forbidden_calls_and_the_page_test_knows_it(self):
         with open(os.path.join(ROOT, "skills", "recortex", "page", "live.js"), encoding="utf-8") as handle:
             script = handle.read()
@@ -646,6 +685,31 @@ class HookTests(StateBox):
             self.assertEqual("  live dashboard: running on this machine", line())
         with mock.patch.dict(os.environ, {"RECORTEX_DASHBOARD": "off"}):
             self.assertIn("switched off", line())
+
+    def test_a_server_that_is_there_but_does_not_answer_is_said_so_by_the_doctor(self):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(5)
+        self.addCleanup(listener.close)
+        dashboard_server.write_state({"form": 1, "pid": os.getpid(), "port": listener.getsockname()[1], "mount": MOUNT,
+                                      "view": VIEW, "change": CHANGE, "version": dashboard_server.version(),
+                                      "started": int(time.time())})
+        line = [l for l in hooks.machine_summary("octo-org/octo-repo", recortex.load_config(), []) if "live dashboard" in l][0]
+        self.assertEqual("  live dashboard: running, but it did not answer within 2 seconds (another process may be holding it "
+                         "open)", line)
+
+    def test_the_doctors_probe_registers_nothing_and_does_not_extend_the_day(self):
+        self.make_state()
+        before = self.server.last_ping
+        self.server.projects.clear()
+        time.sleep(0.05)
+        state = {"port": self.server.server_port, "mount": MOUNT}
+        self.assertEqual(("running", dashboard_server.version()), dashboard_server.ping(state, self.project, 2.0, probe=True))
+        self.assertEqual(before, self.server.last_ping)
+        self.assertEqual({}, self.server.projects)
+        self.assertEqual(("running", dashboard_server.version()), dashboard_server.ping(state, self.project, 2.0))   # a ping does
+        self.assertGreater(self.server.last_ping, before)
+        self.assertIn(self.ident, self.server.projects)
 
     def test_reach_for_each_environment(self):
         self.assertEqual("local", dashboard_server.reach({}))

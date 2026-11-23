@@ -675,7 +675,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise ActionError("invalid_body", 400)
         raw = self.rfile.read(int(length))
         data = json.loads(raw) if len(raw) == int(length) else None
-        if not isinstance(data, dict) or not expected <= set(data) <= expected | {"stop"}:
+        if not isinstance(data, dict) or not expected <= set(data) <= expected | {"stop", "probe"}:
             raise ActionError("invalid_fields", 400)
         return data
 
@@ -693,6 +693,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 and hmac.compare_digest(tag, dashboard_server.hook_mac(root, at, nonce))):
             return self.respond(403, canonical({"code": "unauthorized"}))
         server.nonces[nonce] = now
+        if data.get("probe") is True:   # --doctor: only the pong, nothing is registered and the day is not extended
+            return self.respond(200, canonical({"pong": dashboard_server.pong_mac(nonce), "version": dashboard_server.version()}))
         server.last_ping = server.clock()
         if data.get("stop") is True:
             server.stop_requested = True
@@ -889,7 +891,7 @@ class Server(http.server.HTTPServer):
         self.mount, self.view, self.change = mount, view, change
         self.projects, self.actions, self.counters, self.nonces = {}, {}, {}, {}
         self.pages = {}
-        self.clock = time.monotonic
+        self.clock = time.time   # the wall clock: a laptop's sleep counts toward the day
         self.last_ping = self.clock()
         self.stop_requested = False
         self.actions_now = None
@@ -949,12 +951,15 @@ class Server(http.server.HTTPServer):
     def snapshot_of(self, ident, level):
         """The page of a project for a level: built once for each mark, and served again while the mark is the same. The view-only
         page copies requests into the chat; the change page records them."""
-        mark = self.mark_of(ident)
+        def key():
+            # the mark of the record, and who the user lets be told: an account that leaves the trusted list must not stay on a
+            # page that was built while it was on it
+            return self.mark_of(ident), tuple(sorted(recortex.allowed_users(self.actions_now.repo)))
         kept = self.pages.get((ident, level))
-        if kept is not None and kept[0] == mark:
+        if kept is not None and kept[0] == key():
             return kept[1]
         page = self.actions_now.snapshot("/%s/p/%s" % (self.mount, ident), interactive=level == "change", live=True)
-        self.pages[(ident, level)] = (self.mark_of(ident), page)
+        self.pages[(ident, level)] = (key(), page)
         return page
 
 
@@ -1034,13 +1039,13 @@ def serve(server, life=None, tick=None):
     loop."""
     life = dashboard_server.LIFE_SECONDS if life is None else life
     server.timeout = TICK_SECONDS if tick is None else tick
-    folder = launch_folder(create=False)
     while True:
         server.handle_request()  # waits up to server.timeout for one request, then returns
         if server.stop_requested:
             return "stopped"
         if server.clock() - server.last_ping >= life:
             return "idle"
+        folder = launch_folder(create=False)   # looked for at each tick: the first `open` may make it after the server started
         if folder:
             prune_launch_files(folder)
 

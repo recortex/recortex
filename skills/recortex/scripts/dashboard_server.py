@@ -250,7 +250,7 @@ def pong_mac(nonce):
     return mac(user_key(), "dashboard-pong", nonce)
 
 
-def ping(state, root, seconds=PING_SECONDS, stop=False):
+def ping(state, root, seconds=PING_SECONDS, stop=False, probe=False):
     """Ask the server of `state` to register the session's project (or to stop), and check that it answered with the pong only
     this user's server can make. ("running" or "other version" or "stale", the answer's version). Never raises; the connect and
     the answer together take at most `seconds`."""
@@ -260,6 +260,8 @@ def ping(state, root, seconds=PING_SECONDS, stop=False):
         body = {"root": os.path.realpath(root), "at": at, "nonce": nonce, "mac": hook_mac(os.path.realpath(root), at, nonce)}
         if stop:
             body["stop"] = True
+        if probe:
+            body["probe"] = True   # the server answers and registers nothing (what --doctor sends)
         connection = http.client.HTTPConnection("127.0.0.1", state["port"], timeout=seconds)
         try:
             connection.request("POST", "/%s/api/hook" % state["mount"], body=json.dumps(body),

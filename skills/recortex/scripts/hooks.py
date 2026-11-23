@@ -1205,7 +1205,10 @@ def machine_summary(repo, config, problems):
             return "switched off (settings.json or RECORTEX_DASHBOARD)"
         state = dashboard_server.read_state()
         if state is not None and dashboard_server.alive(state):
-            return "running on this machine"
+            answer = dashboard_server.ping(state, os.path.realpath(recortex.project_root()), 2.0, probe=True)[0]
+            return {"running": "running on this machine",
+                    "other version": "running on this machine, of another version (the next session start replaces it)"}.get(
+                        answer, "running, but it did not answer within 2 seconds (another process may be holding it open)")
         reason = dashboard_server.read_failure()
         return "could not be started: %s" % reason if reason else "not running (starts with the next session)"
 

@@ -9,7 +9,7 @@ How to install the plugin, which repositories it may print from, how to use it a
 - Python 3.8 or newer and bash; no other packages
 - Only for the optional board: the `project` scope on your `gh` login (`gh auth refresh -s project`), which the plugin never adds on its own. See [How the record works](how-it-works.md#sub-issues-and-the-board).
 
-Setup checks `gh` and Python before it asks anything (`setup.py preflight`): that `gh` runs, that it is signed in to github.com and names its account (`gh auth status`, then `gh api user`), and that Python is 3.8 or newer. When a check fails it prints one line with what to do, such as installing `gh` from https://cli.github.com or running `gh auth login` (in Claude Code, `! gh auth login`), and stops before the first question. It installs nothing and signs in to nothing on its own, and prints nothing of what `gh` says except your login. In a project that is set up, `hooks.py --doctor` also says whether `gh` is found and which account it is signed in as.
+Setup checks `gh` and Python before it asks anything (`setup.py preflight`): that `gh` runs, that it is signed in to github.com and names its account (`gh auth status`, then `gh api user`), and that Python is 3.8 or newer. When a check fails it prints one line with what to do, such as installing `gh` from https://cli.github.com or running `gh auth login`, and stops before the first question. It installs nothing and signs in to nothing on its own, and prints nothing of what `gh` says except your login. In a project that is set up, `hooks.py --doctor` also says whether `gh` is found and which account it is signed in as.
 
 ## Install
 
