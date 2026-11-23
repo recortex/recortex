@@ -338,6 +338,26 @@ class HappyPathTests(KeeperBox):
         self.assertEqual(2 * 6502, tiers["strong"]["input_tokens"] + tiers["strong"]["output_tokens"])
 
 
+class HostLeaseTests(KeeperBox):
+    """The keeper asks the worker's host lease before it keeps a proposal (the 1.7.0 review, S1): the two strong calls may have
+    used the lease up, and another host's worker may be on the queue by then."""
+
+    def test_a_proposal_is_not_kept_when_the_lease_is_gone_after_the_strong_calls(self):
+        asked = []
+        first, second = self.settled(holds=lambda: asked.append(1) or False)
+        self.assertEqual("other-host", second["code"])
+        self.assertEqual([1], asked)
+        self.assertEqual(["text", "text_review"], self.purposes())   # the calls were made; their result is not kept
+        self.assertEqual([], self.kept())
+
+    def test_a_proposal_is_kept_while_the_lease_holds(self):
+        asked = []
+        first, second = self.settled(holds=lambda: asked.append(1) or True)
+        self.assertEqual("drafted", second["code"])
+        self.assertEqual([1], asked)
+        self.assertEqual(1, len(self.kept()))
+
+
 class GateTests(KeeperBox):
     """Every condition of 7.1, one at a time: with it missing nothing is drafted and no call is reserved."""
 

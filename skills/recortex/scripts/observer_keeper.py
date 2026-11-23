@@ -147,11 +147,13 @@ def _used(result, options):
     return result.get("usage")
 
 
-def run_draft(repo, config, store, options, invoke, entry, state, now, project_root):
+def run_draft(repo, config, store, options, invoke, entry, state, now, project_root, holds=None):
     """Draft one topic's change and leave it waiting or refused. `entry` is one of keeper_rules.notable's topics.
     Returns {"code": "drafted", "draft": short id} for a draft that waits, {"code": "refused", "reason": ..., "draft":
     short id} for one the checks refused, or a code without a draft ("start_failed", "budget", "call_failed"): nothing
-    is kept for those, and the next pass may try again."""
+    is kept for those, and the next pass may try again. `holds` is a callable that renews the worker's host lease (True
+    while it holds): asked before the proposal is kept, since the two strong calls may have used the lease up; when it says
+    no, the code is "other-host" and nothing is kept."""
     topic = entry["topic"]
     token = secrets.token_hex(8)
     folder = storage.cache_folder(repo, "keeper", token)
@@ -231,6 +233,8 @@ def run_draft(repo, config, store, options, invoke, entry, state, now, project_r
     content = keeper_rules.content_hash({"draft.md": draft["draft"].encode("utf-8"),
                                          "used.json": json.dumps(draft["used"]).encode("utf-8"),
                                          "memory.json": json.dumps(draft["memory"]).encode("utf-8")})
+    if holds is not None and not holds():
+        return {"code": "other-host"}   # another host's worker may be on this queue now: keep no proposal from this one
     ident = store.add_draft(topic, headings, folder, base_hash, due_hash=entry["key"], state="waiting")
     store.set_control(keeper_rules.CONTENTS,
                       keeper_rules.remember(store.get_control(keeper_rules.CONTENTS, []), ident, content))
@@ -256,7 +260,8 @@ def _held_after_failure(store, topic, key, now):
 
 # ---------------------------------------------------------------- the entry point
 
-def consider(repo, config, store, options, invoke_fn=None, now=None, session_started=False, project_root=None, clock=None):
+def consider(repo, config, store, options, invoke_fn=None, now=None, session_started=False, project_root=None, clock=None,
+             holds=None):
     """Consider the paper's text once, after the worker's pass. `config` is the effective configuration, `options` the
     observer's settings (runtime.settings(config)), `store` the open observer store (the worker holds its lock) and
     `invoke_fn` the model call (default runtime.invoke); `session_started` says a session just started (the keeper
@@ -264,15 +269,16 @@ def consider(repo, config, store, options, invoke_fn=None, now=None, session_sta
     its short id}; it never raises. Codes: mode, level, paused, no_strong, strong_gate, writing, no_plan, not_trusted,
     no_index, nothing (nothing notable), one of keeper_rules.REASONS for a topic that waits or is held off, and the
     codes of run_draft. `clock` is the worker's lifetime (observer_worker.Clock): with less left than a draft and its review
-    may take (two strong calls and a minute), the code is "time" and the next pass looks again."""
+    may take (two strong calls and a minute), the code is "time" and the next pass looks again. `holds` renews the worker's
+    host lease (see run_draft); a draft that finds it gone is not kept ("other-host")."""
     try:
         return _consider(repo, config, store, options, invoke_fn or runtime.invoke,
-                         time.time() if now is None else now, session_started, project_root, clock)
+                         time.time() if now is None else now, session_started, project_root, clock, holds)
     except Exception:  # noqa: BLE001 - the keeper must never stop the worker; the next pass looks again
         return {"code": "error"}
 
 
-def _consider(repo, config, store, options, invoke, now, session_started, project_root, clock=None):
+def _consider(repo, config, store, options, invoke, now, session_started, project_root, clock=None, holds=None):
     if names.env(runtime.GUARD) == "1" or not options.get("enabled") or options.get("mode") != "automatic":
         return {"code": "mode"}   # shadow mode proposes nothing either
     if options.get("level") not in LEVELS:
@@ -331,7 +337,7 @@ def _consider(repo, config, store, options, invoke, now, session_started, projec
                 continue
             if clock is not None and clock.remaining() < 2 * runtime.call_timeout(options, "strong") + 60:
                 return {"code": "time"}   # a strong call cut by the worker's alarm costs the budget and makes no draft
-            outcome = run_draft(repo, config, store, options, invoke, entry, state, now, root)
+            outcome = run_draft(repo, config, store, options, invoke, entry, state, now, root, holds)
             return dict(outcome, topic=topic)
         return {"code": why}
     finally:

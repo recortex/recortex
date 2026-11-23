@@ -39,9 +39,10 @@ import tasks
 DAY = 86400
 RENDER_ACTS = ("task_rendered", "task_closed", "hub_rendered", "board")   # what the day's max_renders counts
 JOBS_DAY = "jobs_day"       # store control: when the daily run last happened
+LEASE_LOST = "lease"        # the step word of a step that did not run because the worker no longer held the host lease
 JOBS_LAST = "jobs_last"     # store control: {"at", "steps": {step: fixed word}, "cleaned": integer}
 LINKS_LAST = "links_last"   # store control: when sub_issues apply last ran
-CODES = ("ok", "nothing", "waiting", "asked", "failed", "level", "sync", "no_section", "shadow", "skipped", "by_hand")
+CODES = ("ok", "nothing", "waiting", "asked", "failed", "level", "sync", "no_section", "shadow", "skipped", "by_hand", "lease")
 HUB_HEADING = "Active issues"
 HUB_HEAD = ["| Issue | Work in development | Destination topic |", "|---|---|---|"]
 NOT_TOLD = "(title not told)"
@@ -288,12 +289,14 @@ def clean_keeper(repo, store, now):
 
 # ---------------------------------------------------------------- the run
 
-def run(repo, config, store, options, refresh=None, posted=False, now=None, clock=None):
+def run(repo, config, store, options, refresh=None, posted=False, now=None, clock=None, holds=None):
     """The jobs of one worker run, as {step: fixed word}. Nothing runs unless the settings hold a level and the mode is
     automatic, and then only after a pass that posted something or when a day has passed since the last run. `refresh`
     is the worker's own refresh of the index (a callable returning True when the record was read); without it the index
     is taken as it is. `clock` is the worker's lifetime (observer_worker.Clock): a step that would start with none left is
-    skipped ("time"), so that a slow step cannot take the jobs past it."""
+    skipped ("time"), so that a slow step cannot take the jobs past it. `holds` renews the worker's host lease and says whether
+    it still holds (observer_lease); it is asked before every step that can write to GitHub, and a step it refuses is not run
+    and is recorded as LEASE_LOST, after which no later step runs either."""
     level = options.get("level")
     if level not in runtime.LEVELS or options.get("mode") != "automatic":
         return {"code": "shadow" if options.get("mode") != "automatic" else "level"}
@@ -314,6 +317,8 @@ def run(repo, config, store, options, refresh=None, posted=False, now=None, cloc
     def go(function, *args):
         if clock is not None and clock.remaining() <= 0:
             return {render_step: ("time", 0, 0), close_step: ("time", 0)}.get(function, "time")
+        if holds is not None and not holds():
+            return {render_step: (LEASE_LOST, 0, 0), close_step: (LEASE_LOST, 0)}.get(function, LEASE_LOST)
         return _guard(function, *args)
 
     if refresh is not None:

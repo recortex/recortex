@@ -145,19 +145,30 @@ class Lease:
         return self.state in ("taken", "unavailable")
 
     def renew(self):
-        """Extend the lease by the lease time. True while this worker still holds it: the file is read, its token is checked,
-        and a fresh temporary file is renamed over it. False when another host took it (the worker stops its work)."""
+        """Extend the lease by the lease time. True while this worker still holds it. The renew takes the same claim as a
+        takeover (so that the two exclude each other), reads the file, checks its token and that the lease has not run out
+        (another host may already judge it expired), and renames a fresh temporary file over it. False when another host took
+        it, when it ran out, or when the claim was lost: the worker stops before it writes anything more."""
         if self.state == "unavailable":
             return True
-        state, value, _ = read(self.folder)
-        if state != "ok" or value["token"] != self.token or value["host"] != hostname():
+        path = os.path.join(self.folder, LEASE)
+        claim = path + ".claim"
+        mine = _claim(path, claim)
+        if mine is None:
             return False
         try:
-            storage.write_file(os.path.join(self.folder, LEASE), _text(dict(value, expires=int(clock()) + SECONDS,
-                                                                           pid=os.getpid())))
+            state, value, _ = read(self.folder)
+            if (state != "ok" or value["token"] != self.token or value["host"] != hostname()
+                    or value["expires"] <= int(clock())):
+                return False
+            if _identity(claim) != mine:   # a contender judged the claim left by a dead process, and may be taking over
+                return False
+            storage.write_file(path, _text(dict(value, expires=int(clock()) + SECONDS, pid=os.getpid())))
+            return True
         except (OSError, storage.StorageError):
             return False
-        return True
+        finally:
+            _drop_claim(claim, mine)
 
     def release(self):
         """Remove the lease when this worker still holds it (the token is checked). Never raises."""
@@ -177,6 +188,31 @@ def _identity(path):
     except FileNotFoundError:
         return None
     return info.st_dev, info.st_ino, info.st_mtime_ns
+
+
+def _claim(path, claim):
+    """Make the claim (a hard link to the lease) that only one process can hold, and return its identity; None when it could
+    not be made. A claim that another process holds is waited for a moment, and one that has stood unchanged for CLAIM_LEFT
+    seconds counts as left by a process that died and is dropped (the idea of acquire)."""
+    deadline, waiting = time.monotonic() + CLAIM_LEFT + 1.0, None
+    while time.monotonic() < deadline:
+        try:
+            os.link(path, claim, follow_symlinks=False)
+            return _identity(claim)
+        except FileExistsError:
+            seen = _identity(claim)
+            if seen is None:
+                continue
+            if waiting is None or waiting[0] != seen:
+                waiting = (seen, time.monotonic())
+            elif time.monotonic() - waiting[1] >= CLAIM_LEFT:
+                _drop_claim(claim, seen)
+                waiting = None
+                continue
+            time.sleep(0.02)
+        except OSError:
+            return None
+    return None
 
 
 def _drop_claim(claim, identity):

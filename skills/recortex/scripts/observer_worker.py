@@ -1606,6 +1606,8 @@ def run_once(repo, config, project_root=None, invoke_fn=None, settle_first=False
                 store.set_control("worker_degraded", "" if report["code"] in ("ok", "no-sources", "paused")
                                   else report["code"].replace("-", "_"))
                 if options["map_mode"] != "off" and clock.remaining() > 2 * runtime.call_timeout(options, "middle") + 5:
+                    if not lease.renew():   # the map step may post to GitHub, and the pass before it may have run long
+                        return dict(report, code="other-host")
                     import observer_map
                     try:
                         report["map"] = observer_map.consider(store, repo, config, options, invoke_fn or runtime.invoke,
@@ -1629,6 +1631,8 @@ def run_once(repo, config, project_root=None, invoke_fn=None, settle_first=False
                         store.set_control("summary_last", {"at": time.time(), "code": code})
                     # Includes reviewed events left ready by a previous interrupted worker.
                     for event in store.events(states=["ready"], limit=4):
+                        if not lease.renew():   # before every post: an earlier post or the summary may have run long
+                            return dict(report, code="other-host")
                         try:
                             observer_publisher.publish(repo, event["eventkey"], config)
                         except (observer_publisher.PublishError, recortex.GhError) as error:
@@ -1649,13 +1653,19 @@ def run_once(repo, config, project_root=None, invoke_fn=None, settle_first=False
                     # and never writes the paper's text, it only leaves a draft that waits for the user's answer.
                     observer_keeper.consider(repo, config, store, options, invoke_fn or runtime.invoke,
                                              session_started=settle_first,
-                                             project_root=project_root or recortex.project_root(), clock=clock)
+                                             project_root=project_root or recortex.project_root(), clock=clock,
+                                             holds=lease.renew)
+                    if not lease.renew():   # the keeper's two strong calls may have used the lease up: no job writes then
+                        return dict(report, code="other-host")
                     # The housekeeping jobs (spec 8.2): after a pass that posted something, and once a day. No model call.
                     # They have their own deadline: an alarm that a cut call swallowed is spent, so it is set again.
                     clock.arm(JOBS_SECONDS)
                     try:
-                        observer_jobs.run(repo, config, store, options, posted=posted,
-                                          refresh=lambda: refresh_record(repo, config, store, options), clock=clock)
+                        steps = observer_jobs.run(repo, config, store, options, posted=posted,
+                                                  refresh=lambda: refresh_record(repo, config, store, options), clock=clock,
+                                                  holds=lease.renew)
+                        if observer_jobs.LEASE_LOST in steps.values():   # a step stopped before its write: stop the pass
+                            return dict(report, code="other-host")
                     except (OSError, ValueError, sqlite3.Error, recortex.GhError, observer_store.StoreError,
                             subprocess.TimeoutExpired):
                         store.set_control("jobs_last", {"at": time.time(), "steps": {"run": "failed"}})

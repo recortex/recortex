@@ -151,6 +151,68 @@ class TakingTests(Box):
         self.assertTrue(taken.renew())
 
 
+class RenewTests(Box):
+    """The holder's renew and another host's takeover exclude each other (the 1.7.0 review, S1)."""
+
+    def test_a_renew_holds_the_claim_that_a_takeover_needs_and_gives_it_back(self):
+        mine = lease.acquire(self.folder)
+        claim = self.path + ".claim"
+        seen, real = [], lease.read
+
+        def watch(folder):
+            seen.append(os.path.lexists(claim))
+            return real(folder)
+        with mock.patch.object(lease, "read", watch):
+            self.assertTrue(mine.renew())
+        self.assertEqual([True], seen)   # the claim stood while the file was read and written
+        self.assertFalse(os.path.lexists(claim))
+
+    def test_a_lease_that_ran_out_is_not_renewed_before_another_host_may_take_it(self):
+        mine = lease.acquire(self.folder)
+        self.clock.value = NOW + 599
+        self.assertTrue(mine.renew())
+        before = self.record()
+        self.clock.value = before["expires"]   # run out; the skew has not passed, so nobody has taken it
+        self.assertFalse(mine.renew())
+        self.assertEqual(before, self.record())   # nothing was written
+        self.as_host(NODE)
+        self.assertEqual("other", lease.acquire(self.folder).state)
+
+    def test_a_takeover_that_lands_inside_a_renew_leaves_exactly_one_holder(self):
+        mine = lease.acquire(self.folder)
+        real, done = lease.read, {}
+
+        def read_then_take_over(folder):
+            result = real(folder)
+            if not done:   # another host judges the lease expired while this holder is between its read and its write
+                done["started"] = True
+                self.as_host(NODE)
+                self.clock.value = NOW + 600 + 121
+                done["lease"] = lease.acquire(self.folder)
+                self.as_host(LOGIN)
+                self.clock.value = NOW + 10   # the holder's own clock still says the lease is live
+            return result
+        with mock.patch.object(lease, "read", read_then_take_over), mock.patch.object(lease, "CLAIM_LEFT", 0.05):
+            renewed = mine.renew()
+        taken = done["lease"]
+        self.assertEqual("taken", taken.state)
+        self.assertFalse(renewed)
+        self.assertEqual((NODE, taken.token), (self.record()["host"], self.record()["token"]))   # the takeover stands
+        self.as_host(NODE)
+        self.clock.value = NOW + 600 + 122
+        self.assertTrue(taken.renew())
+        self.as_host(LOGIN)
+        self.assertFalse(mine.renew())
+
+    def test_a_claim_left_by_a_judge_that_died_does_not_stop_the_holder_for_good(self):
+        mine = lease.acquire(self.folder)
+        os.link(self.path, self.path + ".claim")   # a contender died holding its claim
+        with mock.patch.object(lease, "CLAIM_LEFT", 0.05):
+            self.assertTrue(mine.renew())
+        self.assertFalse(os.path.lexists(self.path + ".claim"))
+        self.assertEqual(mine.token, self.record()["token"])
+
+
 class ContentionTests(Box):
     def test_two_contenders_for_an_expired_lease_exactly_one_wins(self):
         context = multiprocessing.get_context("fork")
@@ -332,7 +394,8 @@ class WorkerTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.host = LOGIN
-        for target, value in (("hostname", lambda: self.host),):
+        self.clock = Clock(int(time.time()))
+        for target, value in (("hostname", lambda: self.host), ("clock", self.clock)):
             patcher = mock.patch.object(lease, target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -401,6 +464,97 @@ class WorkerTests(unittest.TestCase):
         self.run_worker()
         with store.Store(REPO, config=self.config) as db:
             self.assertEqual("", db.get_control("worker_lease"))
+
+    def automatic(self, **more):
+        """Automatic mode, as the steps after the pass need it (the summary, the posts, the keeper and the jobs)."""
+        self.config["observer"].update(mode="automatic", **more)
+        runtime.approve(REPO, self.config)
+
+    def take_over(self):
+        """Another host takes the lease from this worker: its time ran out and the skew passed."""
+        self.host = NODE
+        self.clock.value += lease.SECONDS + lease.SKEW + 1
+        taken = lease.acquire(self.state)
+        self.host = LOGIN
+        self.assertEqual("taken", taken.state)
+        return taken
+
+    def passes(self, *patches):
+        """run_once with every step after the pass stubbed, and what the test adds."""
+        with mock.patch.object(worker, "_process", return_value={"code": "ok", "ready": []}), \
+                mock.patch.object(worker, "refresh_summary", return_value="current"):
+            stack = [mock.patch.object(*patch[:2], **patch[2]) for patch in patches]
+            entered = [item.start() for item in stack]
+            try:
+                return self.run_worker(), entered
+            finally:
+                for item in reversed(stack):
+                    item.stop()
+
+    def test_a_keeper_that_used_up_the_lease_ends_the_pass_before_any_job_writes(self):
+        self.automatic()
+        result, (keeper, jobs) = self.passes(
+            (worker.observer_keeper, "consider", {"side_effect": lambda *a, **k: self.take_over() and {"code": "time"}}),
+            (worker.observer_jobs, "run", {"return_value": {}}))
+        self.assertEqual("other-host", result["code"])
+        keeper.assert_called_once()
+        jobs.assert_not_called()   # the jobs render and close tasks on GitHub: not from a worker that lost its lease
+        self.assertEqual(NODE, json.loads(Path(self.lease_path()).read_text())["host"])
+
+    def test_the_keeper_and_the_jobs_are_given_the_lease_to_ask_before_they_write(self):
+        self.automatic()
+        asked = []
+
+        def ask(name):
+            return lambda *args, **kwargs: asked.append((name, kwargs["holds"]())) or (
+                {"code": "nothing"} if name == "keeper" else {})
+        self.passes((worker.observer_keeper, "consider", {"side_effect": ask("keeper")}),
+                    (worker.observer_jobs, "run", {"side_effect": ask("jobs")}))
+        self.assertEqual([("keeper", True), ("jobs", True)], asked)   # the worker's own renew, while it holds the lease
+
+    def test_the_jobs_stop_when_a_step_finds_the_lease_gone(self):
+        self.automatic()
+        result, (jobs,) = self.passes((worker.observer_jobs, "run", {"return_value": {"render": "lease"}}))
+        self.assertEqual("other-host", result["code"])
+
+    def test_every_post_of_a_pass_is_preceded_by_a_renew(self):
+        self.automatic()
+        posted = []
+
+        def publish(repo, key, config):
+            posted.append(key)
+            self.take_over()   # the first post ran long; the lease is gone before the second
+        result, (events, publisher, keeper) = self.passes(
+            (store.Store, "events", {"return_value": [{"eventkey": "a" * 8}, {"eventkey": "b" * 8}]}),
+            (worker.observer_publisher, "publish", {"side_effect": publish}),
+            (worker.observer_keeper, "consider", {"return_value": {"code": "nothing"}}))
+        self.assertEqual(["a" * 8], posted)
+        self.assertEqual("other-host", result["code"])
+        keeper.assert_not_called()
+
+    def test_the_map_step_does_not_start_when_the_pass_before_it_used_up_the_lease(self):
+        import observer_map
+        self.automatic(map_mode="shadow")
+        with mock.patch.object(observer_map, "consider", return_value="nothing") as step, \
+                mock.patch.object(worker, "_process", side_effect=lambda *a, **k: self.take_over() and
+                                  {"code": "ok", "ready": []}):
+            result = self.run_worker()
+        self.assertEqual("other-host", result["code"])
+        step.assert_not_called()   # the map step may post to GitHub
+
+    def test_a_worker_whose_lease_another_host_took_between_the_peek_and_the_lock_stops_before_any_work(self):
+        # The check inside the worker's lock decides when the peek before it found nothing (the 1.7.0 review, S5).
+        taken = lease.acquire(self.state)
+        self.host = NODE
+        with mock.patch.object(lease, "peek", return_value=None) as peeked, \
+                mock.patch.object(worker, "_process", side_effect=AssertionError("worked")):
+            result = self.run_worker()
+        peeked.assert_called_once()
+        self.assertEqual(("other-host", []), (result["code"], result["ready"]))
+        self.refreshed.assert_not_called()
+        self.assertEqual([], self.calls)
+        self.assertEqual(taken.token, json.loads(Path(self.lease_path()).read_text())["token"])   # the other host's, untouched
+        self.assertIsNotNone(lease.peek(self.state))   # and it still holds: the peek was the one that was wrong
 
     def status(self):
         import contextlib

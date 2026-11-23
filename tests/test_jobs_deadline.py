@@ -130,11 +130,30 @@ class KeeperTimeTests(tk.KeeperBox):
 
 
 class JobsDeadlineTests(tjj.JobsBox):
-    def run_jobs(self, clock):
+    def run_jobs(self, clock, **kw):
         self.use()
         options = runtime.settings(self.pcfg)
         with store_module.Store(tjj.REPO, config=self.pcfg) as db:
-            return jobs.run(tjj.REPO, self.pcfg, db, options, refresh=lambda: True, posted=True, clock=clock)
+            return jobs.run(tjj.REPO, self.pcfg, db, options, refresh=lambda: True, posted=True, clock=clock, **kw)
+
+    def test_a_worker_that_lost_its_host_lease_runs_no_step_that_writes(self):
+        asked = []
+        steps = self.run_jobs(None, holds=lambda: asked.append(1) or False)
+        self.assertEqual({"render": "lease", "close": "lease", "hub": "lease", "links": "lease", "board": "lease"},
+                         {key: steps[key] for key in ("render", "close", "hub", "links", "board")})
+        self.assertEqual([], self.writes())
+        self.assertEqual(5, len(asked))   # asked before each of the five steps that can write to GitHub
+
+    def test_a_lease_that_runs_out_during_a_step_stops_the_steps_after_it(self):
+        left = [True, False]
+        steps = self.run_jobs(None, holds=lambda: left.pop(0) if left else False)
+        self.assertEqual("ok", steps["render"])
+        self.assertEqual({"close": "lease", "hub": "lease", "links": "lease", "board": "lease"},
+                         {key: steps[key] for key in ("close", "hub", "links", "board")})
+        self.assertTrue(all(tuple(call[:2]) != ("issue", "close") for call in self.writes()))
+
+    def test_a_lease_that_holds_changes_nothing(self):
+        self.assertEqual("ok", self.run_jobs(None, holds=lambda: True)["render"])
 
     def test_with_no_time_left_no_step_runs_and_nothing_is_written(self):
         steps = self.run_jobs(worker.Clock(-1, now=Fake()))
