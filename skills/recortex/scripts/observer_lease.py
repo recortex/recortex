@@ -20,6 +20,7 @@ number of seconds since the epoch, UTC. It runs 10 minutes, and the holder renew
 The host name is not printed anywhere, because it is not checked record text: status and --doctor say only until when.
 Standard library only."""
 
+import errno
 import hashlib
 import json
 import os
@@ -38,9 +39,23 @@ CLAIM_LEFT = 2.0    # seconds a claim may stand before it counts as left by a pr
 TRY_SECONDS = 3.0   # how long acquire tries in all
 TRIES = 40          # and at most this many judgments of an expired lease
 MAX_BYTES = 512
+NO_LINKS = (errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP)   # what a file system that makes no hard links answers
 HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
 TOKEN = re.compile(r"[0-9a-f]{32}")
 HELD = "another host's observer worker holds this folder until %s UTC"
+# What status and --doctor say, in fixed words, when the worker's last pass found the lease unavailable or in error (the worker keeps
+# the key in its store: "worker_lease").
+NOTES = {"unavailable": "the host lease could not be made on this file system, so a worker of another host is not kept off; the "
+                        "worker's own lock still applies",
+         "error": "the host lease could not be made or read at the worker's last pass (an error of the mount, such as a full quota "
+                  "or a stale handle), so that pass did not run; the next one tries again"}
+
+
+def note_for(mark):
+    """The fixed words for the worker's stored mark, or "" (nothing, or anything that is not one of the two)."""
+    return NOTES[mark] if isinstance(mark, str) and mark in NOTES else ""
+
+
 # For --doctor, where the state folder's mount keeps file locks on the host (Lustre localflock, NFS local_lock): fixed words.
 LOCAL_LOCKS = ("this folder is on a mount whose file locks do not reach other hosts (localflock or local_lock): SQLite and "
                "the file locks of this mount do not stop two hosts. The host lease keeps the observer's worker to one host, "
@@ -134,11 +149,11 @@ def status(folder, now=None):
 
 class Lease:
     """What acquire returns. `state` is "taken" (this worker holds it; `token` is its own), "other" (`until` is the second the
-    other host's lease ran to) or "unavailable" (the file system cannot make the lease here: the worker goes on under its
-    local lock alone, and says so)."""
+    other host's lease ran to; `reason` is "error" when nothing could be judged because the mount answered with an error) or
+    "unavailable" (the file system cannot make hard links here: the worker goes on under its local lock alone, and says so)."""
 
-    def __init__(self, folder, state, token=None, until=None):
-        self.folder, self.state, self.token, self.until = folder, state, token, until
+    def __init__(self, folder, state, token=None, until=None, reason=""):
+        self.folder, self.state, self.token, self.until, self.reason = folder, state, token, until, reason
 
     @property
     def held(self):
@@ -253,7 +268,9 @@ def _take_over(folder, host, seen):
 def acquire(folder):
     """Take the lease for this host, inside the worker's own lock: a Lease. A lease that this host's earlier worker left is
     replaced (the local lock says that no worker of this host is working). Another host's lease that holds is not touched. A
-    file system that cannot make the file leaves the worker its local lock alone ("unavailable"); nothing here raises."""
+    file system that makes no hard links (NO_LINKS) leaves the worker its local lock alone ("unavailable"); any other error of
+    the mount (a stale handle, an input error, a full quota) is no decision, so the worker leaves like one that found a lease
+    ("other", reason "error"): it never goes on beside a lease that it could not judge. Nothing here raises."""
     host = hostname()
     path = os.path.join(folder, LEASE)
     claim = path + ".claim"
@@ -294,8 +311,12 @@ def acquire(folder):
             if taken is not None:
                 return Lease(folder, "taken", taken["token"])
         return Lease(folder, "other", until=clock())   # no decision in time: never go on beside a lease that was not judged
-    except (OSError, NotImplementedError, storage.StorageError):
+    except (NotImplementedError, storage.StorageError):
         return Lease(folder, "unavailable")
+    except OSError as error:
+        if error.errno in NO_LINKS:
+            return Lease(folder, "unavailable")
+        return Lease(folder, "other", until=clock(), reason="error")
 
 
 def _replace_own(folder, seen, record):

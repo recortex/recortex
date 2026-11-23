@@ -1158,6 +1158,14 @@ def machine_summary(repo, config, problems):
         held = observer_lease.status(folder) if folder else ""
         if held:
             lines.append("  observer worker: %s" % held)
+        try:
+            import observer_store
+            with observer_store.Store(repo, create=False, readonly=True, config=config) as store:
+                mark = store.get_control("worker_lease")
+        except Exception:  # noqa: BLE001 - no observer store yet, or one that cannot be read: nothing to add
+            mark = ""
+        if observer_lease.note_for(mark):   # the last pass could not make or read the lease
+            lines.append("  observer worker: %s" % observer_lease.note_for(mark))
     except Exception:  # noqa: BLE001
         lines.append("  several hosts: %s" % COULD_NOT_CHECK)
     return lines

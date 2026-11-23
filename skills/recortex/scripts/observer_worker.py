@@ -1575,6 +1575,8 @@ def run_once(repo, config, project_root=None, invoke_fn=None, settle_first=False
             with observer_store._exclusive_lock(store.folder, "worker.lock"):
                 lease = observer_lease.acquire(store.folder)
                 if not lease.held:
+                    if lease.reason:   # nothing could be judged: status and --doctor say so (observer_lease.NOTES)
+                        store.set_control("worker_lease", lease.reason)
                     return {"code": "other-host", "ready": []}
                 store.set_control("worker_lease", "unavailable" if lease.state == "unavailable" else "")
                 if not runtime.approval_valid(repo, config):

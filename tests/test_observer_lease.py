@@ -2,6 +2,7 @@
 project's queue at a time, also where file locks do not reach across hosts. Two hosts are simulated by replacing the lease's
 host-name function and its clock; no second machine, no model and no network are used."""
 
+import errno
 import json
 import multiprocessing
 import os
@@ -307,12 +308,36 @@ class DamagedTests(Box):
         self.clock.value = NOW
         self.assertEqual("other", lease.acquire(self.folder).state)   # not believed, not crashed on: held for the lease time
 
-    def test_a_folder_that_cannot_make_the_file_leaves_the_worker_its_own_lock_and_says_so(self):
-        with mock.patch.object(storage, "link_new_file", side_effect=OSError("no hard links here")):
-            taken = lease.acquire(self.folder)
-        self.assertEqual(("unavailable", True), (taken.state, taken.held))
-        self.assertTrue(taken.renew())
-        taken.release()
+    def test_a_file_system_without_hard_links_leaves_the_worker_its_own_lock_and_says_so(self):
+        for number in lease.NO_LINKS:
+            with self.subTest(errno.errorcode[number]):
+                with mock.patch.object(storage, "link_new_file", side_effect=OSError(number, "no hard links here")):
+                    taken = lease.acquire(self.folder)
+                self.assertEqual(("unavailable", True, ""), (taken.state, taken.held, taken.reason))
+                self.assertTrue(taken.renew())
+                taken.release()
+        for error in (NotImplementedError("no link"), storage.StorageError("not safe")):
+            with mock.patch.object(storage, "link_new_file", side_effect=error):
+                self.assertEqual("unavailable", lease.acquire(self.folder).state)
+        self.assertEqual({errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP}, set(lease.NO_LINKS))
+
+    def test_any_other_error_of_the_mount_is_no_decision_and_the_worker_leaves_like_one_that_found_a_lease(self):
+        # The 1.7.0 review, N2: a stale handle, an input error or a full quota is not a file system without hard links.
+        for number in (errno.ESTALE, errno.EIO, errno.EDQUOT, errno.ENOSPC, errno.EACCES, errno.EAGAIN):
+            with self.subTest(errno.errorcode[number]):
+                with mock.patch.object(storage, "link_new_file", side_effect=OSError(number, "mount error")):
+                    other = lease.acquire(self.folder)
+                self.assertEqual(("other", False, "error"), (other.state, other.held, other.reason))
+                self.assertFalse(os.path.lexists(self.path))   # nothing was made
+        with mock.patch.object(storage, "link_new_file", side_effect=OSError("no number")):
+            self.assertEqual("other", lease.acquire(self.folder).state)
+
+    def test_an_error_of_the_mount_beside_a_live_lease_of_another_host_still_honors_that_lease(self):
+        lease.acquire(self.folder)
+        self.as_host(NODE)
+        with mock.patch.object(storage, "replace_file", side_effect=OSError(errno.ESTALE, "stale")):
+            other = lease.acquire(self.folder)
+        self.assertEqual(("other", NOW + 600, ""), (other.state, other.until, other.reason))   # held, not an error
 
     def test_nothing_raises_whatever_the_file_holds(self):
         for text in ("\x00" * 10, "�" * 30, "{\"host\": \"" + "a" * 400):
@@ -455,8 +480,35 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual("other-host", result["code"])
         self.assertEqual(NODE, json.loads(Path(self.lease_path()).read_text())["host"])   # the new holder's lease is left alone
 
+    def test_a_pass_that_could_not_judge_the_lease_does_not_run_and_status_and_the_doctor_say_so(self):
+        with mock.patch.object(storage, "link_new_file", side_effect=OSError(errno.ESTALE, "stale")), \
+                mock.patch.object(worker, "_process", side_effect=AssertionError("worked")):
+            result = self.run_worker()
+        self.assertEqual(("other-host", []), (result["code"], result["ready"]))
+        self.refreshed.assert_not_called()
+        with store.Store(REPO, config=self.config) as db:
+            self.assertEqual("error", db.get_control("worker_lease"))
+        value = self.status()
+        self.assertEqual(lease.NOTES["error"], value["host_lease_note"])
+        import hooks
+        with mock.patch.object(hooks.recortex, "load_config", return_value=self.config):
+            rows = hooks.machine_summary(REPO, self.config, [])
+        self.assertIn("  observer worker: " + lease.NOTES["error"], rows)
+        result = self.run_worker()   # the next pass tries again and clears the mark
+        self.assertNotEqual("other-host", result["code"])
+        with store.Store(REPO, config=self.config) as db:
+            self.assertEqual("", db.get_control("worker_lease"))
+        self.assertNotIn("host_lease_note", self.status())
+
+    def test_the_fixed_words_of_the_mark_hold_nothing_but_the_two_notes(self):
+        self.assertEqual("", lease.note_for(None))
+        self.assertEqual("", lease.note_for(["error"]))
+        self.assertEqual("", lease.note_for("other"))
+        self.assertEqual(lease.NOTES["unavailable"], lease.note_for("unavailable"))
+        self.assertEqual(lease.NOTES["error"], lease.note_for("error"))
+
     def test_a_file_system_that_cannot_make_the_lease_still_runs_and_status_says_so(self):
-        with mock.patch.object(storage, "link_new_file", side_effect=OSError("no links")):
+        with mock.patch.object(storage, "link_new_file", side_effect=OSError(errno.EPERM, "no links")):
             result = self.run_worker()
         self.assertNotEqual("other-host", result["code"])
         with store.Store(REPO, config=self.config) as db:
