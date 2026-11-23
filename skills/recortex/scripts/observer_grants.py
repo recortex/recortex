@@ -37,46 +37,49 @@ RANK = {"notes": 1, "assistant": 2, "everything": 3}
 LEVEL_QUESTION, STRONG_QUESTION, MAP_QUESTION = "observer-level", "paper-proposals", "map-upkeep"
 QUESTION_OF = {"level": LEVEL_QUESTION, "strong": STRONG_QUESTION, "map": MAP_QUESTION}   # the kinds of grant and their questions
 MAP_RANK = {"off": 0, "shadow": 1, "automatic": 2}
+# The kinds of act that have a question in acts.py (a test holds this equal to the grant rows of acts.ACTS). Each one's value is
+# a hash of the act's checked values (acts.digest), except `hosts` ("any") and `advisory` (the mode).
+ACT_KINDS = ("release", "disable", "resume", "undo", "trust", "hosts", "advisory", "reminder", "replace", "publish")
+HASH = re.compile(r"[0-9a-f]{32}")
 MAP_UNANSWERED = ("recortex observer: turning Project Map upkeep on, or raising it, needs your answer to the question about "
-                  "it. Ask it as setup.py questions prints it (map-upkeep), and then run the command again. You can also run "
-                  "it yourself in a terminal outside Claude Code.")
+                  "it. Ask it as setup.py questions prints it (map-upkeep), and then run the command again.")
 UNANSWERED = ("recortex observer: turning the observer on, or raising its level or its stronger model, needs your "
               "answer to the question about it. Ask it as setup.py questions prints it (observer-level, or "
-              "paper-proposals for the stronger model), and then run the command again. You can also run it yourself "
-              "in a terminal outside Claude Code.")
+              "paper-proposals for the stronger model), and then run the command again.")
 # The codes of a transcript that cannot be read here (observer_sources.UNREADABLE_CODES: the one fixed set). When the user's
 # answer cannot be read for one of them, asking again cannot help, and the refusal says so (UNREADABLE) instead of UNANSWERED.
 UNREADABLE_CODES = observer_sources.UNREADABLE_CODES
 UNREADABLE = ("recortex observer: your answer could not be read on this machine, so asking again will not help: Claude "
-              "Code's transcript did not pass the ownership checks (%s). In your own terminal, outside Claude Code, run "
-              "observer.py status --source-details to see why and observer.py trust-ancestor --failing to trust the "
-              "folders above it, or run this command there.")
+              "Code's transcript did not pass the ownership checks (%s). Run acts.py ask trust and ask the question it "
+              "prints; after a yes, run this command again.")
 # The other codes (a link, a path that is no folder, a transcript that changed, a missing or unavailable one): trust-ancestor cannot
 # cover them, so the note does not send the user there.
 UNREADABLE_OTHER = ("recortex observer: your answer could not be read on this machine, so asking again will not help: Claude "
-                    "Code's transcript did not pass the checks (%s), and observer.py trust-ancestor cannot mend that. In your "
-                    "own terminal, outside Claude Code, run observer.py status --source-details to see why (a home reached "
-                    "through a link, for example, can be avoided by pointing CLAUDE_CONFIG_DIR at a private folder of your "
-                    "own), or run this command there.")
+                    "Code's transcript did not pass the checks (%s), and trusting folders cannot mend that. Run observer.py "
+                    "status --source-details and tell the user what it shows. A home folder reached through a link is one "
+                    "cause; a private folder of the user's own, named in CLAUDE_CONFIG_DIR, avoids it.")
 PASS = re.compile(r"[0-9a-f]{32}")
 ANSWER = re.compile(r"[A-Za-z0-9_-]{1,80}")
 # What the file's list of used answers holds: the grant's kind and the answer's tool id ("map-toolu_01..."), since several
 # questions answered in one question call share one id, and for the level and the stronger model also the bare id, as 1.6.0
 # spent it (a 1.6.0 hook after a downgrade still refuses the replay).
-SPENT_ITEM = re.compile(r"(?:(?:level|strong|map)-)?[A-Za-z0-9_-]{1,80}")
+SPENT_ITEM = re.compile(r"(?:(?:level|strong|map|%s)-)?[A-Za-z0-9_-]{1,80}" % "|".join(ACT_KINDS))
 BARE_TOO = ("level", "strong")
 
 
 # ---------------------------------------------------------------- what a command needs
 
-def needs(stored, level, strong, mode, holds=True):
+def needs(stored, level, strong, mode, holds=True, hosts=None, stored_hosts="", replace=None):
     """The grants a command that sets `level`, `strong` (a model, or None) and `mode` needs, given this folder's stored
     settings: [("level", level)] when the folder has no level yet (a new folder, or an approval of 1.4.0), or the level
     is raised, or posting goes from shadow to automatic; [("strong", model)] when the stronger model is new or
     changes. Lowering anything needs none. `holds` is False when the stored approval is bound to another host (its binding
     does not hold here, as in a copy of the state folder or on a host that sees another inode of the key file): it gives
     this host no authority, so a command that sets the stored level again is a new approval and needs the level grant, as
-    a new folder does (the user's own terminal needs none: the caller does not ask)."""
+    a new folder does (the user's own terminal needs none: the caller does not ask). `hosts` "any" (the command's --hosts) adds
+    ("hosts", "any") unless `stored_hosts` says the folder's entry already holds a valid "any"; `replace`, the value of the
+    replace act (acts.ACTS["replace"].value), adds ("replace", value): the entry of another repository whose holds apply is
+    being replaced."""
     stored = stored if isinstance(stored, dict) else {}
     kept = stored.get("level") if stored.get("level") in runtime.LEVELS else ""
     old = kept if holds else ""
@@ -87,6 +90,10 @@ def needs(stored, level, strong, mode, holds=True):
         out.append(("level", new))
     if strong and strong != stored.get("strong_model"):
         out.append(("strong", strong))
+    if hosts == "any" and stored_hosts != "any":
+        out.append(("hosts", "any"))
+    if replace:
+        out.append(("replace", replace))
     return out
 
 
@@ -141,19 +148,36 @@ def put(folder, kind, value, answer, now=None):
     """Record the grant for this folder: the user's answer `answer` (a tool id) to the question about `kind`. An answer that
     was already used for a grant of that kind grants nothing again, whatever the transcript still holds. Another kind's grant
     from the same call is not refused: two questions answered in one question call share one tool id."""
-    if kind not in QUESTION_OF or not ANSWER.fullmatch(str(answer)):
-        return False
-    if (kind == "level" and value not in runtime.LEVELS or kind == "strong" and value != STRONG_MODEL
-            or kind == "map" and value not in ("shadow", "automatic")):
+    if (kind not in QUESTION_OF and kind not in ACT_KINDS) or not ANSWER.fullmatch(str(answer)) or not _value_fits(kind, value):
         return False
     now = time.time() if now is None else now
     with _writer() as state:
-        if _used(state["spent"], kind, answer):
-            return False
-        entry = state["folders"].setdefault(folder, {}).get(kind)
-        if _live(entry, now) and entry.get("answer") == answer and entry.get("value") == value:
-            return True   # the same answer, seen again before it was used: nothing changes
-        state["folders"][folder][kind] = {"value": value, "answer": answer, "until": now + SECONDS}
+        return _grant(state, folder, kind, value, answer, now)
+
+
+def _value_fits(kind, value):
+    """True when `value` is one the grant of `kind` may hold."""
+    if kind == "level":
+        return value in runtime.LEVELS
+    if kind == "strong":
+        return value == STRONG_MODEL
+    if kind == "map":
+        return value in ("shadow", "automatic")
+    if kind == "hosts":
+        return value == "any"
+    if kind == "advisory":
+        return value in ("shadow", "deliver")
+    return isinstance(value, str) and HASH.fullmatch(value) is not None
+
+
+def _grant(state, folder, kind, value, answer, now):
+    """Record the grant in an open writer: False when this answer was already used for `kind`."""
+    if _used(state["spent"], kind, answer):
+        return False
+    entry = state["folders"].setdefault(folder, {}).get(kind)
+    if _live(entry, now) and entry.get("answer") == answer and entry.get("value") == value:
+        return True   # the same answer, seen again before it was used: nothing changes
+    state["folders"][folder][kind] = {"value": value, "answer": answer, "until": now + SECONDS}
     return True
 
 
@@ -244,18 +268,20 @@ def refused(result, root=None, note=UNANSWERED):
     return dict(result, code=new, reason=reason, note=unreadable_note(reason))
 
 
-def start_pass(folder, level, strong, now=None, given="session", hosts=""):
+def start_pass(folder, level, strong, now=None, given="session", hosts="", replace=""):
     """The word that lets the commands of one chain through, after `take` spent the grants: for the level and the stronger
     model the chain sets (its first command may put posting back to shadow before the last one raises it again, so the
     pass covers the target, not each command's own need). The pass also carries what only setup.py can know, because the
     commands of its chain run with their output captured: `given`, where the chain was started ("terminal" or "session"),
-    and `hosts`, "any" when it was started on the user's own terminal with --hosts any."""
+    `hosts`, "any" when --hosts any was answered for (on the user's own terminal, or by the grant of kind hosts taken for the
+    chain), and `replace`, the value of the replace grant taken for the chain, or "" for none."""
     now = time.time() if now is None else now
     word = secrets.token_hex(16)
     with _writer() as state:
         state["folders"].setdefault(folder, {})["pass"] = {
             "word": word, "until": now + SECONDS, "level": level or "", "strong": strong or "",
-            "given": given if given in ("terminal", "session") else "session", "hosts": "any" if hosts == "any" else ""}
+            "given": given if given in ("terminal", "session") else "session", "hosts": "any" if hosts == "any" else "",
+            "replace": replace if isinstance(replace, str) and HASH.fullmatch(replace) else ""}
     return word
 
 
@@ -385,11 +411,16 @@ def _present(**kinds):
 
 def record_from_hook(data):
     """Before the Bash call `data`: for the level and the stronger model the command asks for, the grant when the user's
-    recorded answer to the question about it chose that very level (or the stronger model). Raises what answered raises; the
-    hook swallows it, and then the command is refused for want of a grant."""
+    recorded answer to the question about it chose that very level (or the stronger model); and for each act the command
+    performs (acts.asks), the grant when the user's recorded answer to the plugin's own question about it, whole and with
+    its options in order, chose the option that goes with this command's values. Raises what answered raises; the hook
+    swallows it, and then the command is refused for want of a grant."""
     import observer_sources
-    asks = requested((data.get("tool_input") or {}).get("command"))
-    if asks is None:
+    command = (data.get("tool_input") or {}).get("command")
+    asks = requested(command) or {}
+    import acts
+    acted = acts.asks(command, recortex.project_root())
+    if not asks and not acted:
         return
     root = recortex.project_root()
     folder = runtime.folder_key(root)
@@ -407,3 +438,62 @@ def record_from_hook(data):
         clear_unreadable(folder)
         if answer:
             put(folder, kind, value, answer)
+    for item in acted:
+        try:
+            answer = observer_sources.answered(data, root, None, item["text"].split("?", 1)[0] + "?", label=item["label"],
+                                               text_is=item["text"], labels_are=item["labels"])
+        except observer_sources.SourceError as error:
+            if str(error) in UNREADABLE_CODES:
+                note_unreadable(folder, str(error))
+            return
+        clear_unreadable(folder)
+        if answer:
+            put(folder, item["kind"], item["value"], answer)
+
+
+# ---------------------------------------------------------------- the typed answer
+
+def asked_put(folder, kind, choices, now=None):
+    """Note, for SECONDS, that the question about the act `kind` was shown as text (acts.py ask --typed): `choices` are the
+    [yes label, value] pairs of its options. One note a folder; a new one replaces it. The user's typed words, equal to one
+    label, are then the answer (typed). False for a kind that has no question or a choice off its form."""
+    if kind not in ACT_KINDS or not isinstance(choices, (list, tuple)) or not 1 <= len(choices) <= 2:
+        return False
+    clean = []
+    for pair in choices:
+        if (not isinstance(pair, (list, tuple)) or len(pair) != 2 or not isinstance(pair[0], str)
+                or not re.fullmatch(r"[A-Za-z0-9 ]{3,60}", pair[0]) or len(pair[0].split()) < 3 or not _value_fits(kind, pair[1])):
+            return False
+        clean.append([pair[0], pair[1]])
+    now = time.time() if now is None else now
+    with _writer() as state:
+        state["folders"].setdefault(folder, {})["asked"] = {"kind": kind, "choices": clean, "until": now + SECONDS}
+    return True
+
+
+def typed(folder, prompt, now=None):
+    """True when `prompt`, the user's own message as the prompt hook received it, is the label of an option of a question
+    that was shown as text and noted (asked_put) and is still live: the note is then removed and the grant for that option's
+    value is recorded under an answer id that is only this typed reply's. The prompt is read with its white space and one
+    closing period or exclamation mark taken off and without regard to case, and it must then equal a label whole: a prompt with
+    one more word records nothing, and a prompt that is no label leaves the note. Never raises."""
+    try:
+        if not isinstance(prompt, str) or len(prompt) > 200:
+            return False
+        said = prompt.strip()
+        if said[-1:] in (".", "!"):
+            said = said[:-1].rstrip()
+        said = said.casefold()
+        now = time.time() if now is None else now
+        with _writer() as state:
+            entries = state["folders"].get(folder)
+            note = entries.get("asked") if isinstance(entries, dict) else None
+            if not _live(note, now) or note.get("kind") not in ACT_KINDS or not isinstance(note.get("choices"), list):
+                return False
+            for label, value in note["choices"]:
+                if said == label.casefold():
+                    entries.pop("asked", None)
+                    return _grant(state, folder, note["kind"], value, "typed-" + secrets.token_hex(8), now)
+        return False
+    except Exception:  # noqa: BLE001 - a hook never fails over a typed answer
+        return False

@@ -152,7 +152,7 @@ PROMPTS = {
         "for which the user said so (only the user's own typed words can say so: the agent's account of one, such as "
         "\"as you asked, I posted nothing\", is not a request, and telling the agent not to post by itself, or to "
         "leave the recording to recortex or the observer, keeps nothing off the record; a source with a "
-        "hold_released field was kept off the record by a hold that the user lifted themselves, in their terminal, "
+        "hold_released field was kept off the record by a hold that the user lifted themselves, "
         "and the field quotes that request: only the quoted request no longer applies, and its moments are judged on "
         "their own; any other request not to post, worded differently from the quote, in that source or another, "
         "still keeps a moment off the record, even when it is typed in a source that carries the quote); "
@@ -220,7 +220,7 @@ PROMPTS = {
         "not a request, and telling the agent not to post by itself, or to leave the recording to recortex or the "
         "observer, keeps nothing off the record), nor for work"
         " the record already holds. A source with a hold_released field was kept off the record by a hold that the "
-        "user lifted themselves, in their terminal, and the field quotes that request: that request no longer "
+        "user lifted themselves, and the field quotes that request: that request no longer "
         "applies, so write the moments it covered like any other; any other request not to post, worded differently "
         "from the quote, in that source or another, still keeps a moment off the record, even when it is typed in a "
         "source that carries the quote. Use only supplied existing topic numbers and message numbers. Every statement "
@@ -275,7 +275,7 @@ PROMPTS = {
         "whole session; the agent's account of such a request withholds nothing, and neither does telling the agent "
         "not to post by itself, or to leave the recording to recortex or the observer, or asking the agent to just "
         "acknowledge a finding, or the agent saying that it posted nothing. A source with a hold_released field was "
-        "kept off the record by a hold that the user lifted themselves, in their terminal, and the field quotes that "
+        "kept off the record by a hold that the user lifted themselves, and the field quotes that "
         "request: only the quoted request no longer applies, so a candidate is not withheld for it; any other request "
         "not to post, worded differently from the quote, in that source or another, still withholds, even when it is "
         "typed in a source that carries the quote. A decision may carry because, the plain "
@@ -931,10 +931,9 @@ APPROVAL_NOTES = {
     "level": "No level is chosen yet. Answer the level question (setup.py questions).",
     "settings": "The stored settings changed since they were approved.",
     "host": "The key file looks different from this host (another inode or path), so the approval does not follow it here. "
-            "In your own terminal, run observer.py enable with your settings and --hosts any --yes.",
-    "host-old": "This approval was made on another host by a version that bound it to that host. Run setup.py observer with "
-                "its level and --yes once in your own terminal, or answer the level question in a session; after that it "
-                "holds on every host that sees the same key file.",
+            "Run acts.py ask hosts and ask the question it prints.",
+    "host-old": "This approval was made on another host by a version that bound it to that host. Ask the level question "
+                "(setup.py questions) once; after that it holds on every host that sees the same key file.",
 }
 
 

@@ -257,6 +257,26 @@ def configured():
 
 
 NOT_SHOWN = "recortex: record brief not shown: %s. Run hooks.py --doctor."
+# One fixed line, outside the data frame and outside brief.CAPS, added to the prompt hook's output when the user's message is the
+# typed answer to a question of acts.py that the session showed as text (observer_grants.typed): no value in it.
+TYPED = ("recortex: the user's typed answer to the plugin's question was recorded. Run the command that the chosen option "
+         "names.")
+
+
+def typed_answer(data):
+    """True when this prompt, the main session's own (not a subagent's), is the typed answer to a question that `acts.py ask
+    --typed` noted: the grant for that option is then recorded (observer_grants.typed). Never raises."""
+    try:
+        if not isinstance(data, dict) or data.get("agent_id") or data.get("agent_type"):
+            return False
+        prompt = data.get("prompt")
+        if not isinstance(prompt, str):
+            return False
+        import observer_grants
+        import observer_runtime
+        return observer_grants.typed(observer_runtime.folder_key(), prompt)
+    except Exception:  # noqa: BLE001 - a hook never fails over a typed answer
+        return False
 
 
 class Unavailable(Exception):
@@ -280,6 +300,7 @@ def run(event, data, budget):
     config, repo, hub = found
     LAST.update(state="on", reason="", repo=repo)
     code = "error"
+    told = TYPED if event == "prompt-submit" and typed_answer(data) else ""   # first: whatever the brief does, the answer counts
     try:
         text = produce(event, data, budget, config, repo, hub)
         if event in ("session-start", "prompt-submit"):
@@ -287,7 +308,7 @@ def run(event, data, budget):
             write_status("building" if building else "on", "", repo, LAST.get("synced_at") or "",
                          "paused" if observer_paused(repo, config) else "", LAST.get("steps"))
             LAST["state"] = "building" if building else "on"
-        return text
+        return text + ("\n" + told if text and told else told)
     except Unavailable as error:
         reason, code = str(error), "no-index"
     except storage.StorageError as error:
@@ -304,7 +325,7 @@ def run(event, data, budget):
         return line
     if event == "subagent-start":
         return json.dumps({"hookSpecificOutput": {"hookEventName": "SubagentStart", "additionalContext": line}})
-    return ""
+    return told
 
 
 def subagent_stop(data):
@@ -1062,10 +1083,10 @@ def machine_summary(repo, config, problems):
         if result.get("code") == "source-missing":
             return "ready once a session has run here", "", ""
         issue = result.get("issues", [result])[0]
-        run = ("%s ; then the same with --yes" % observer_sources.trust_commands()[0] if result.get("fix") else
-               "python3 %s status --source-details" % shlex.quote(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                                                "observer.py")))
-        return ("not ready: %s at %s. Run in your own terminal: %s" % (result.get("code"), issue.get("boundary", "ancestor"), run),
+        run = ("Ask the trust question: %s" % observer_sources.trust_commands()[0] if result.get("fix") else
+               "run python3 %s status --source-details and tell the user what it shows"
+               % shlex.quote(os.path.join(os.path.dirname(os.path.abspath(__file__)), "observer.py")))
+        return ("not ready: %s at %s. %s" % (result.get("code"), issue.get("boundary", "ancestor"), run),
                 result.get("code"), "x")
 
     def reminder():
@@ -1095,7 +1116,7 @@ def machine_summary(repo, config, problems):
 
     def grants():
         words, code, blocked = capture()
-        return ("cannot be read, for the same reason; run the observer's commands in your own terminal until then"
+        return ("cannot be read, for the same reason; ask the trust question first (acts.py ask trust)"
                 if blocked else "can be read")
 
     def measured():

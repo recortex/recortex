@@ -51,7 +51,7 @@ NO_PLAN = "Text: this project has no plan of a paper, so nothing is due in a tex
 WAITING_OFF = "Waiting: nothing waits for a yes here, because the observer is off for this folder."
 WAITING_UNREADABLE = ("Waiting: this machine's observer settings cannot be read, so the list is not available; run "
                       "hooks.py --doctor.")
-WAITING_UNAVAILABLE = "Waiting: the list is not available; run observer.py pending --waiting in your terminal."
+WAITING_UNAVAILABLE = "Waiting: the list is not available; run observer.py pending --waiting and tell the user what it says."
 WAITING_NONE = "Waiting: nothing waits for a yes."
 SYNC_FAILED = ("Index: GitHub could not be read just now, so what follows is the local copy, which is %s. Work recorded "
                "since then is not in it.")

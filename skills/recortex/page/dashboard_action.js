@@ -18,7 +18,7 @@
     trust_required: 'This repository is no longer trusted. No change was made.',
     allowed_account_required: 'Sign in with an account allowed by this project before recording.',
     step_changed: 'This step changed or is no longer open. Refresh and review it again.',
-    held: 'A publication or command hold blocks this action. Inspect the hold in your terminal.',
+    held: 'A publication or command hold blocks this action. Ask the session about your holds.',
     holds_unavailable: 'Holds could not be checked. Recording is unavailable.',
     preview_expired_or_changed: 'The preview expired or changed. Review a new preview.',
     completion_words_required: 'Describe what you completed in 1 to 1,000 characters.',

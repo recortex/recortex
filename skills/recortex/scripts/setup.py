@@ -1330,10 +1330,10 @@ def capture_line(root):
     if result.get("ready") or code == "source-missing":
         return "capture: ready" if result.get("ready") else "capture: ready once a session has run in this folder"
     issue = result.get("issues", [result])[0]
-    run = ("%s ; then the same with --yes" % observer_sources.trust_commands()[0] if result.get("fix") else
-           "python3 %s status --source-details" % shlex.quote(os.path.join(HERE, "observer.py")))
-    return ("capture: not ready (%s at %s); notes cannot be taken, and a session cannot read your answer here. Run in your "
-            "own terminal: %s" % (code, issue.get("boundary", "ancestor"), run))
+    run = ("Ask the trust question: %s" % observer_sources.trust_commands()[0] if result.get("fix") else
+           "run python3 %s status --source-details and tell the user what it shows" % shlex.quote(os.path.join(HERE, "observer.py")))
+    return ("capture: not ready (%s at %s); notes cannot be taken, and a session cannot read your answer here. %s"
+            % (code, issue.get("boundary", "ancestor"), run))
 
 
 def observer_step(answers, root, python, dry):
@@ -1374,9 +1374,14 @@ def observer_step(answers, root, python, dry):
     # is taken once here, and the commands of this chain go through on a pass that ends with it.
     import observer_grants
     folder = observer_runtime.folder_key(root)
+    import acts
+    replacing = acts.replace_values(repo, root)
+    replace = acts.ACTS["replace"].value(replacing) if replacing else ""
     word = chain_pass(folder, level, strong or None,
                       observer_grants.needs(stored_observer(repo, root), level, strong or None, mode,
-                                            holds=observer_runtime.binding_holds(repo, root)), hosts=hosts)
+                                            holds=observer_runtime.binding_holds(repo, root), hosts=hosts or None,
+                                            stored_hosts="any" if observer_runtime.keeps_any(repo, root) else "",
+                                            replace=replace or None), hosts=hosts, replace=replace)
     if word is None:
         reason = observer_grants.unread_reason(folder, root)
         print("observer: not turned on. " + (observer_grants.unreadable_note(reason) if reason else observer_grants.UNANSWERED))
@@ -1387,19 +1392,21 @@ def observer_step(answers, root, python, dry):
         observer_grants.end_pass(folder, word)
 
 
-def chain_pass(folder, level, strong, wanted, hosts=""):
+def chain_pass(folder, level, strong, wanted, hosts="", replace=""):
     """The pass for the commands of one chain, or None when the user's answer is missing. Every chain gets one: its first
     command puts posting back to shadow, so that its last one asks again, and a second run with nothing to raise would
-    stop half way. The grants of `wanted` are taken once, unless this runs on the user's own terminal, which needs none.
-    The pass says where the chain was started, because its commands run with their output captured: "terminal" only when
-    this process is on the user's own terminal, and --hosts any (`hosts`) only then too."""
+    stop half way. The grants of `wanted` (the level, the stronger model, --hosts any and the replacing of another
+    repository's settings, each the user's answer to its question) are taken once, unless this runs on the user's own
+    terminal, which needs none. The pass says where the chain was started, because its commands run with their output
+    captured: "terminal" only when this process is on the user's own terminal; --hosts any (`hosts`) and `replace` are
+    carried because the grants for them were taken here, or none was needed."""
     import observer
     import observer_grants
     here = observer.on_terminal()
     if wanted and not here and not observer_grants.take(folder, wanted):
         return None
     return observer_grants.start_pass(folder, level, strong, given="terminal" if here else "session",
-                                      hosts="any" if hosts == "any" and here else "")
+                                      hosts="any" if hosts == "any" else "", replace=replace if not here else "")
 
 
 def run_observer_steps(steps, options, level, mode, model, strong, root, environment, word):
@@ -1820,9 +1827,8 @@ def blocked_questions(results, root):
 def blocked_text(blocked):
     """The one fixed block `setup.py questions` prints after the open questions when some are held back."""
     code, commands = blocked[0]["code"], blocked[0]["commands"]
-    how = ("To turn the observer on, run in your own terminal, outside Claude Code: %s ; then the same with --yes."
-           % commands[0] if commands else
-           "To see why, run in your own terminal, outside Claude Code: python3 %s status --source-details."
+    how = ("To turn the observer on, ask the trust question: %s." % commands[0] if commands else
+           "To see why, run python3 %s status --source-details and tell the user what it shows."
            % shlex.quote(os.path.join(HERE, "observer.py")))
     return ("not asked here: %s. Notes cannot be taken on this machine yet: a folder above Claude Code's transcripts belongs "
             "to another account or can be written by a shared group (%s). The record brief and the task reminder work "
@@ -1972,11 +1978,6 @@ def observer_command(args):
     else:
         level, model, sort_model = args.level, args.model or "sonnet", args.sort_model or SORT_MODEL
     strong = args.strong or ("" if level == "notes" else stored.get("strong_model", ""))   # a lower level drops it
-    if args.hosts == "any":
-        import observer
-        if not observer.on_terminal():
-            print("error: " + observer.HOSTS_ANY)
-            return 1
     observer_step({"repo": repo, "observer": {"mode": mode, "model": model, "level": level, "sort_model": sort_model,
                                               "strong": strong, "hosts": args.hosts or ""}}, root, sys.executable,
                   args.dry_run)
@@ -2044,7 +2045,7 @@ def main(argv=None):
     p.add_argument("--sort-model", help="the Claude model of the sorting calls (default haiku)")
     p.add_argument("--hosts", choices=("shared", "any"),
                    help="where the approval holds: shared (default: this host and any host that sees the same key file) or "
-                        "any (any host that can read this state folder; your own terminal only)")
+                        "any (any host that can read this state folder; in a session, on the user's answer)")
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="print every step; run none")
     mode.add_argument("--yes", action="store_true", help="the user agreed")

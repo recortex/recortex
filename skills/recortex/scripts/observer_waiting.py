@@ -28,8 +28,7 @@ HELD_QUESTION = 'Memory %s (%s) on #%d: "%s". It would change: %s. Post it, or d
 HELD_OPTIONS = ("Post", "Drop")
 LATER_SECONDS = 86400   # "Not now" puts a task item off for a day (a draft keeps the keeper's own 7 days)
 UNANSWERED = ("No answer of the user's counts for this item: ask the question listed by observer.py pending --waiting "
-              "and run this command right after the user answers with that option. The user can also run it in a "
-              "separate terminal, outside Claude Code: a command typed inside Claude Code with ! is refused too.")
+              "and run this command right after the user answers with that option.")
 NOTE = ("Ask the user about each item with the multiple-choice question tool, one question per item: the whole "
         "question as listed, word for word, with exactly its options in that order; an answer to any other wording counts "
         "for nothing. After each "

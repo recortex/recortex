@@ -94,12 +94,12 @@ REFUSALS = {
                     "reviewed events locally.",
     "not_trusted": "The repository is not in your trusted list.",
     "runtime_unavailable": "Run observer.py runtime-check first.",
-    "publication_paused": "Publication is paused; the user resumes it in their own terminal.",
+    "publication_paused": "Publication is paused. Run acts.py ask resume --scope publication and ask the question it prints.",
     "explicit_hold": "The user has asked that this action not be taken.",
     "not_ready": "Only a reviewed event that is ready or deferred can be posted.",
     "lint_failed": "The reviewed body does not pass the record's rules.",
-    "withheld": "The user asked in that session that its moments not be posted. Only the user lifts that, with "
-                "observer.py release HOLD_ID in their own terminal (observer.py holds lists it).",
+    "withheld": "The user asked in that session that its moments not be posted. Only the user lifts that. Run acts.py "
+                "ask release HOLD_ID and ask the question it prints (observer.py holds lists the holds).",
     "held_unanswered": "This memory waits for the user's answer, and no answer that counts was found for it. It "
                        "counts when the question names the memory's short id and quotes its line exactly as "
                        "observer.py pending --held gives it (the template in the recortex skill), with the options "

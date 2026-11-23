@@ -6,13 +6,17 @@ only for a Bash call whose input mentions the ask agent or the observer).
    because this check stops every Bash command of its that is not exactly
    `python3 <this scripts folder>/index.py query (find|recall|timeline|tasks|plan) ...` with no shell operator. The check
    fails closed: an input it cannot read, for that agent, is a denial. Any other input is left alone.
-2. A Bash call that runs observer.py or setup.py through a pseudo-terminal helper (script, unbuffer, expect, ...) is denied:
-   a terminal that a session makes is not the user's.
-   A Bash call of the user's own commands (observer.py trust-ancestor, advisory, disable, release, resume, undo,
-   `--hosts any`, publish.py) is denied too, in every project (USERS_ONLY).
-3. A Bash call that turns the observer on or changes its level or its stronger model (`observer.py enable`, `setup.py
-   observer`, `setup.py apply`): when the user answered the session's question about it, a one-time grant is recorded
-   (observer_grants) for the level or the model the user chose. Nothing is printed for it.
+2. A Bash call that runs observer.py, setup.py, publish.py or acts.py through a pseudo-terminal helper (script, unbuffer,
+   expect, ...) is denied: a terminal that a session makes is not the user's. A Bash call of a subagent that performs an act
+   the user answers a question for (observer.py trust-ancestor, advisory, disable, release, resume, undo, `--hosts any`,
+   publish.py, ASKED) is denied too, in every project: asking and acting is the main session's, on the user's answer. A Bash
+   call of any session that names a built dashboard page (mind.html) together with git, gh, curl, scp, rsync, sftp or wget is
+   denied: a page leaves the machine only through publish.py, which checks it first.
+3. A Bash call of the main session that turns the observer on or changes its level or its stronger model (`observer.py
+   enable`, `setup.py observer`, `setup.py apply`), or performs one of the acts of acts.py: when the user answered the
+   plugin's own question about it (the session asked it from `acts.py ask`, or the user typed an option's words), a one-time
+   grant is recorded (observer_grants) for the level, the model or the act the user chose. Nothing is printed for it. The act
+   itself takes the grant once, or refuses and names the question.
 
 Only the Python standard library; the observer's own modules are imported only for the second job."""
 
@@ -44,24 +48,32 @@ UNREADABLE = ("recortex: the ask agent only reads the record, and this command c
 PTY_HELPERS = ("script", "unbuffer", "expect", "socat", "faketty", "pty", "openpty", "forkpty", "zpty", "tmux", "screen",
                "ssh", "setsid", "nohup")
 PTY_HELPER = re.compile(r"(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(PTY_HELPERS), re.I)
-USERS_COMMAND = re.compile(r"(?:observer|setup)\.py")
+USERS_COMMAND = re.compile(r"(?:observer|setup|publish|acts)\.py")
 OBSERVER_UNDER_CLAUDE = re.compile(r"CLAUDECODE")   # a command that names this variable and observer.py or setup.py is working round the check
-# The user's own commands: a Bash call of the main session or of a subagent that names one of these (or `--hosts any`, or
-# publish.py) is stopped in every project, observer on or off, because what they do is the user's own decision. The list
-# is written out here, since this file does not import observer_hooks; a test holds it equal to the terminal rows of
-# observer_hooks.COMMANDS (TERMINAL_ONLY).
-USERS_ONLY = ("advisory", "disable", "release", "resume", "trust-ancestor", "undo")
+# The commands that perform an act the user answers a question for: a Bash call of a subagent that names one of these (or
+# `--hosts any`, or publish.py) is stopped in every project, observer on or off, because what they do is the user's own decision,
+# asked and run by the main session. The list is written out here, since this file does not import observer_hooks; a test holds
+# it equal to the asked rows of observer_hooks (ASKED) and to the acts of acts.py.
+ASKED = ("advisory", "disable", "release", "resume", "trust-ancestor", "undo")
 # re.S: a command may run over several lines (a backslash and a line break, or a quote that is never closed). The option is
 # matched with its prefixes too (--ho, --hos, --host), which argparse would read as --hosts; the parsers of observer.py and
 # setup.py no longer accept an abbreviation (allow_abbrev=False), and this holds for a command written for an older version.
-USERS_COMMAND_WORDS = re.compile(r"observer\.py\b.*?(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(USERS_ONLY), re.S)
+USERS_COMMAND_WORDS = re.compile(r"observer\.py\b.*?(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(ASKED), re.S)
 HOSTS_ANY = re.compile(r"(?:observer|setup)\.py\b.*--ho(?:s(?:ts?)?)?(?:\s+|=)[\"']?any\b", re.S)
 PUBLISH = re.compile(r"(?<![A-Za-z0-9_-])publish\.py\b")
-USERS_DENIAL = ("recortex: this command is the user's own. Ask the user to run it in their own terminal, outside Claude Code; "
-                "a session never runs it.")
-TERMINAL_DENIAL = ("recortex: observer.py and setup.py are not run through a program that makes a terminal or hides where "
-                   "they run (script, unbuffer, expect, socat, faketty, pty, tmux, screen, ssh, setsid, nohup): what they ask "
-                   "for is the user's own answer. Ask the user to run the command in their own terminal, outside Claude Code.")
+PUBLISH_READS = re.compile(r"(?<![A-Za-z0-9_-])--(?:dry-run|list)(?![A-Za-z0-9_-])")   # these two read and send nothing
+SUBAGENT_DENIAL = ("recortex: this act is asked and run by the main session only, on the user's answer. Tell the main "
+                   "session what is needed.")
+TERMINAL_DENIAL = ("recortex: observer.py, setup.py, publish.py and acts.py are not run through a program that makes a "
+                   "terminal or hides where they run (script, unbuffer, expect, socat, faketty, pty, tmux, screen, ssh, setsid, "
+                   "nohup): what they do is the user's own answer. Ask the user the question the command names.")
+# A built dashboard page (mind.py's output) is never committed, copied to a branch or sent by hand: that skips the privacy check
+# that publish.py makes. A plain cp is not stopped: a local copy the user asked for is harmless.
+PAGE_NAME = re.compile(r"mind\.html")
+PAGE_SENDERS = re.compile(r"(?<![A-Za-z0-9_-])(?:git|gh|curl|scp|rsync|sftp|wget)(?![A-Za-z0-9_-])")
+PAGE_DENIAL = ("recortex: a built dashboard page is never committed, copied to a branch or sent by hand: that skips the privacy "
+               "check. To put it on the web, run acts.py ask publish and ask the question it prints. To give the user the "
+               "file, tell them its path.")
 
 
 def terminal_decision(data):
@@ -74,21 +86,46 @@ def terminal_decision(data):
     return None
 
 
-def users_only_decision(data):
-    """The denial for a Bash call (of the main session or of a subagent) that names `observer.py` followed by one of
-    USERS_ONLY, or `observer.py` or `setup.py` with `--hosts any`, or `publish.py`; else None. The command is read as the
-    shell splits it and as written. A guard against mistakes: a session with shell access can get round it."""
+def _spoken(data):
+    """(the command, the texts to look at: as the shell splits it and as written), or (None, ()) for a call that is no Bash
+    command."""
     tool_input = data.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if data.get("tool_name") not in ("Bash", "bash") or not isinstance(command, str):
-        return None
+        return None, ()
     try:
         spoken = " ".join(shlex.split(command))
     except ValueError:
         spoken = command
-    for text in (spoken, command):
-        if USERS_COMMAND_WORDS.search(text) or HOSTS_ANY.search(text) or PUBLISH.search(text):
-            return deny(USERS_DENIAL)
+    return command, (spoken, command)
+
+
+def subagent_decision(data):
+    """The denial for a Bash call of a subagent (its input carries an agent_id or an agent_type) that names `observer.py`
+    followed by one of ASKED, or `observer.py` or `setup.py` with `--hosts any`, or `publish.py` (but not `publish.py
+    --dry-run` or `--list`, which read and send nothing); else None. A call of the main session is never denied for being an
+    act: the act refuses without the user's answer, and names the question. The command is read as the shell splits it and as
+    written. A guard against mistakes: a session with shell access can get round it."""
+    if not (data.get("agent_id") or data.get("agent_type")):
+        return None
+    command, texts = _spoken(data)
+    if command is None:
+        return None
+    for text in texts:
+        if USERS_COMMAND_WORDS.search(text) or HOSTS_ANY.search(text) or (PUBLISH.search(text) and not PUBLISH_READS.search(text)):
+            return deny(SUBAGENT_DENIAL)
+    return None
+
+
+def page_decision(data):
+    """The denial for a Bash call, of the main session or of a subagent, whose command names a built dashboard page (mind.html)
+    together with git, gh, curl, scp, rsync, sftp or wget; else None. A plain cp, a listing and `mind.py --open` pass."""
+    command, texts = _spoken(data)
+    if command is None:
+        return None
+    for text in texts:
+        if PAGE_NAME.search(text) and PAGE_SENDERS.search(text):
+            return deny(PAGE_DENIAL)
     return None
 
 
@@ -138,20 +175,21 @@ def decide(raw, scripts=HERE):
         return deny(UNREADABLE) if ASK in raw else None
     if data.get("agent_type") == ASK:
         return ask_decision(data, scripts)
-    found = terminal_decision(data) or users_only_decision(data)
+    found = terminal_decision(data) or page_decision(data) or subagent_decision(data)
     if found:
         return found
-    record_enable_grant(data)
+    record_grants(data)
     return None
 
 
-def record_enable_grant(data):
-    """Job 2: never raises and never prints; without the user's answer nothing is recorded, and a call made by a subagent
+def record_grants(data):
+    """Job 3: never raises and never prints; without the user's answer nothing is recorded, and a call made by a subagent
     (its input carries an agent_id or an agent_type) records nothing: only the main session's own call can."""
     if data.get("agent_id") or data.get("agent_type"):
         return
     command = (data.get("tool_input") or {}).get("command") if isinstance(data.get("tool_input"), dict) else None
-    if data.get("tool_name") not in ("Bash", "bash") or not isinstance(command, str) or "observer" not in command:
+    if data.get("tool_name") not in ("Bash", "bash") or not isinstance(command, str) or not (
+            "observer" in command or "setup.py" in command or "publish.py" in command):
         return
     try:
         import observer_grants

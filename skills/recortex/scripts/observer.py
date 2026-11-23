@@ -34,29 +34,33 @@ def parser():
     root.add_argument("--repo")
     sub = root.add_subparsers(dest="command", required=True)
     # How a session's own call to each subcommand is kept in check (observer_hooks.COMMANDS holds the same table, and a test
-    # holds the two together): safe, grant (the user's recorded answer to that item's question, or the user's terminal), or
-    # terminal (the user's own command; the hook refuses a session's own call).
+    # holds the two together): safe, or grant: the command refuses without the one-time grant the hook records from the user's
+    # recorded answer to that item's question (an item that waits, a setup question, or an act's question: acts.py), unless it
+    # runs on the user's own terminal, which asks for a typed word where it always did.
     # status: safe, it only reads.
     status = sub.add_parser("status")
     status.add_argument("--source-details", action="store_true",
                         help="show native directory paths, modes and ownership for capture diagnosis")
-    # advisory: terminal, an explicit local choice separate from publication and the observer's level.
+    # advisory: grant. Raising it (off, shadow, deliver) from a session needs the user's recorded answer to the question of
+    # acts.py (kind advisory); lowering it to off needs none. Muting or showing one reminder again is kind reminder.
     advisory = sub.add_parser("advisory", help="choose optional task-time evidence pointers on this machine")
     advisory.add_argument("mode", choices=("off", "shadow", "deliver", "list", "mute", "unmute"),
                           help="choose a delivery mode, list issued reminders, or edit a reminder preference")
     advisory.add_argument("id", nargs="?", help="reminder ID from advisory list, for mute or unmute")
-    advisory.add_argument("--yes", action="store_true", help="save this choice from your own terminal")
+    advisory.add_argument("--yes", action="store_true", help="save this choice (in a session, on the user's answer)")
     # map-mode: grant. Raising it (off, shadow, automatic) from a session needs the user's recorded answer to the map-upkeep
     # question (observer_grants, kind "map") or the user's terminal; switching it down or off needs neither.
     mode = sub.add_parser("map-mode", help="choose private Project Map shadow review or automatic maintenance")
     mode.add_argument("mode", choices=("off", "shadow", "automatic"))
-    mode.add_argument("--yes", action="store_true", help="save this choice from your own terminal")
+    mode.add_argument("--yes", action="store_true", help="save this choice (in a session, on the user's answer)")
     # map-proposals: safe, read the reviewed proposals on this device.
     sub.add_parser("map-proposals", help="read reviewed Project Map changes and shadow outcomes on this device")
-    # trust-ancestor: terminal. It makes a folder above Claude Code's transcripts count as safe for as long as its owner,
-    # group and mode stay as they are now, so it is the user's own decision on their own terminal.
+    # trust-ancestor: grant. It makes a folder above Claude Code's transcripts count as safe for as long as its owner,
+    # group and mode stay as they are now, so it is the user's own decision: --yes needs the user's answer to the question of
+    # acts.py (kind trust) in a session. --forget only does less, and needs none.
     trust = sub.add_parser("trust-ancestor", help="trust, exactly as it is now, a folder above Claude Code's transcripts "
-                           "that belongs to another account or is written by a shared group (your own terminal)")
+                           "that belongs to another account or is written by a shared group (on the user's answer in a "
+                           "session)")
     trust.add_argument("path", nargs="?", metavar="PATH", help="the folder (an absolute path)")
     trust.add_argument("--failing", action="store_true", help="every folder the capture check refuses now")
     trust.add_argument("--list", action="store_true", help="what is trusted, and whether each still matches")
@@ -77,7 +81,9 @@ def parser():
     pending.add_argument("--json", action="store_true", help="with --waiting: JSON instead of text")
     # enable: grant. Turning the observer on, raising its level, starting posting or adding the stronger model needs the
     # user's recorded answer to the question about it (observer_grants: the hook records a one-time grant for exactly the
-    # level, or the stronger model, the user chose) or the user's terminal; lowering anything needs neither. It cannot be
+    # level, or the stronger model, the user chose) or the user's terminal; lowering anything needs neither. --hosts any needs
+    # the user's answer to the question of acts.py (kind hosts), and replacing the entry of another repository whose holds apply
+    # the one of kind replace, each in the same call. It cannot be
     # run by a project file, and the user sees and removes it with status and disable.
     enable = sub.add_parser("enable", help="preview this machine's settings for this folder; --yes approves and saves them")
     enable.add_argument("--mode", choices=("shadow", "automatic"), default="shadow")
@@ -91,7 +97,7 @@ def parser():
     enable.add_argument("--hosts", choices=("shared", "any"),
                         help="where the approval holds: shared (the default: this host, and any host that sees the same key "
                              "file, as a shared home folder does) or any (any host that can read this state folder, also a "
-                             "copy of it; your own terminal only)")
+                             "copy of it; in a session, on the user's answer)")
     enable.add_argument("--yes", action="store_true")
     enable.add_argument("--pass", dest="enable_pass", help=argparse.SUPPRESS)   # the word of setup.py's chain (observer_grants)
     # limits: safe, it only lowers the day's caps (a higher number is refused): a session can make the observer do less, never more.
@@ -99,9 +105,10 @@ def parser():
                                            "a higher number is refused")
     for tier in runtime.TIERS:
         limits.add_argument("--" + tier, type=int, metavar="N", help="calls a day on the %s tier" % tier)
-    # disable: terminal, it removes the folder's approval and ends its holds, so it is the user's own command.
+    # disable: grant, it removes the folder's approval and ends its holds, so a session needs the user's answer to the question
+    # of acts.py (kind disable), with or without active holds.
     sub.add_parser("disable", help="remove this machine's settings and approval for this folder")
-    # pause: safe, it only stops capture or publication; resume: terminal, it ends a pause the user made.
+    # pause: safe, it only stops capture or publication; resume: grant (kind resume), it ends a pause the user made.
     for name in ("pause", "resume"):
         command = sub.add_parser(name)
         command.add_argument("scope", choices=("capture", "publication", "all"), default="all", nargs="?")
@@ -114,9 +121,8 @@ def parser():
             command.add_argument("--source", required=True, help="retry a known deferred source through independent review")
         if name == "reconcile":
             command.add_argument("eventkey")
-    # release: terminal, it ends a hold the user made.
-    release = sub.add_parser("release", help="release a hold; run it yourself in a separate terminal, which asks you "
-                                             "to confirm there")
+    # release: grant (kind release), it ends a hold the user made.
+    release = sub.add_parser("release", help="release a hold (in a session, on the user's answer)")
     release.add_argument("hold_id")
     # act, later: grant, the user's recorded "Open it" or "Close it" (act) or "Not now" (later) to that item's question.
     for name, text in (("act", "carry out the user's yes to a task that waits: open it, or close the finished one"),
@@ -126,9 +132,9 @@ def parser():
     # log: safe, it only reads.
     log = sub.add_parser("log", help="what the observer did on its own, with the address of each act")
     log.add_argument("--days", type=int, default=7, help="how many days back (1 to 35, default 7)")
-    # undo: terminal, it changes GitHub (reopens a task, restores a body, closes a task).
+    # undo: grant (kind undo), it changes GitHub (reopens a task, restores a body, closes a task).
     undo = sub.add_parser("undo", help="reverse an act where it can be reversed (see observer.py log for the numbers); "
-                                       "run it yourself in a separate terminal, which asks you to confirm there")
+                                       "in a session, on the user's answer")
     undo.add_argument("act", type=int, metavar="ACT")
     # discard: grant, the user's recorded "Drop" or "Drop it" to that item's question (or the user's terminal).
     discard = sub.add_parser("discard", help="drop a reviewed event that will not be posted; its excerpts then expire")
@@ -149,14 +155,12 @@ def parser():
     return root
 
 
-HOSTS_ANY = "Run this enable with --hosts any yourself in a separate terminal, outside Claude Code."
-TRUST_TERMINAL = "Run observer.py trust-ancestor yourself in a separate terminal, outside Claude Code."
 TRUST_NOTE = ("Each folder is accepted only while its owner, group and mode stay as shown; when one changes it is refused "
               "again. Its owner, and its group where the mode lets the group write, can put another folder in its place. "
-              "Run the same command with --yes to trust them.")
+              "Trusting them is the user's answer to a question: run acts.py ask trust and ask it.")
 TRUST_WORLD = ("Anyone on this machine can replace what is below a folder that all may write and that has no sticky bit.")
 TRUST_CHANGED = ("A folder you trusted changed its owner, group or mode and is refused again. Look at it, then run "
-                 "trust-ancestor again.")
+                 "acts.py ask trust and ask the question it prints.")
 NAME = re.compile(r"[A-Za-z0-9._-]{1,32}")
 REASONS = frozenset(("model_required", "level_required", "folder_name", "observer_settings", "observer_mode",
                      "observer_publisher", "observer_model", "observer_level", "observer_limit", "observer_approvals"))
@@ -302,14 +306,12 @@ def advisory(repo, config, mode, yes=False):
     return dict(result, approved=True)
 
 
+ADVISORY_RANK = {"off": 0, "shadow": 1, "deliver": 2}
 HELD_NOTE = ("Ask the user about each with the multiple-choice question tool, one question per memory, from the "
              "template: Memory SHORT (KIND) on #ISSUE: \"LINE\". It would change: CHANGES. Post it, or drop it? Give "
              "the short id and the line exactly as listed here, and the options Post and Drop. For each Post, run "
              "post_verified.py comment --issue N --kind KIND --body-file <its body, from pending --eventkey KEY "
              "--show-body> --eventkey KEY right after; for each Drop, observer.py discard KEY.")
-TERMINAL = ("Run observer.py release HOLD_ID yourself in a separate terminal, outside Claude Code: it asks you to "
-            "confirm there. Nothing in a session releases a hold.")
-
 
 class Terminal:
     """The controlling terminal, read and written directly, never through stdin or stdout."""
@@ -449,15 +451,35 @@ def confirmed(word, question):
         return None if tty.ask(question + " Type %s to confirm: " % word) == word else "not-confirmed"
 
 
-def release(store, hold_id, tty):
-    """Release one active hold after the user typed the confirmation word on their terminal."""
+def settle(kind, word, question, values):
+    """None when the act may go on; else the refusal to emit. On the user's own terminal the user types `word` to confirm
+    `question`; anywhere else the act needs the one-time grant for exactly `values` (acts.allowed), which the hook records from
+    the user's answer to the question of acts.py, and the refusal names that question. Called after every other check has
+    passed and right before the first change, so that a refusal for another reason spends nothing."""
+    tty = terminal()
+    if tty is not None:
+        with tty:
+            return None if tty.ask(question + " Type %s to confirm: " % word) == word else {"code": "not-confirmed"}
+    import acts
+    return None if acts.allowed(kind, values) else acts.refusal(kind, values)
+
+
+def release(store, hold_id, tty=None):
+    """Release one active hold: after the user typed the confirmation word on their terminal (`tty`), or, anywhere else, after
+    the user's answer to the question of acts.py (kind release)."""
     hold = next((item for item in store.holds() if item.get("id") == hold_id and item.get("state") == "active"), None)
     if hold is None:
         return {"code": "hold-unavailable"}
-    question = "Release hold %s (%s%s) of %s? Type release to confirm: " % (
-        hold_id, hold.get("action"), " " + json.dumps(hold["command"]) if hold.get("command") else "", store.repo)
-    if tty.ask(question) != "release":
-        return {"code": "not-confirmed", "hold_id": hold_id}
+    if tty is not None:
+        question = "Release hold %s (%s%s) of %s? Type release to confirm: " % (
+            hold_id, hold.get("action"), " " + json.dumps(hold["command"]) if hold.get("command") else "", store.repo)
+        if tty.ask(question) != "release":
+            return {"code": "not-confirmed", "hold_id": hold_id}
+    else:
+        import acts
+        values = {"repo": store.repo, "hold": hold_id, "action": hold.get("action")}
+        if hold.get("action") not in acts.HOLD_WORDS or not acts.allowed("release", values):
+            return dict(acts.refusal("release", values), hold_id=hold_id)
     store.update_holds(lambda holds: observer_holds.release(holds, hold_id))
     # The moments the hold kept off the record go back to the sort (no other hold covering them): a whole number.
     return {"action": "release", "hold_id": hold_id, "released": True, "offered_again": store.offered_again}
@@ -648,14 +670,19 @@ def _acts(args, store, repo, config, options):
         emit(result)
         return int(result["code"] != "later")
     if args.command == "undo":
-        # Terminal-only, as release is: it changes GitHub (reopens a task, restores a body, closes a task), so it is the
-        # user's own command, and the hook refuses a session's own Bash call to it.
-        refused = confirmed("undo", "Undo act %d of %s?" % (args.act, repo))
-        if refused:
-            emit({"code": refused, "note": ("Run observer.py undo yourself in a separate terminal, outside Claude Code: "
-                                            "it asks you to confirm there.") if refused == "terminal-required" else ""})
-            return 1
-        result = observer_jobs.undo(store, repo, config, args.act)
+        # It changes GitHub (reopens a task, restores a body, closes a task): on the user's own terminal after a typed word,
+        # anywhere else on the user's answer to the question of acts.py. An act that cannot be reversed (none with that number,
+        # one undone before, one corrected another way) changes nothing and needs no answer.
+        import acts
+        row = store.act(args.act)
+        values = acts.undo_values(repo, row)
+        if values is not None:
+            refused = settle("undo", "undo", "Undo act %d of %s?" % (args.act, repo), values)
+            if refused:
+                emit(refused)
+                return 1
+        result = observer_jobs.undo(store, repo, config, args.act) if values is not None or row is None or row["undone"] \
+            or row["kind"] in observer_jobs.CORRECTED else {"code": "not_reversible"}
         note = result.get("note") or observer_jobs.undo_note(result["code"])
         emit(dict(result, note=note) if note else result)
         return int(result["code"] not in ("restored", "reopened", "closed_not_planned"))
@@ -691,7 +718,8 @@ def _trust_rows(rows):
 
 def trust_ancestor(args):
     """observer.py trust-ancestor: one of PATH, --failing, --list or --forget PATH. Without --yes it shows and changes
-    nothing; --yes and --forget are the user's own terminal's."""
+    nothing; --yes needs the user's answer to the question of acts.py (kind trust), or their own terminal; --forget only
+    does less and needs neither."""
     root = recortex.project_root()
     chosen = [bool(args.path), args.failing, args.list, bool(args.forget)]
     if sum(chosen) != 1 or (args.yes and (args.list or args.forget)) or (args.list and args.forget):
@@ -705,31 +733,28 @@ def trust_ancestor(args):
                           for row in rows]})
         return 0
     if args.forget:
-        if not on_terminal():
-            emit({"code": "terminal-required", "note": TRUST_TERMINAL}); return 1
         try:
             gone = observer_sources.trust_forget(args.forget)
         except observer_sources.TrustError as error:
             emit({"code": str(error)}); return 1
         emit({"action": "trust-ancestor", "forgotten": gone})
         return 0 if gone else 1
-    if args.yes and not on_terminal():
-        emit({"code": "terminal-required", "note": TRUST_TERMINAL}); return 1
-    failing = observer_sources.failing(root)
-    if args.failing:
-        rows = failing
-    else:
-        path = args.path
-        if not (os.path.isabs(path) and os.path.normpath(path) == path and os.path.isdir(path) and not os.path.islink(path)
-                and observer_sources._above(path, observer_sources.project_directory(root))):
-            emit({"code": "not-an-ancestor"}); return 1
-        rows = [row for row in failing if row["path"] == path and row["trustable"]]
-    chosen_rows = [row for row in rows if row["trustable"]]
+    import acts
+    found = acts.trust_rows(root, None if args.failing else args.path)
+    if found is None:
+        emit({"code": "not-an-ancestor"}); return 1
+    failing, chosen_rows = found
+    rows = failing if args.failing else [row for row in failing if row["path"] == args.path and row["trustable"]]
     if not chosen_rows:
         emit({"code": "nothing-to-trust", "entries": _trust_rows(rows)}); return 1
     note = TRUST_NOTE + (" " + TRUST_WORLD if any(row["world"] for row in chosen_rows) else "")
     stored = False
     if args.yes:
+        values = acts.ACTS["trust"]._values(chosen_rows)
+        if values is None:   # a path with characters the question does not print: no answer can be for it
+            emit({"code": "trust_unanswerable", "note": "A folder path holds characters recortex does not print."}); return 1
+        if not on_terminal() and not acts.allowed("trust", values):
+            emit(acts.refusal("trust", values, root)); return 1
         try:
             observer_sources.trust_add(chosen_rows, root)
         except observer_sources.TrustError as error:
@@ -779,14 +804,18 @@ def main(argv=None):
                                                    if h.get("state") == "active"] if recortex.valid_repo(name) else [None]
             except (observer_store.StoreError, storage.StorageError, OSError, ValueError, KeyError, TypeError):
                 active = [None]  # holds that cannot be read may be active
-            if active:
-                tty = terminal()
-                if tty is None:
-                    emit({"code": "terminal-required", "note": "Holds apply here. " + TERMINAL.replace(
-                        "release HOLD_ID", "disable").replace("releases a hold", "switches the observer off")}); return 1
+            # On the user's own terminal a typed word confirms, as it did, while holds apply; anywhere else the act needs the
+            # user's answer to the question of acts.py (kind disable), with or without holds.
+            tty = terminal()
+            if tty is not None:
                 with tty:
-                    if tty.ask("Holds of %s stop applying in this folder. Type disable to confirm: " % name) != "disable":
+                    if active and tty.ask("Holds of %s stop applying in this folder. Type disable to confirm: " % name) != "disable":
                         emit({"code": "not-confirmed"}); return 1
+            else:
+                import acts
+                values = {"folder": runtime.folder_key()}
+                if not acts.allowed("disable", values):
+                    emit(acts.refusal("disable", values)); return 1
             emit({"action": "disable", "folder": runtime.folder_key(), "was_enabled": runtime.forget()}); return 0
         if args.command == "trust-ancestor":
             # It needs a configured, trusted project and no observer approval, so it does not read the approvals.
@@ -823,16 +852,21 @@ def main(argv=None):
                 if args.yes or bool(args.id) != changing:
                     emit({"code": "invalid-advisory-arguments"})
                     return 1
-                if changing and not on_terminal():
-                    emit({"code": "terminal-required", "note": "Change a reminder from your own terminal or local dashboard."})
-                    return 1
                 if not runtime.approval_valid(repo, config):
                     emit({"code": "approval"})
                     return 1
                 try:
                     with observer_store.Store(repo, create=False, readonly=not changing, config=config) as store:
                         if changing:
-                            row = observer_advisory.feedback(store, args.id, args.mode == "mute")
+                            muted = args.mode == "mute"
+                            if args.id not in {row["id"] for row in observer_advisory.history(store)}:
+                                raise KeyError(args.id)
+                            if not on_terminal():
+                                import acts
+                                values = {"repo": repo.lower(), "id": args.id, "muted": muted}
+                                if not acts.allowed("reminder", values):
+                                    emit(acts.refusal("reminder", values)); return 1
+                            row = observer_advisory.feedback(store, args.id, muted)
                             emit({"id": row["id"], "muted": row["muted"]})
                         else:
                             emit({"reminders": observer_advisory.history(store)})
@@ -848,49 +882,58 @@ def main(argv=None):
             if args.id:
                 emit({"code": "unexpected-advisory-id"})
                 return 1
-            if args.yes and not on_terminal():
-                emit({"code": "terminal-required", "note": "Choose advisory mode in your own terminal outside Claude Code."})
-                return 1
+            if (args.yes and not on_terminal() and runtime.approval_valid(repo, config)
+                    and ADVISORY_RANK[args.mode] > ADVISORY_RANK[options["advisory_mode"]]):
+                import acts   # raising it needs the user's answer; lowering it to off, or leaving it, needs none
+                values = {"mode": args.mode}
+                if not acts.allowed("advisory", values):
+                    emit(acts.refusal("advisory", values)); return 1
             result = advisory(repo, config, args.mode, args.yes)
             emit(result)
             return int(args.yes and not result.get("approved"))
         if args.command == "enable":
             # Automatic mode is the user's answer to the setup question, which the setup wizard's session records
             # here, as it records the field sheet's approval: no terminal step. Replacing this folder's entry with one
-            # for another repository, so that the holds of the one it names stop applying here, is asked on the
-            # user's own terminal, as disable and release are.
-            confirm = None
-            if entry_holds(keep=repo):
-                confirm = lambda: confirmed("enable", "This replaces this folder's settings while holds apply.")
-            # Where the approval is given: the user's own terminal, or a session (Claude Code's Bash tool has none). A command
-            # of setup.py's chain has captured output, so the chain says where it was started (its pass, observer_grants).
+            # for another repository, so that the holds of the one it names stop applying here, and --hosts any, are each the
+            # user's answer to a question of acts.py in a session (kinds replace and hosts), and a typed word on their own
+            # terminal.
+            import acts
             import observer_grants
             folder = runtime.folder_key()
             here = on_terminal()
+            replacing = acts.replace_values(repo) if args.yes else None
+            confirm = None
+            if replacing and here:
+                confirm = lambda: confirmed("enable", "This replaces this folder's settings while holds apply.")
+            # Where the approval is given: the user's own terminal, or a session (Claude Code's Bash tool has none). A command
+            # of setup.py's chain has captured output, so the chain says where it was started (its pass, observer_grants).
             chain = observer_grants.pass_entry(folder, args.enable_pass) if args.enable_pass else None
             given = chain["given"] if chain and chain.get("given") in ("terminal", "session") else \
                 "terminal" if here else "session"
-            if args.hosts == "any" and args.yes and not (here or chain and chain.get("hosts") == "any"):
-                emit({"code": "terminal-required", "note": HOSTS_ANY})
-                return 1
             wanted = []
             if args.yes and not here:
                 wanted = observer_grants.needs(_stored_settings(repo), args.level, args.strong_model, args.mode,
-                                               holds=runtime.binding_holds(repo))
+                                               holds=runtime.binding_holds(repo), hosts=args.hosts,
+                                               stored_hosts="any" if runtime.keeps_any(repo) else "",
+                                               replace=acts.ACTS["replace"].value(replacing) if replacing else None)
             if wanted:   # asked last, with the hold check, once every setting has been checked: the answer is for this level
                 holds_confirm = confirm
-                confirm = lambda: ("enable_unanswered" if not (observer_grants.in_pass(folder, wanted, args.enable_pass)
-                                                              or observer_grants.held(folder, wanted))
-                                   else holds_confirm() if holds_confirm else None)
+
+                def confirm():
+                    for kind, value in wanted:
+                        if not (observer_grants.in_pass(folder, [(kind, value)], args.enable_pass)
+                                or observer_grants.held(folder, [(kind, value)])):
+                            return {"hosts": "hosts_unanswered", "replace": "replace_unanswered"}.get(kind, "enable_unanswered")
+                    return holds_confirm() if holds_confirm else None
             result = enable(repo, loaded, args.mode, args.yes, args.model, confirm=confirm, given=given, level=args.level,
                             sort_model=args.sort_model, strong_model=args.strong_model, hosts=args.hosts)
             if wanted and result.get("approved") and not observer_grants.in_pass(folder, wanted, args.enable_pass):
                 observer_grants.take(folder, wanted)   # the user's answer is used once
             if result.get("code") == "enable_unanswered":
                 result = observer_grants.refused(result)
-            if result.get("code") == "terminal-required":
-                result["note"] = ("Run this enable yourself in a separate terminal, outside Claude Code: it asks you to "
-                                  "confirm there.")
+            elif result.get("code") in ("hosts_unanswered", "replace_unanswered"):
+                kind = result["code"].split("_")[0]
+                result = dict(result, **acts.refusal(kind, {"hosts": {"hosts": "any"}, "replace": replacing}[kind]))
             emit(result)
             return int(args.yes and not result["approved"])
         if args.command == "limits":
@@ -911,11 +954,6 @@ def main(argv=None):
             return 0
         if args.command == "reconcile":
             emit(observer_publisher.reconcile(repo, args.eventkey, config, dry_run=args.dry_run)); return 0
-        tty = None
-        if args.command == "release":
-            tty = terminal()
-            if tty is None:
-                emit({"code": "terminal-required", "note": TERMINAL}); return 1
         if args.command == "runtime-check" and not runtime.approval_valid(repo, config):
             emit({"code": "approval", "note": "Run observer.py enable --model MODEL --level LEVEL --yes first; the check is "
                                               "bound to the models chosen there."}); return 1
@@ -976,8 +1014,12 @@ def main(argv=None):
                                   for row in store.pending(limit=100)],
                       "events": [{key: row[key] for key in ("eventkey", "state", "reason")} for row in store.events(limit=100)]}); return 0
             if args.command == "release":
-                with tty:
-                    result = release(store, args.hold_id, tty)
+                tty = terminal()
+                if tty is None:
+                    result = release(store, args.hold_id)
+                else:
+                    with tty:
+                        result = release(store, args.hold_id, tty)
                 emit(result); return int(not result.get("released"))
             if args.command == "discard":
                 if options["map_mode"] != "off":
@@ -1034,14 +1076,12 @@ def main(argv=None):
             if args.command in ("pause", "resume"):
                 scopes = ("capture", "publication") if args.scope == "all" else (args.scope,)
                 if args.command == "resume" and any(store.get_control(scope + "_paused", False) for scope in scopes):
-                    # A pause is the user's control; undoing it is asked on the user's own terminal, like disable.
-                    refused = confirmed("resume", "Resume %s for %s?" % (" and ".join(scopes), repo))
+                    # A pause is the user's control; undoing it is a typed word on their own terminal, and anywhere else
+                    # their answer to the question of acts.py (kind resume).
+                    refused = settle("resume", "resume", "Resume %s for %s?" % (" and ".join(scopes), repo),
+                                     {"repo": repo.lower(), "scope": args.scope})
                     if refused:
-                        out = {"code": refused}
-                        if refused == "terminal-required":
-                            out["note"] = ("Run observer.py resume yourself in a separate terminal, outside Claude Code: "
-                                           "it asks you to confirm there.")
-                        emit(out); return 1
+                        emit(refused); return 1
                 for scope in scopes:
                     store.set_control(scope + "_paused", args.command == "pause")
                 emit({"action": args.command, "scope": args.scope}); return 0

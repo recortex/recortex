@@ -21,6 +21,7 @@ import observer_holds
 import observer_runtime
 import observer_sources
 import observer_store
+import pretool_guard
 import recortex
 import storage
 
@@ -44,7 +45,7 @@ NOTICES = {
     "budget": "recortex observer: the model budget is exhausted; captured work remains queued. Run observer.py status.",
     "control-refused": "recortex observer: an explicit control could not be stored safely; that control is not active. Run observer.py status.",
     "cap": "recortex observer: today's limit of automatic comments is reached; reviewed memories wait in the queue. Run observer.py pending.",
-    "release-refused": "recortex observer: nothing in a session releases a hold; run observer.py release HOLD_ID in a separate terminal, outside Claude Code. Run observer.py holds.",
+    "release-refused": "recortex observer: a hold is released on the user's answer to its question. Run acts.py ask release HOLD_ID and ask it. Run observer.py holds.",
     "held": "recortex observer: items wait for your answer; the session asks you about each. observer.py pending --waiting lists them.",
 }
 # At session start, for the main session, while anything waits for the user's answer (the number is the only value in
@@ -249,14 +250,14 @@ def _reminder(store, data):
 # At the next session start after a session switched automatic mode on, and again whenever the level or the stronger model
 # changes: the date, the level's name and whether paper proposals (the stronger model) are on are the only values in it.
 SWITCHED = ("recortex observer: automatic mode was switched on for this folder on %s from a session, at the level %s, "
-            "with paper proposals %s; run observer.py disable in your own terminal to turn it off.")
+            "with paper proposals %s; tell the session to turn it off.")
 TOOL_EVENTS = ("PreToolUse",)
 SCAN_ROUNDS = 16  # bounded scans one hook makes to catch up with its transcript, at the edges of a turn
 SCAN_SECONDS = 1.0  # and the time they may take; before a Bash call one scan only, so that the hold check is never late
 STALE = 900  # seconds after which new captured work that no worker has taken up is worth a notice
 UNCHECKED = {"reason": "recortex observer: this machine's holds could not be checked, so every command but pwd, ls and "
-                       "cat is stopped. The user can see why with observer.py status, in a separate terminal outside "
-                       "Claude Code."}
+                       "cat is stopped. Run observer.py status by its full path with python3 and nothing else on the line, and "
+                       "tell the user what it says."}
 # Lines that answer something the user just did (a hold, a release); each arises once, so it is never held back.
 ANSWERS = frozenset(("control", "control-refused", "release-refused"))
 
@@ -639,47 +640,58 @@ BEHIND = {"reason": "recortex observer: the transcript is too far ahead of the c
                     "of each turn. Every command but pwd, ls and cat waits until then."}
 
 
+def diagnostic(data):
+    """True for a Bash command that is exactly `python3 <this scripts folder>/observer.py status` (also with --source-details)
+    or `python3 <this scripts folder>/hooks.py --doctor`, by the folder's own absolute path, with no operator and nothing else
+    (the form pretool_guard.allowed_command checks for the ask agent): two commands that only read, which the session runs to
+    tell the user why the holds cannot be checked."""
+    tool_input = data.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if data.get("tool_name") not in ("Bash", "bash") or not isinstance(command, str) or not command.strip() \
+            or len(command) > 4000 or pretool_guard.OPERATORS.search(command):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    here = os.path.dirname(os.path.abspath(__file__))
+    if len(words) < 3 or words[0] != "python3" or not os.path.isabs(words[1]):
+        return False
+    for script, rest in (("observer.py", (["status"], ["status", "--source-details"])), ("hooks.py", (["--doctor"],))):
+        if words[1] == os.path.join(here, script) and words[2:] in rest:
+            try:
+                return os.path.realpath(words[1]) == os.path.realpath(os.path.join(here, script))
+            except (OSError, ValueError):
+                return False
+    return False
+
+
 def _unchecked(data, denial=UNCHECKED):
-    """The decision when the holds cannot be known: every Bash command but the plainest reads is denied."""
+    """The decision when the holds cannot be known: every Bash command but the plainest reads, and the two diagnostics
+    (diagnostic), is denied."""
     tool_name, tool_input = data.get("tool_name"), data.get("tool_input")
     if observer_holds.classify_action(tool_name, tool_input)["command"] is None:
         return None
-    return None if observer_holds.read_only(tool_name, tool_input) else denial
+    return None if observer_holds.read_only(tool_name, tool_input) or diagnostic(data) else denial
 
 
-SELF_RELEASE = {"reason": "recortex observer: only the user releases a hold, switches the observer off, resumes it or "
-                          "undoes an act, in a separate terminal outside Claude Code."}
 # One row for each subcommand of observer.py: how a session's own call to it is kept in check. "safe": it only reads, or
 # only does what the settings and the caps already allow, or only does less. "grant": it changes what waits for the user
-# or GitHub (or turns the observer on, raises its level or adds the stronger model: `enable`), and the command refuses
-# without the one-time grant the hook records from the user's own recorded answer to that exact item's question (or
-# without the user's own terminal). "terminal": it is the user's own command, asked on
-# their terminal, and the hook refuses a session's own Bash call to it (UNDO below is made from these rows). A test holds
-# this table, the parser of observer.py and the pattern together; observer.py states each row's reason at its definition.
+# or GitHub, or the user's own settings (turns the observer on, raises its level, adds the stronger model, lifts a hold or a
+# pause, switches it off, undoes an act, trusts folders): and the command refuses without the one-time grant the hook
+# records from the user's own recorded answer to that exact question (an item that waits, a setup question, or an act's
+# question from acts.py), or without the user's own terminal. A test holds this table, the parser of observer.py and the
+# pattern together; observer.py states each row's reason at its definition.
 COMMANDS = {"status": "safe", "holds": "safe", "pending": "safe", "log": "safe", "context": "safe", "hook": "safe",
-            "advisory": "terminal", "map-mode": "grant", "map-proposals": "safe",
+            "advisory": "grant", "map-mode": "grant", "map-proposals": "safe",
             "runtime-check": "safe", "run-worker": "safe", "record": "safe", "reconcile": "safe", "limits": "safe",
             "pause": "safe",
             "enable": "grant", "act": "grant", "later": "grant", "discard": "grant", "drafts": "grant",
-            "release": "terminal", "disable": "terminal", "resume": "terminal", "undo": "terminal",
-            "trust-ancestor": "terminal"}
-TERMINAL_ONLY = tuple(sorted(name for name, how in COMMANDS.items() if how == "terminal"))
-UNDO = re.compile(r"observer(?:\.py)?\b.*\b(?:%s)\b" % "|".join(TERMINAL_ONLY))
-
-
-def _undo(data):
-    """True for a Bash call that names observer.py together with release, disable, resume or undo (COMMANDS' terminal rows):
-    the user's own commands, which a session never needs. Automatic mode is not among them: the setup wizard's session turns it on,
-    on the user's answer. The command is read as the shell splits it (quotes taken out),
-    and as written when it does not split. A guard against mistakes: a session with shell access can get round it."""
-    command = (data.get("tool_input") or {}).get("command") if isinstance(data.get("tool_input"), dict) else None
-    if data.get("tool_name") not in ("Bash", "bash") or not isinstance(command, str):
-        return False
-    try:
-        spoken = " ".join(shlex.split(command))
-    except ValueError:
-        spoken = command
-    return bool(UNDO.search(spoken) or UNDO.search(command))
+            "release": "grant", "disable": "grant", "resume": "grant", "undo": "grant",
+            "trust-ancestor": "grant"}
+# The subcommands that perform an act with a question of its own (acts.py): pretool_guard.ASKED, written out there too, and a
+# test holds the two and the acts together.
+ASKED = ("advisory", "disable", "release", "resume", "trust-ancestor", "undo")
 
 
 def _held(repo, data):
@@ -865,9 +877,6 @@ def _handle(event, data, config, repo, decision):
     held, checked = None, False
     if event == "PreToolUse":
         held_repo = _entry_repo()
-        if held_repo is not None and _undo(data):
-            # Always, not only while a hold applies: these are the user's commands, run in their own terminal.
-            return _output(event, denial=SELF_RELEASE)
         if held_repo is not None:
             held, checked = (_held(held_repo, data) if held_repo else _unchecked(data)), True
             if not held and recortex.valid_repo(repo) and repo.lower() != held_repo:

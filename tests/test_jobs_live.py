@@ -918,7 +918,7 @@ class PromptTests(unittest.TestCase):
             flat = " ".join(runtime.PROMPTS[purpose].split())
             self.assertIn(("a source" if purpose == "sort" else "A source")
                           + " with a hold_released field was kept off the record by a hold that the user lifted themselves, "
-                          "in their terminal, and the field quotes that request: ", flat, purpose)
+                          "and the field quotes that request: ", flat, purpose)
             self.assertIn("that request no longer applies, so write the moments it covered like any other" if purpose == "draft"
                           else "only the quoted request no longer applies", flat, purpose)
             for words in ("any other request not to post", "worded differently from the quote", "in that source or another",

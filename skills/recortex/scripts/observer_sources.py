@@ -31,13 +31,13 @@ class SourceError(ValueError):
 # --doctor may print. `source-missing` is not among them: before any session has run in a folder there is no transcript yet.
 UNREADABLE_CODES = ("source-owner", "source-permissions", "source-symlink", "source-path", "source-file", "source-changed",
                     "source-incomplete", "source-unavailable", "source-config")
-TRUST_RUN = "Run them in your own terminal, outside Claude Code."
+TRUST_RUN = "Ask the trust question: run acts.py ask trust."
 
 
 def trust_commands(scripts=None):
-    """The two commands that trust the folders now refused, as the user runs them: look first, then the same with --yes."""
-    base = "python3 %s" % shlex.quote(os.path.join(scripts or os.path.dirname(os.path.abspath(__file__)), "observer.py"))
-    return [base + " trust-ancestor --failing", base + " trust-ancestor --failing --yes"]
+    """The one command that asks the trust question for the folders now refused: acts.py ask trust, which prints the question,
+    the folders it names and the command of each option."""
+    return ["python3 %s ask trust" % shlex.quote(os.path.join(scripts or os.path.dirname(os.path.abspath(__file__)), "acts.py"))]
 
 
 def _boundary(path, folder, source_file=None):
@@ -326,13 +326,16 @@ def trust_add(rows, project_root):
     paths = [row["path"] if isinstance(row, dict) else row for row in rows]
     storage.user_key(create=True)   # the HMAC of an entry needs the user key
     stored = {}
-    for path in paths:
+    for row, path in zip(rows, paths):
         if not _trusted_path_ok(path) or not _above(path, folder):
             raise TrustError("not-an-ancestor")
         info = os.lstat(path)
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             raise TrustError("not-an-ancestor")
         uid, gid, mode = info.st_uid, getattr(info, "st_gid", 0), stat.S_IMODE(info.st_mode)
+        if isinstance(row, dict) and "uid" in row and (row["uid"], row.get("gid"), row.get("mode")) != (
+                uid, gid, format(mode, "04o")):
+            raise TrustError("trust_changed")   # what the user was asked about is no longer how the folder is: nothing is stored
         stored[path] = {"uid": uid, "gid": gid, "mode": mode, "mac": _mac(path, uid, gid, mode), "added": int(time.time())}
     with field_sheet.approvals_lock(storage.state_top(for_key=True), TRUSTED_LOCK):
         state, entries = read_trusted(create=True)
