@@ -612,6 +612,50 @@ class SessionTests(Box):
         self.assertEqual(1, code)
         self.assertNotIn("created_branches", self.repo())
 
+    def refused_before_anything_is_sent(self, line, flags, *extra):
+        """The run stops with `line`, sends nothing (no contents write, no git data call, no Pages call), and the grant is kept."""
+        before = dict(self.repo())
+        code, text = self.session(*extra)
+        self.assertEqual((1, True), (code, line in text), text)
+        after = self.repo()
+        self.assertEqual([], self.puts())
+        self.assertNotIn("created_branches", after)
+        self.assertEqual(before.get("pages"), after.get("pages"))
+        self.assertEqual(before["branches"], after["branches"])
+        self.assertTrue(grants.held(self.folder(), [("publish", acts.ACTS["publish"].value(self.values(**flags)))]))   # unspent
+
+    def test_create_branch_where_the_branch_exists_is_refused_before_the_grant_is_taken(self):
+        self.grant(create=True, pages=True)   # the question said: a new branch holding only the page, and Pages switched on
+        self.refused_before_anything_is_sent(publish.BRANCH_SAID_NEW % ("gh-pages", TARGET), {"create": True, "pages": True},
+                                             "--create-branch", "--pages")
+
+    def test_pages_where_pages_is_already_on_is_refused_before_the_grant_is_taken(self):
+        data = self.repo()
+        data["pages"] = {"branch": "gh-pages", "path": "/", "html_url": "https://octo-org.github.io/octo-pages/"}
+        self.save(data)
+        self.grant(pages=True)
+        self.refused_before_anything_is_sent(publish.PAGES_SAID_OFF % TARGET, {"pages": True}, "--pages")
+
+    def test_pages_where_pages_serves_another_branch_is_refused_before_the_grant_is_taken(self):
+        data = self.repo()
+        data["pages"] = {"branch": "main", "path": "/", "html_url": "https://octo-org.github.io/octo-pages/"}
+        self.save(data)
+        self.grant(pages=True)
+        self.refused_before_anything_is_sent(publish.PAGES_SAID_OFF % TARGET, {"pages": True}, "--pages")
+
+    def test_no_site_must_agree_with_where_pages_points(self):
+        self.grant(nosite=True)   # the question said that Pages serves another branch; Pages is off
+        self.refused_before_anything_is_sent(publish.SITE_NOT_SAID % TARGET, {"nosite": True}, "--no-site")
+        data = self.repo()
+        data["pages"] = {"branch": "main", "path": "/", "html_url": "https://octo-org.github.io/octo-pages/"}
+        self.save(data)
+        self.grant()   # the question did not say it, and Pages serves another branch
+        self.refused_before_anything_is_sent(publish.SITE_NOT_SAID % TARGET, {}, )
+        self.grant(nosite=True)
+        code, text = self.session("--no-site")   # the same flag, where it is true
+        self.assertEqual(0, code, text)
+        self.assertEqual(1, len(self.puts()))
+
     def test_create_branch_makes_one_commit_with_no_parent_that_holds_the_page_and_nojekyll(self):
         data = self.repo()
         data["branches"] = ["main"]
@@ -686,8 +730,9 @@ class SessionTests(Box):
             data["pages"] = pages
             self.save(data)
             path = "dashboards/sample-project.html" if case == "a nested file" else "index.html"
-            self.grant(path=path)
-            code, text = self.session("--path", path, page=PAGE + case)
+            other = case in ("another branch", "another folder")   # Pages serves something else: the question says so (--no-site)
+            self.grant(path=path, nosite=other)
+            code, text = self.session("--path", path, *(["--no-site"] if other else []), page=PAGE + case)
             self.assertEqual(0, code, (case, text))
             if link:
                 self.assertIn("the page: " + good["html_url"] + ("" if path == "index.html" else path), text.splitlines(), case)

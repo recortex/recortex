@@ -54,6 +54,12 @@ UNREADABLE_GITHUB = "publish: GitHub could not be read just now; nothing was sen
 NO_PUSH = "publish: your account may not write to %s; nothing was sent."
 BRANCH_NOT_SAID = ("publish: the branch %s does not exist in %s, and the question that was answered did not say so. Run "
                    "acts.py ask publish again; nothing was sent.")
+BRANCH_SAID_NEW = ("publish: the branch %s already exists in %s, and the question that was answered said it would be made. Run "
+                   "acts.py ask publish again; nothing was sent.")
+PAGES_SAID_OFF = ("publish: GitHub Pages is already on for %s, and the question that was answered said it would be switched on. "
+                  "Run acts.py ask publish again; nothing was sent.")
+SITE_NOT_SAID = ("publish: the question that was answered did not say how GitHub Pages serves %s. Run acts.py ask publish "
+                 "again; nothing was sent.")
 PRIVATE_NOT_SAID = ("publish: the record is private, and the question that was answered did not say so. Run acts.py ask publish "
                     "again; nothing was sent.")
 NO_SITE = "GitHub Pages is not on for this branch; ask to set the public page up to get a site."
@@ -414,6 +420,17 @@ def run(args):
         return 1
     if not branch_exists and not args.create_branch:
         print(BRANCH_NOT_SAID % (args.branch, args.to))
+        return 1
+    # The flags are held against GitHub both ways: a question that said the branch would be made, holding only the page, or that
+    # Pages would be switched on, or that Pages serves another branch, is no answer where GitHub's state is otherwise.
+    if branch_exists and args.create_branch:
+        print(BRANCH_SAID_NEW % (args.branch, args.to))
+        return 1
+    if args.pages and pages != "off":
+        print(PAGES_SAID_OFF % args.to)
+        return 1
+    if args.no_site != (pages == "other"):
+        print(SITE_NOT_SAID % args.to)
         return 1
     if observer.on_terminal():
         # the user's own terminal: a typed word, as it was
