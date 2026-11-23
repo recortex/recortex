@@ -1339,7 +1339,7 @@ class FastPathTests(unittest.TestCase):
         (self.shim / "python3").chmod(0o755)
         self.state = self.base / "state"
         self.env = {key: value for key, value in os.environ.items()
-                    if not key.startswith((names.ENV_PREFIX, names.OLD_ENV_PREFIX, "CLAUDE_", "XDG_"))}
+                    if not key.startswith((names.ENV_PREFIX, "CLAUDE_", "XDG_"))}
         self.env.update(PATH=str(self.shim) + os.pathsep + os.environ["PATH"], HOME=str(self.base / "home"),
                         XDG_STATE_HOME=str(self.state))
 

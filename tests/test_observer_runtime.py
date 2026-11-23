@@ -18,7 +18,7 @@ class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name)
-        self.env = patch.dict(os.environ, {'XDG_STATE_HOME':str(self.base),'RECORTEX_OBSERVER':'',names.OLD_ENV_PREFIX+'OBSERVER':''})
+        self.env = patch.dict(os.environ, {'XDG_STATE_HOME':str(self.base),'RECORTEX_OBSERVER':''})
         self.env.start()
     def tearDown(self):
         self.env.stop()

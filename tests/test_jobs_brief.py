@@ -394,9 +394,10 @@ class FrozenTests(BriefBox):
         import brief
         now = self.payloads()
         self.assertEqual(sorted(frozen), sorted(now))
-        for name in frozen:   # the alias sentence is a placeholder in the fixture, which keeps no earlier name in the tree
-            kept = [line for line in now[name].replace(brief.ALIAS, "{ALIAS}").split("\n") if not self.ADDED.match(line)]
-            self.assertEqual(frozen[name].split("\n"), kept, name)
+        for name in frozen:   # the alias sentence of 1.4.0 is a placeholder in the fixture; 1.8.0 no longer says it
+            kept = [line for line in now[name].split("\n") if not self.ADDED.match(line)]
+            self.assertEqual([line for line in frozen[name].split("\n") if line != "{ALIAS}"], kept, name)
+            self.assertFalse(hasattr(brief, "ALIAS"))
         added = [line for line in now["session-start"].split("\n") if self.ADDED.match(line)]
         self.assertEqual(["2 tasks had no memory in 14 days: #3, #7."], added)
 

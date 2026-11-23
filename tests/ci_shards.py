@@ -56,7 +56,7 @@ SHARDS = [
                 "CatchUpTests", "SnapshotTests", "PackagingTests", "CompatTests", "MemoryFormatTests",
                 "DocsRecordTests", "DocsTests", "SetupTests"),                                        # 240
         classes("ResumeBlockTests", "IndexTests", "HookTests", "StatusLineTests", "StorageTests", "GuardTests",
-                "BackgroundTests", "DiscoveryTests", "EarlierNameTests"),                             # 230
+                "BackgroundTests", "DiscoveryTests", "CurrentNameTests"),                             # 230
     ]),
     ("scripts-2", [
         classes("EditHistoryTests", "MindIndexTests", "MindModelTests", "MindPageTests", "MindTextTests",
