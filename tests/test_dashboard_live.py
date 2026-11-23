@@ -1102,6 +1102,8 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(pretool_guard.TOO_LONG, json.loads(run("python3 /x/hooks.py prompt-submit"))["hookSpecificOutput"]
                          ["permissionDecisionReason"])
         self.assertEqual("", run("ls -l"))
+        import signal
+        self.assertEqual(0, signal.alarm(0))   # main() ends its alarm: none is left pending in the process that called it
 
     def test_text_after_a_hash_and_names_the_split_does_not_account_for_leave_no_exemption(self):
         publish = "python3 /x/publish.py --to octo-org/octo-pages --branch gh-pages --dry-run"
