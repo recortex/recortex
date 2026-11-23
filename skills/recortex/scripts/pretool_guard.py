@@ -64,10 +64,15 @@ PUBLISH = re.compile(r"(?<![A-Za-z0-9_-])publish\.py\b")
 ACTS_SCRIPT = re.compile(r"(?<![A-Za-z0-9_-])acts\.py\b")   # asking a question is the main session's own call
 # A hook of the plugin is run by Claude Code, never by a session: a session that runs hooks.py or run_hook.sh with an event, and a
 # JSON of its own on stdin, would make the user's typed answer (hooks.py, prompt-submit) up. --doctor and --print read only.
-HOOK_RUN = re.compile(r"(?:hooks\.py|run_hook\.sh)\b.*?(?<![A-Za-z0-9_-])(?:session-start|subagent-start|prompt-submit|"
-                      r"pre-compact|subagent-stop)(?![A-Za-z0-9_-])", re.S)
+HOOK_RUN = re.compile(r"(?<![A-Za-z0-9_-])(?:hooks\.py|run_hook\.sh|session_start_hook\.sh)")
+HOOK_READS = re.compile(r"(?<![A-Za-z0-9_-])hooks\.py\s+--(?:doctor|print)\s*$")   # the two forms that only read
 HOOK_DENIAL = ("recortex: the plugin's hooks are run by Claude Code, never by a session. What a hook reads is the user's own "
                "prompt, and a session cannot make one.")
+# A session never starts another Claude Code session to answer in the user's place: the hooks of that session are genuine ones.
+CLAUDE_FLAGS = ("-p", "--print", "--resume", "--continue", "-r", "-c")
+CLAUDE_DENIAL = ("recortex: a session never starts another Claude Code session (claude -p, --print, --resume or --continue) to "
+                 "answer for the user.")
+QUOTES = re.compile(r"[\\'\"]")   # taken out of the command before it is read: a quote or a backslash inside a name changes nothing
 PUBLISH_READS = re.compile(r"(?<![A-Za-z0-9_-])--(?:dry-run|list)(?![A-Za-z0-9_-])")   # these two read and send nothing
 SUBAGENT_DENIAL = ("recortex: this act is asked and run by the main session only, on the user's answer. Tell the main "
                    "session what is needed.")
@@ -94,8 +99,8 @@ def terminal_decision(data):
 
 
 def _spoken(data):
-    """(the command, the texts to look at: as the shell splits it and as written), or (None, ()) for a call that is no Bash
-    command."""
+    """(the command, the texts to look at: as the shell splits it, as written, and with every quote and backslash taken out), or
+    (None, ()) for a call that is no Bash command."""
     tool_input = data.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if data.get("tool_name") not in ("Bash", "bash") or not isinstance(command, str):
@@ -104,7 +109,7 @@ def _spoken(data):
         spoken = " ".join(shlex.split(command))
     except ValueError:
         spoken = command
-    return command, (spoken, command)
+    return command, (spoken, command, QUOTES.sub("", command))
 
 
 def subagent_decision(data):
@@ -126,13 +131,35 @@ def subagent_decision(data):
 
 
 def hook_decision(data):
-    """The denial for a Bash call, of the main session or of a subagent, that runs hooks.py or run_hook.sh with a hook event;
-    else None. Fitted to the obvious forms: the hook itself also checks that it was started by Claude Code (observer_grants.
-    plausibly_a_hook) before it takes a typed answer."""
+    """The denial for a Bash call, of the main session or of a subagent, that runs hooks.py or run_hook.sh in any way but `hooks.py
+    --doctor` and `hooks.py --print`; else None. Fitted to the obvious forms: the hook itself also checks that it was started by
+    Claude Code (observer_grants.plausibly_a_hook) before it takes a typed answer."""
     command, texts = _spoken(data)
     if command is None:
         return None
-    return deny(HOOK_DENIAL) if any(HOOK_RUN.search(text) for text in texts) else None
+    for text in texts:
+        if HOOK_RUN.search(text) and not HOOK_READS.search(text.strip()):
+            return deny(HOOK_DENIAL)
+    return None
+
+
+def claude_decision(data):
+    """The denial for a Bash call, of the main session or of a subagent, that starts the claude program with -p, --print, --resume
+    or --continue: a session that answers for the user through a session of its own. Read as the shell splits it and as written;
+    fitted to the obvious forms."""
+    command, texts = _spoken(data)
+    if command is None:
+        return None
+    for text in texts:
+        try:
+            words = shlex.split(text)
+        except ValueError:
+            words = text.split()
+        for number, word in enumerate(words):
+            if os.path.basename(word) == "claude" and any(flag in CLAUDE_FLAGS or flag.startswith(("--resume=", "--continue="))
+                                                          for flag in words[number + 1:]):
+                return deny(CLAUDE_DENIAL)
+    return None
 
 
 def page_decision(data):
@@ -193,7 +220,8 @@ def decide(raw, scripts=HERE):
         return deny(UNREADABLE) if ASK in raw else None
     if data.get("agent_type") == ASK:
         return ask_decision(data, scripts)
-    found = terminal_decision(data) or page_decision(data) or hook_decision(data) or subagent_decision(data)
+    found = (terminal_decision(data) or page_decision(data) or hook_decision(data) or claude_decision(data)
+             or subagent_decision(data))
     if found:
         return found
     record_grants(data)
@@ -206,9 +234,8 @@ def record_grants(data):
     if data.get("agent_id") or data.get("agent_type"):
         return
     command = (data.get("tool_input") or {}).get("command") if isinstance(data.get("tool_input"), dict) else None
-    if data.get("tool_name") not in ("Bash", "bash") or not isinstance(command, str) or not (
-            "observer" in command or "setup.py" in command or "publish.py" in command or "acts.py" in command):
-        return
+    if data.get("tool_name") not in ("Bash", "bash") or not isinstance(command, str):
+        return   # every Bash call of the main session that reaches this hook is looked at: a typed grant is confirmed first
     try:
         import observer_grants
         observer_grants.record_from_hook(data)

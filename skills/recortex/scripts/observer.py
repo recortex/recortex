@@ -767,7 +767,7 @@ def trust_ancestor(args):
         values = acts.ACTS["trust"]._values(chosen_rows)
         if values is None:   # a path with characters the question does not print: no answer can be for it
             emit({"code": "trust_unanswerable", "note": "A folder path holds characters recortex does not print."}); return 1
-        if not on_terminal() and not acts.allowed("trust", values):
+        if not acts.allowed("trust", values):   # on the user's own terminal it needs none, and spends one
             emit(acts.refusal("trust", values, root)); return 1
         try:
             observer_sources.trust_add(chosen_rows, root)
@@ -853,6 +853,8 @@ def main(argv=None):
                 if raised and not on_terminal() and not observer_grants.take(runtime.folder_key(), [("map", args.mode)]):
                     emit(observer_grants.refused({"code": "map_unanswered"}, note=observer_grants.MAP_UNANSWERED))
                     return 1
+                if not raised or on_terminal():
+                    spend_unused("map")   # lowered, or done on the user's own terminal: an answer nobody used is not kept
                 entry = runtime.stored_approval() or {}
                 runtime.approve(repo, {"observer": dict(options, map_mode=args.mode)}, given=entry["given"],
                                 approved_at=entry["approved_at"])
@@ -876,11 +878,10 @@ def main(argv=None):
                             muted = args.mode == "mute"
                             if args.id not in {row["id"] for row in observer_advisory.history(store)}:
                                 raise KeyError(args.id)
-                            if not on_terminal():
-                                import acts
-                                values = {"repo": repo.lower(), "id": args.id, "muted": muted}
-                                if not acts.allowed("reminder", values):
-                                    emit(acts.refusal("reminder", values)); return 1
+                            import acts
+                            values = {"repo": repo.lower(), "id": args.id, "muted": muted}
+                            if not acts.allowed("reminder", values):   # on the user's own terminal it needs none, and spends one
+                                emit(acts.refusal("reminder", values)); return 1
                             row = observer_advisory.feedback(store, args.id, muted)
                             emit({"id": row["id"], "muted": row["muted"]})
                         else:
@@ -897,12 +898,14 @@ def main(argv=None):
             if args.id:
                 emit({"code": "unexpected-advisory-id"})
                 return 1
-            if (args.yes and not on_terminal() and runtime.approval_valid(repo, config)
-                    and ADVISORY_RANK[args.mode] > ADVISORY_RANK[options["advisory_mode"]]):
+            if args.yes and runtime.approval_valid(repo, config):
                 import acts   # raising it needs the user's answer; lowering it to off, or leaving it, needs none
                 values = {"mode": args.mode}
-                if not acts.allowed("advisory", values):
-                    emit(acts.refusal("advisory", values)); return 1
+                if ADVISORY_RANK[args.mode] > ADVISORY_RANK[options["advisory_mode"]]:
+                    if not acts.allowed("advisory", values):   # on the user's own terminal it needs none, and spends one
+                        emit(acts.refusal("advisory", values)); return 1
+                else:
+                    spend_unused("advisory")
             result = advisory(repo, config, args.mode, args.yes)
             emit(result)
             return int(args.yes and not result.get("approved"))
@@ -953,8 +956,8 @@ def main(argv=None):
             elif result.get("code") in ("hosts_unanswered", "replace_unanswered"):
                 kind = result["code"].split("_")[0]
                 result = dict(result, **acts.refusal(kind, {"hosts": {"hosts": "any"}, "replace": replacing}[kind]))
-            if here and result.get("approved"):
-                spend_unused("level", "strong", "hosts", "replace")
+            if result.get("approved"):   # what was lowered, or done on the user's own terminal, spends an answer nobody used
+                spend_unused(*[kind for kind in ("level", "strong", "hosts", "replace") if kind not in {k for k, _ in wanted}])
             emit(result)
             return int(args.yes and not result["approved"])
         if args.command == "limits":

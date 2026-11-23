@@ -4,8 +4,11 @@
 # fails closed: when Python cannot decide (missing, too slow), the command is stopped. For any other call it never
 # blocks anything: it prints nothing and exits 0.
 input="$(cat)" || exit 0
-case "$input" in
-  *recortex:ask* | *observer* | *setup.py* | *publish.py* | *acts.py* | *mind.html* | *hooks.py* | *run_hook.sh*) ;;
+# The prefilter reads the input with every quote and backslash taken out (hoo"ks".py is hooks.py to the shell); the shell's
+# own expansion does it, so that nothing but cat and dirname is needed.
+plain=${input//[\\\'\"]/}
+case "$plain" in
+  *recortex* | *observer* | *setup.py* | *publish.py* | *acts.py* | *mind.html* | *hooks.py* | *run_hook.sh* | *prompt-submit* | *claude\ -*) ;;
   *) exit 0 ;;
 esac
 src="${BASH_SOURCE[0]}"

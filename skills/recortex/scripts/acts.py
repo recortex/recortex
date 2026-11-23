@@ -13,9 +13,11 @@ transcript for the user's recorded answer to it (observer_sources.answered), and
 bound to the question's text, its options, the chosen option and this command's values. The act takes the grant once
 (`allowed`); without it nothing changes and the refusal names the question (`refusal`). The user's own terminal needs none.
 
-Where the question tool is not there, or the answer cannot be read on this machine, `ask` prints the same question as text
-and notes it (`--typed`): the user's typed words, equal to an option's label, are then the answer (observer_grants.typed,
-called by the prompt hook).
+Where the answer cannot be read on this machine (the transcript does not pass the ownership checks), the trust question alone
+has a typed form: `acts.py ask trust --typed` prints it as text and notes it, and the user's typed words, equal to the label of
+its yes option, are then the answer (observer_grants.typed, called by the prompt hook, and confirmed against the transcript
+before the act). Every other question is answered in the question dialog only; where this session has none, the session says so
+in one line (NEEDS_DIALOG).
 
 A question holds fixed words and checked values only: a repository name, a hold id, a number, a mode, a path that
 trust-ancestor accepts. No title, no comment text, no command text of a hold, no text from GitHub.
@@ -40,6 +42,8 @@ ASK = ("recortex: this is done on the user's answer. Run acts.py ask %s, ask the
        "options, and run this command again after a yes.")
 NOT_SET_UP = "acts: this project is not set up, or its repository is not in your trusted list, so nothing is asked."
 TYPED_LINE = "To choose, reply with the words of one option, for example: %s"
+NEEDS_DIALOG = ("acts: this question is answered in the question dialog only. Where this session has none, tell the user so in "
+                "one line; recortex takes no typed answer for it.")
 TYPED_UNRECORDED = ("acts: a typed answer cannot be recorded here, because the plugin's hook did not see this command, so "
                     "nothing is asked.")
 DESCRIPTION = re.compile(r"[A-Za-z0-9 .,;:'()/_#-]{20,120}")
@@ -108,7 +112,7 @@ class Act:
     kind = ""
     header = "Question"
     grant = True        # a one-time grant is recorded for it (observer_grants); sign-in has none
-    typed = True        # the typed answer may stand in for the question tool
+    typed = False       # only the trust question has a typed form: the answer to it can never be read back from the transcript
 
     def parse(self, args, ctx):
         """The values for `ask` from its arguments, or raise ActError with the one fixed line why nothing is asked."""
@@ -438,6 +442,7 @@ def trust_rows(root, path=None):
 
 class Trust(Act):
     kind, header = "trust", "Folders"
+    typed = True
 
     def _values(self, chosen):
         rows = [{"path": row["path"], "uid": row["uid"], "gid": row["gid"], "mode": row["mode"],
@@ -487,7 +492,10 @@ class Trust(Act):
 
     def options(self, values):
         words = ("observer.py", "trust-ancestor") + ((values["path"],) if values.get("path") else ("--failing",)) + ("--yes",)
-        return [option("Trust these folders", "Notes and answers work here while the folders stay as they are.", "yes", [words]),
+        # the label carries a short token of the folders it is for, so that words typed for one set of folders are no answer
+        # for another
+        return [option("Trust these folders %s" % self.value(values)[:8],
+                       "Notes and answers work here while the folders stay as they are.", "yes", [words]),
                 option("Do not trust them", "Nothing changes; the observer stays off on this machine.", "no")]
 
     def value(self, values):
@@ -687,6 +695,95 @@ class Replace(Act):
         return ["--to", values["new"]]
 
 
+class Publish(Act):
+    """The public page of the dashboard. Its values are the target and the four flags of publish.py; GitHub's answers (a missing
+    branch, no site, a private record) are read by `ask` and become flags, and publish.py holds them against the flags again."""
+
+    kind, header = "publish", "Public page"
+
+    def parse(self, args, ctx):
+        import publish
+        if args.values or ctx.repo is None:
+            raise ActError("acts: publish takes no value; say another place with --to, --branch and --path.")
+        record = ctx.repo
+        rows = publish.read_receipts(record)
+        newest = rows[-1] if rows else None
+        to = args.to or (newest["to"] if newest else record)
+        branch = args.branch or (newest["branch"] if newest else "gh-pages")
+        path = args.path or (newest["path"] if newest else "index.html")
+        if not publish.checked_target(to, branch, path):
+            raise ActError(publish.BAD_TARGET)
+        try:
+            target_private, may_push = publish.read_repository(to)
+            if not may_push:
+                raise ActError(publish.NO_PUSH % to)
+            exists = True
+            try:
+                recortex.gh(["api", "repos/%s/branches/%s" % (to, branch)])
+            except recortex.GhError as error:
+                if not publish.missing(error):
+                    raise
+                exists = False
+            site, _ = publish.pages_state(to, branch)
+            record_private = publish.read_repository(record)[0]
+        except (recortex.GhError, ValueError, TypeError, KeyError):
+            raise ActError(publish.UNREADABLE_GITHUB.replace("nothing was sent", "nothing is asked"))
+        return {"record": record.lower(), "to": to.lower(), "branch": branch, "path": path, "create": not exists,
+                "pages": site == "off", "private": record_private is not False, "nosite": site == "other"}
+
+    def from_command(self, words, ctx):
+        found = script_args(words, "publish.py")
+        if found is None or "--dry-run" in found[1] or "--list" in found[1] or "--help" in found[1] or ctx.repo is None:
+            return None
+        import publish
+        rest = found[1]
+        to, branch, path = option_value(rest, "--to"), option_value(rest, "--branch"), option_value(rest, "--path") or "index.html"
+        if not to or not branch or not publish.checked_target(to, branch, path):
+            return None
+        return {"record": ctx.repo.lower(), "to": to.lower(), "branch": branch, "path": path, "create": "--create-branch" in rest,
+                "pages": "--pages" in rest, "private": "--private-record" in rest, "nosite": "--no-site" in rest}
+
+    def text(self, values):
+        more = ""
+        if values["create"]:
+            more += "recortex creates the branch %s there, holding only this page. " % values["branch"]
+        if values["pages"]:
+            more += "recortex switches GitHub Pages on for that branch, which makes the branch a public website. "
+        if values["private"]:
+            more += "%s is a PRIVATE repository: this makes what its dashboard tells public. " % values["record"]
+        if values["nosite"]:
+            more += ("GitHub Pages serves another branch of %s, so you get the file's address on GitHub, not a site. "
+                     % values["to"])
+        return ("Update the public page of the recortex dashboard for %s? It goes to %s, branch %s, file %s. %sAnyone who has its "
+                "address can read it, and search engines may list it. It holds what the dashboard tells: the memories, the topic "
+                "texts, the tasks and the project map. Your usage numbers, the observer's log and the interactive dashboard are "
+                "not sent." % (values["record"], values["to"], values["branch"], values["path"], more))
+
+    def label_for(self, values):
+        if values["private"]:
+            return "Publish the private record", "Makes this private record's dashboard readable by anyone with the address."
+        if values["create"] or values["pages"]:
+            return "Set up the public page", "Creates what is missing on GitHub, sends the page and gives you its link."
+        return "Update the public page", "Sends the page as it is now and gives you its link."
+
+    def options(self, values):
+        label, description = self.label_for(values)
+        command = ["publish.py", "--to", values["to"], "--branch", values["branch"], "--path", values["path"]]
+        for flag, key in (("--create-branch", "create"), ("--pages", "pages"), ("--private-record", "private"),
+                          ("--no-site", "nosite")):
+            if values[key]:
+                command.append(flag)
+        return [option(label, description, "yes", [tuple(command)]),
+                option("Show the file's path", "Nothing is sent; the page stays on this machine.", "no")]
+
+    def value(self, values):
+        return digest(self.kind, values["record"], values["to"], values["branch"], values["path"], values["create"],
+                      values["pages"], values["private"], values["nosite"])
+
+    def ask_words(self, values):
+        return ["--to", values["to"], "--branch", values["branch"], "--path", values["path"]]
+
+
 # ---------------------------------------------------------------- the table
 
 ACTS = {}
@@ -697,7 +794,7 @@ def register(act):
     return act
 
 
-for _act in (Release(), Disable(), Resume(), Undo(), Trust(), Hosts(), Advisory(), Reminder(), Replace()):
+for _act in (Release(), Disable(), Resume(), Undo(), Trust(), Hosts(), Advisory(), Reminder(), Replace(), Publish()):
     register(_act)
 
 
@@ -785,7 +882,8 @@ def render(words):
 
 
 def form_of(act, root):
-    """"typed" when the answer cannot be read on this machine (the transcript does not pass the checks), else "choice"."""
+    """"typed" for the trust question when the answer cannot be read on this machine (the transcript does not pass the checks), else
+    "choice": no other question has a typed form."""
     if not (act.grant and act.typed):
         return "choice"
     import observer_grants
@@ -805,6 +903,17 @@ def describe(act, values, form):
     return {"id": act.kind, "header": act.header, "question": act.text(values), "options": out, "form": form}
 
 
+def question_lines(body):
+    """The text form of a question: its id, the question, one line for each option with the command it runs, and for the typed
+    form the line that says how to answer."""
+    lines = ["question %s" % body["id"], "  " + body["question"]]
+    for item in body["options"]:
+        lines.append("  - %s: %s Run: %s" % (item["label"], item["description"], " ; then ".join(item["run"]) or "nothing"))
+    if body.get("form") == "typed":
+        lines.append("  " + TYPED_LINE % next(item["label"] for item in body["options"] if item["answer"] == "yes"))
+    return lines
+
+
 def ask_main(args):
     kind = args.kind
     if not KIND.fullmatch(kind) or kind not in ACTS:
@@ -820,7 +929,14 @@ def ask_main(args):
     except ActError as error:
         print(str(error))
         return 1
-    form = "typed" if args.typed and act.grant and act.typed else form_of(act, ctx.root)
+    if args.typed and not (act.grant and act.typed):
+        print(NEEDS_DIALOG)
+        return 1
+    form = "typed" if args.typed else form_of(act, ctx.root)
+    if act.grant and act.typed and form != "typed":
+        import observer_grants
+        import observer_runtime as runtime
+        observer_grants.forget_typed(runtime.folder_key(ctx.root), kind)   # a new question ends an older typed answer to it
     body = describe(act, values, form)
     for item in body["options"]:
         if not DESCRIPTION.fullmatch(item["description"]):
@@ -838,12 +954,8 @@ def ask_main(args):
     if args.json:
         print(json.dumps(body, sort_keys=True))
         return 0
-    print("question %s" % kind)
-    print("  " + body["question"])
-    for item in body["options"]:
-        print("  - %s: %s Run: %s" % (item["label"], item["description"], " ; then ".join(item["run"]) or "nothing"))
-    if form == "typed":
-        print("  " + TYPED_LINE % body["options"][0]["label"])
+    for line in question_lines(body):
+        print(line)
     return 0
 
 

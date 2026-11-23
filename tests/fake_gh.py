@@ -69,10 +69,24 @@ the blob hash of the file. `api repos/<owner>/<name>/branches/<name>` answers {"
 when FAKE_GH_GIT_NO_PUSH is 403 or 404). A state "repos" entry ("owner/name": {"private": ..., "push": ...}) answers for that
 repository alone. FAKE_GH_PUT_FAIL=1 makes the write itself exit 1 after storing nothing; FAKE_GH_PUT_CORRUPT=1
 stores the file with its last byte changed, as a GitHub that does not keep what it was sent.
+GitHub Pages and the first publish (publish.py, 1.8.0; the shapes are GitHub's public REST API as it was read, and only a live
+check can prove them): `api repos/<owner>/<name>/pages` answers 404 "Not Found" while the state has no "pages", and else
+{"source": {"branch", "path"}, "html_url"} from state["pages"] ({"branch", "path", "html_url"}). `api -X POST
+repos/<owner>/<name>/pages --input -` takes {"source": {"branch", "path"}} and sets state["pages"] with the html_url
+https://<owner>.github.io/<name>/ (or the state's "pages_url"); a state "pages_refused" makes it answer 422. The four git data calls of
+a branch made with one commit that has no parent: `-X POST .../git/blobs` ({"content", "encoding"}: base64 or utf-8) answers {"sha"}
+(the git blob hash) and keeps the bytes in state["publish_blobs"]; `.../git/trees` (entries {"path", "mode", "type", "sha"} of kept
+blobs), `.../git/commits` ({"message", "tree", "parents"}) and `.../git/refs` ({"ref": "refs/heads/<branch>", "sha"}) keep their
+objects in state["publish_trees"] and state["publish_commits"]; a ref that is new adds the branch to state["branches"] and stores
+the files of its tree as state["files"]["<branch>:<path>"], and a ref that exists answers 422 "Reference already exists". What each
+made is kept in state["created_branches"] ({"branch", "parents", "message", "paths"}). A state "empty_repo" (true) makes the blob call
+answer 409 "Git Repository is empty.", as GitHub does for a repository with no commit. These calls are not tests/fake_git.py's:
+a tree of entries with a "sha", a commit of such a tree and a ref of such a commit are answered here.
 """
 
 import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -210,6 +224,87 @@ def one_page(rows, path):
 
 def repo_of(fields):
     return "%s/%s" % (fields.get("owner", "octo"), fields.get("name", "demo"))
+
+
+def publish_calls(args, path, state):
+    """Pages and the four git data calls of a first publish (see the docstring). True when one was answered."""
+    method = (args[args.index("-X") + 1] if "-X" in args else "GET").upper()
+    repo = "/".join(path.split("/")[1:3])
+
+    def refuse(status, message):
+        sys.stdout.write(json.dumps({"message": message, "status": str(status)}))
+        fail("gh: %s (HTTP %d)" % (message, status))
+
+    if re.fullmatch(r"repos/[^/]+/[^/?]+/pages", path):
+        if method == "GET":
+            pages = state.get("pages")
+            if not pages:
+                refuse(404, "Not Found")
+            print(json.dumps({"source": {"branch": pages["branch"], "path": pages["path"]}, "html_url": pages.get("html_url")}))
+            return True
+        if method == "POST":
+            sent = json.loads(sys.stdin.read() or "{}")
+            if state.get("pages_refused"):
+                refuse(422, "Validation Failed")
+            source = sent.get("source") or {}
+            owner, name = repo.split("/")
+            state["pages"] = {"branch": source.get("branch"), "path": source.get("path"),
+                              "html_url": state.get("pages_url") or "https://%s.github.io/%s/" % (owner, name)}
+            print(json.dumps({"source": source, "html_url": state["pages"]["html_url"]}))
+            return True
+        return False
+    made = re.fullmatch(r"repos/[^/]+/[^/]+/git/(blobs|trees|commits|refs)", path)
+    if not made or method != "POST":
+        return False
+    kind = made.group(1)
+    raw = sys.stdin.read()
+    sent = json.loads(raw or "{}")
+    mine = {"blobs": True,
+            "trees": isinstance(sent.get("tree"), list) and sent["tree"] and all(isinstance(e.get("sha"), str) for e in sent["tree"]),
+            "commits": sent.get("tree") in state.get("publish_trees", {}),
+            "refs": sent.get("sha") in state.get("publish_commits", {})}[kind]
+    if not mine:
+        sys.stdin = io.StringIO(raw)   # not a publish call: fake_git reads the same body
+        return False
+    if os.environ.get("FAKE_GH_GIT_NO_PUSH") in ("403", "404"):
+        refuse(int(os.environ["FAKE_GH_GIT_NO_PUSH"]), "Resource not accessible by personal access token")
+    if kind == "blobs":
+        if state.get("empty_repo"):
+            refuse(409, "Git Repository is empty.")
+        data = base64.b64decode(sent.get("content", "")) if sent.get("encoding") == "base64" else str(sent.get("content", "")).encode("utf-8")
+        sha = blob_sha(data)
+        state.setdefault("publish_blobs", {})[sha] = base64.b64encode(data).decode("ascii")
+        print(json.dumps({"sha": sha}))
+    elif kind == "trees":
+        entries = {}
+        for entry in sent["tree"]:
+            if entry["sha"] not in state.get("publish_blobs", {}) or not entry.get("path") or entry["path"].startswith("/"):
+                refuse(422, "Validation Failed")
+            entries[entry["path"]] = entry["sha"]
+        sha = hashlib.sha1(("tree" + json.dumps(entries, sort_keys=True)).encode("utf-8")).hexdigest()
+        state.setdefault("publish_trees", {})[sha] = entries
+        print(json.dumps({"sha": sha}))
+    elif kind == "commits":
+        parents = list(sent.get("parents") or [])
+        sha = hashlib.sha1(("commit" + sent["tree"] + json.dumps(parents) + str(sent.get("message"))).encode("utf-8")).hexdigest()
+        state.setdefault("publish_commits", {})[sha] = {"tree": sent["tree"], "parents": parents, "message": sent.get("message")}
+        print(json.dumps({"sha": sha}))
+    else:
+        match = re.fullmatch(r"refs/heads/([A-Za-z0-9._/-]+)", str(sent.get("ref", "")))
+        if not match:
+            refuse(422, "Validation Failed")
+        branch = match.group(1)
+        if branch in state.get("branches", ["main"]):
+            refuse(422, "Reference already exists")
+        commit = state["publish_commits"][sent["sha"]]
+        tree = state["publish_trees"][commit["tree"]]
+        state["branches"] = list(state.get("branches", ["main"])) + [branch]
+        for where, blob in tree.items():
+            state.setdefault("files", {})["%s:%s" % (branch, where)] = state["publish_blobs"][blob]
+        state.setdefault("created_branches", []).append({"branch": branch, "parents": commit["parents"],
+                                                         "message": commit["message"], "paths": sorted(tree)})
+        print(json.dumps({"ref": sent["ref"], "object": {"sha": sent["sha"]}}))
+    return True
 
 
 def main():
@@ -462,6 +557,9 @@ def main():
             print(login if option(args, "--jq") == ".login" else json.dumps({"login": login}))
             return
         path = [a for a in args[1:] if a.startswith("repos/")][0]
+        if publish_calls(args, path, state):
+            save(state)
+            return
         try:
             if fake_git.handle(args, path, state, path.split("/")[1] + "/" + path.split("/")[2], login):
                 save(state)

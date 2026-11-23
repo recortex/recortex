@@ -1409,6 +1409,9 @@ def chain_pass(folder, level, strong, wanted, hosts="", replace=""):
     here = observer.on_terminal()
     if wanted and not here and not observer_grants.take(folder, wanted):
         return None
+    for kind in ("level", "strong", "hosts", "replace"):
+        if here or kind not in {k for k, _ in wanted}:
+            observer_grants.spend(folder, kind)   # done on the user's own terminal, or not needing one: no answer is kept unused
     return observer_grants.start_pass(folder, level, strong, given="terminal" if here else "session",
                                       hosts="any" if hosts == "any" else "", replace=replace if not here else "")
 

@@ -40,6 +40,7 @@ MAP_RANK = {"off": 0, "shadow": 1, "automatic": 2}
 # The kinds of act that have a question in acts.py (a test holds this equal to the grant rows of acts.ACTS). Each one's value is
 # a hash of the act's checked values (acts.digest), except `hosts` ("any") and `advisory` (the mode).
 ACT_KINDS = ("release", "disable", "resume", "undo", "trust", "hosts", "advisory", "reminder", "replace", "publish")
+TYPED_KINDS = ("trust",)   # the one question whose answer can never be read back from the transcript has a typed form
 HASH = re.compile(r"[0-9a-f]{32}")
 MAP_UNANSWERED = ("recortex observer: turning Project Map upkeep on, or raising it, needs your answer to the question about "
                   "it. Ask it as setup.py questions prints it (map-upkeep), and then run the command again.")
@@ -225,12 +226,18 @@ def _used(spent, kind, answer):
     return "%s-%s" % (kind, answer) in spent or kind in BARE_TOO and answer in spent
 
 
+def _usable(entry, now):
+    """A live grant that the act may take: one that came from typed words counts only once the hook has confirmed it
+    (confirm_typed marks it), so that the check is bound to the place where the grant is spent."""
+    return _live(entry, now) and (not entry.get("typed") or entry.get("confirmed") is True)
+
+
 def held(folder, wanted, now=None):
-    """True when every grant of `wanted` ([(kind, value)]) is there and live for this folder."""
+    """True when every grant of `wanted` ([(kind, value)]) is there, live and usable for this folder."""
     now = time.time() if now is None else now
     entries = _read().get(folder)
     entries = entries if isinstance(entries, dict) else {}
-    return all(_live(entries.get(kind), now) and entries[kind].get("value") == value for kind, value in wanted)
+    return all(_usable(entries.get(kind), now) and entries[kind].get("value") == value for kind, value in wanted)
 
 
 def take(folder, wanted, now=None):
@@ -240,7 +247,7 @@ def take(folder, wanted, now=None):
     with _writer() as state:
         entries = state["folders"].get(folder)
         entries = entries if isinstance(entries, dict) else {}
-        if not all(_live(entries.get(kind), now) and entries[kind].get("value") == value for kind, value in wanted):
+        if not all(_usable(entries.get(kind), now) and entries[kind].get("value") == value for kind, value in wanted):
             return False
         for kind, _ in wanted:
             answer = entries.pop(kind)["answer"]
@@ -466,11 +473,11 @@ def record_from_hook(data):
     import acts
     if acts.asking(command):
         note_asking(folder, data.get("session_id"), _transcript_size(data, root))
+    confirm_typed(data, root, folder)   # for every call that reaches the hook, before any early return
     asks = requested(command) or {}
     acted = acts.asks(command, root)
     if not asks and not acted:
         return
-    confirm_typed(data, root, folder)
     for kind, value in asks.items():
         label = label_for(kind, value) if isinstance(value, str) else None
         if label is None:
@@ -541,12 +548,13 @@ def note_asking(folder, session, offset, now=None):
 
 
 def asked_put(folder, kind, choices, nos=(), now=None):
-    """Note, for SECONDS, that the question about the act `kind` was shown as text (acts.py ask --typed): `choices` are the
-    [yes label, value] pairs of its options and `nos` the labels of its no options. It is bound to the session that asked
-    (the hook's note, note_asking: without one nothing is noted and this is False) and to where its transcript ended. One note a
-    folder: a live note of another question or other values is removed with any grant that came from typing for it, so that its
-    answer cannot count for these values. False for a kind that has no question or a choice off its form."""
-    if kind not in ACT_KINDS or not isinstance(choices, (list, tuple)) or not 1 <= len(choices) <= 2 \
+    """Note, for SECONDS, that the question about the act `kind` (only the trust question has a typed form: TYPED_KINDS) was shown as
+    text (acts.py ask trust --typed): `choices` are the [yes label, value] pairs of its options and `nos` the labels of its no
+    options. It is bound to the session that asked (the hook's note, note_asking: without one nothing is noted and this is False)
+    and to where its transcript ended. One note a folder: a live note of other values is removed with any grant that came from
+    typing, so that its answer cannot count for these values, and a new question ends an older typed grant of its kind. False for
+    a kind that has no typed form or a choice off its form."""
+    if kind not in TYPED_KINDS or not isinstance(choices, (list, tuple)) or not 1 <= len(choices) <= 2 \
             or not isinstance(nos, (list, tuple)) or len(nos) > 2:
         return False
     clean = []
@@ -563,15 +571,27 @@ def asked_put(folder, kind, choices, nos=(), now=None):
         mark = entries.get("asking")
         if not _live(mark, now) or not isinstance(mark.get("session"), str) or not SESSION.fullmatch(mark["session"]):
             return False
-        old = entries.get("asked")
-        if _live(old, now) and (old.get("kind"), old.get("choices")) != (kind, clean):
-            entries.pop("asked", None)   # the old question's words no longer match anything
-        for gone in {old.get("kind") if _live(old, now) else None, kind}:
-            if isinstance(entries.get(gone), dict) and entries[gone].get("typed"):
-                entries.pop(gone)   # a typed answer to an earlier question does not outlive a new one of its kind
+        entries.pop("asked", None)   # the words of an older question no longer match anything
+        if isinstance(entries.get(kind), dict) and entries[kind].get("typed"):
+            entries.pop(kind)
         entries["asked"] = {"kind": kind, "choices": clean, "nos": list(nos), "session": mark["session"],
                             "offset": mark.get("offset"), "until": now + SECONDS}
     return True
+
+
+def forget_typed(folder, kind):
+    """A new question about `kind` was asked in the dialog: a typed answer to an older one, and its note, end."""
+    entries = _read().get(folder)
+    if not isinstance(entries, dict) or not (isinstance(entries.get(kind), dict) and entries[kind].get("typed")
+                                             or isinstance(entries.get("asked"), dict) and entries["asked"].get("kind") == kind):
+        return
+    with _writer() as state:
+        entries = state["folders"].get(folder)
+        if isinstance(entries, dict):
+            if isinstance(entries.get(kind), dict) and entries[kind].get("typed"):
+                entries.pop(kind)
+            if isinstance(entries.get("asked"), dict) and entries["asked"].get("kind") == kind:
+                entries.pop("asked")
 
 
 def ancestors(limit=32):
@@ -603,26 +623,29 @@ def ancestors(limit=32):
 
 
 def plausibly_a_hook(parents=None):
-    """True when this process was started the way Claude Code starts a hook: some parent is the claude program, and no parent
-    between is the Bash tool's own shell (a command line with `eval` or `shell-snapshots`). The other way round from
-    observer.on_terminal(): a command of a session has the tool's shell above it. A process that was started by hand has no
-    claude above it, and neither has one that left its parent (setsid, a daemon). `parents` is ancestors() by default, for a
-    test. A guard against mistakes: a session with shell access can find another way."""
+    """True when this process was started the way Claude Code starts a hook: exactly one parent is the claude program, and none is
+    the Bash tool's own shell (a command line with `eval` or `shell-snapshots`). The whole ancestry is read: a nested `claude -p`
+    or `claude --resume` that a session starts has the tool's shell and a second claude above it, and its hooks are refused. The
+    other way round from observer.on_terminal(). A process that was started by hand has no claude above it, and neither has one
+    that left its parent (setsid, a daemon). `parents` is ancestors() by default, for a test. A guard against mistakes: a session
+    with shell access can find another way."""
+    claudes = 0
     for name, words in (ancestors() if parents is None else parents):
-        if name in CLAUDE_NAMES or (words and os.path.basename(words[0]) in CLAUDE_NAMES):
-            return True
         if any(TOOL_SHELL.search(word) for word in words):
             return False
-    return False
+        if name in CLAUDE_NAMES or (words and os.path.basename(words[0]) in CLAUDE_NAMES):
+            claudes += 1
+    return claudes == 1
 
 
 def typed(folder, prompt, session, plausible=None, now=None):
     """"yes", "no" or "" for `prompt`, the user's own message as the prompt hook of `session` received it. It is the typed answer
-    when it equals, whole, the label of an option of a question that was shown as text and noted (asked_put), the note is live
-    and was made by this same session: "yes" removes the note and records the grant for that option's value, under an answer id
-    that is only this typed reply's, when `plausible()` (plausibly_a_hook) says this is Claude Code's own hook; "no" removes the
-    note and any live grant of that kind. The prompt is read as words_of reads it; a prompt with one more word records nothing,
-    and a prompt that is no label leaves the note. Never raises."""
+    when it equals, whole, the label of an option of the trust question that was shown as text and noted (asked_put), the note is
+    live and was made by this same session, and `plausible()` (plausibly_a_hook) says this is Claude Code's own hook, a first one
+    and not a nested session's: "yes" removes the note and records the grant for that option's value under an answer id that is
+    only this typed reply's (unconfirmed until the hook of the act has found the words in the transcript, confirm_typed); "no"
+    removes the note and any live grant of that kind. The prompt is read as words_of reads it; a prompt with one more word records
+    nothing, and a prompt that is no label leaves the note. Never raises."""
     try:
         if not isinstance(prompt, str) or len(prompt) > 200 or not isinstance(session, str) or not SESSION.fullmatch(session):
             return ""
@@ -631,46 +654,64 @@ def typed(folder, prompt, session, plausible=None, now=None):
         with _writer() as state:
             entries = state["folders"].get(folder)
             note = entries.get("asked") if isinstance(entries, dict) else None
-            if (not _live(note, now) or note.get("kind") not in ACT_KINDS or note.get("session") != session
+            if (not _live(note, now) or note.get("kind") not in TYPED_KINDS or note.get("session") != session
                     or not isinstance(note.get("choices"), list)):
                 return ""
-            if said in [label.casefold() for label in note.get("nos", []) if isinstance(label, str)]:
-                entries.pop("asked", None)
+            nos = [label.casefold() for label in note.get("nos", []) if isinstance(label, str)]
+            yes = [(label, value) for label, value in note["choices"] if said == label.casefold()]
+            if not (said in nos or yes):
+                return ""
+            if plausible is not None and not plausible():
+                return ""   # not a hook of Claude Code: the note stays, nothing is recorded or removed
+            entries.pop("asked", None)
+            if said in nos:
                 entries.pop(note["kind"], None)
                 return "no"
-            for label, value in note["choices"]:
-                if said == label.casefold():
-                    if plausible is not None and not plausible():
-                        return ""   # not a hook of Claude Code: the note stays, nothing is recorded
-                    entries.pop("asked", None)
-                    made = _grant(state, folder, note["kind"], value, "typed-" + secrets.token_hex(8), now,
-                                  typed={"label": label, "offset": note.get("offset")})
-                    return "yes" if made else ""
-        return ""
+            label, value = yes[0]
+            made = _grant(state, folder, note["kind"], value, "typed-" + secrets.token_hex(8), now,
+                          typed={"label": label, "offset": note.get("offset")})
+            return "yes" if made else ""
     except Exception:  # noqa: BLE001 - a hook never fails over a typed answer
         return ""
 
 
 def confirm_typed(data, root, folder):
-    """Before an act of the main session: a grant that came from the user's typed words counts only when the transcript, if it
-    can be read, holds those words as a prompt the user typed after the question was asked (observer_sources.typed_words). A
-    grant without them is removed. A transcript that cannot be read leaves the grant: that is the case the typed answer is for.
-    Never raises."""
+    """Before every Bash call of the main session that reaches the hook: a grant that came from the user's typed words is marked
+    confirmed when the transcript holds those words as a prompt the user typed after the question was asked
+    (observer_sources.typed_words), and when the transcript cannot be read now for a reason of the fixed set
+    (observer_sources.UNREADABLE_CODES), which is the case the typed answer exists for. Any other result, an error of any kind, or
+    a grant with no place in the transcript to start from, removes the grant. take() and held() use only a confirmed one. Each
+    kind is judged alone, and nothing raises."""
     try:
         entries = _read().get(folder)
-        pending = {kind: entry for kind, entry in (entries or {}).items()
-                   if kind in ACT_KINDS and isinstance(entry, dict) and isinstance(entry.get("typed"), dict)}
-        if not pending:
-            return
-        for kind, entry in pending.items():
-            offset = entry["typed"].get("offset")
-            if type(offset) is not int:
-                continue   # the transcript could not be read when the question was asked: nothing to compare with
-            try:
-                said = observer_sources.typed_words(data, root, offset)
-            except observer_sources.SourceError:
-                continue
-            if words_of(entry["typed"].get("label", "")) not in said:
-                drop(folder, kind, typed_too=True)
+        pending = [kind for kind, entry in (entries or {}).items()
+                   if kind in TYPED_KINDS and isinstance(entry, dict) and isinstance(entry.get("typed"), dict)
+                   and entry.get("confirmed") is not True]
     except Exception:  # noqa: BLE001
         return
+    for kind in pending:
+        try:
+            entry = entries[kind]
+            offset = entry["typed"].get("offset")
+            verdict = False
+            try:
+                if type(offset) is int:
+                    verdict = words_of(entry["typed"]["label"]) in observer_sources.typed_words(data, root, offset)
+                else:
+                    # the transcript could not be read when the question was asked: only a transcript that still cannot be read
+                    # leaves the grant standing
+                    observer_sources.approved_path(data.get("transcript_path"), root, data.get("session_id"))
+            except observer_sources.SourceError as error:
+                verdict = str(error) in UNREADABLE_CODES
+            if verdict:
+                with _writer() as state:
+                    held_entry = (state["folders"].get(folder) or {}).get(kind)
+                    if isinstance(held_entry, dict) and held_entry.get("answer") == entry.get("answer"):
+                        held_entry["confirmed"] = True
+            else:
+                drop(folder, kind, typed_too=True)
+        except Exception:  # noqa: BLE001 - a doubt removes the grant
+            try:
+                drop(folder, kind, typed_too=True)
+            except Exception:  # noqa: BLE001
+                pass

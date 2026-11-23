@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""Put the project's static dashboard page on the web, from your own terminal. It is opt-in, public and yours to run: nothing
-in a session runs it (pretool_guard.py stops a session's call, and every form of this command needs your terminal).
+"""Put the project's static dashboard page on the web. It is opt-in, public and the user's own decision: it goes on the user's
+answer to the question that `acts.py ask publish` prints (in a session), or on the typed word `publish` on their own terminal.
 
-  publish.py --to OWNER/NAME --branch BRANCH [--path index.html] [--private-record] [--dry-run]
+  publish.py --to OWNER/NAME --branch BRANCH [--path index.html] [--create-branch] [--pages] [--private-record] [--no-site]
+             [--dry-run]
   publish.py --list
 
 It builds the page itself (mind.public_text, the same steps as `mind.py` with no usage numbers, no log of the observer and no
 interactive part), so it can never be pointed at another file, and it sends the page to one file of one branch of a repository
-you name through GitHub's contents API. It creates no repository, no branch and no site: the branch must exist, and the page is
-served only if you turned GitHub Pages on for that branch yourself. Before anything is sent it checks that the page is the
-static one, that it holds nothing the project's privacy rules keep off the record (a secret, a restricted pattern), that none
-of your holds stops publishing, that the account may write there and that the branch exists; it prints what will be public,
-and asks you to type the word `publish` (or, when the record's repository is private or its visibility could not be read, to
-run it with --private-record and type that repository's full name). It reads the file back and compares its hash.
+through GitHub's contents API. The flags are what the question that was answered said, and GitHub's own answers are held
+against them: the branch is made only with --create-branch (one commit with no parent that holds the page and an empty
+.nojekyll), GitHub Pages is switched on only with --pages, and a private record is published only with --private-record.
+Before anything is sent it checks that the page is the static one, that it holds nothing the project's privacy rules keep off
+the record (a secret, a restricted pattern), that none of the user's holds stops publishing and that the account may write
+there; it prints what will be public. It reads the file back and compares its hash. --dry-run and --list read and send nothing.
 
 To take the page down, delete the file from the branch. Copies that others made stay.
 
@@ -41,7 +42,6 @@ MESSAGE = "Publish the project dashboard page"   # the commit message: nothing e
 SIZE_MAX = 25 * 1024 * 1024
 RECEIPTS = "published.json"
 RECEIPTS_KEPT = 20
-NOT_TERMINAL = "publish: this is your own command. Run it in your own terminal, outside Claude Code."
 BAD_TARGET = ("publish: the target must be a repository as owner/name, the branch a plain branch name and the path a plain "
               ".html path (at most four parts); nothing was sent.")
 HELD = "publish: a hold of yours stops publishing; nothing was sent."
@@ -52,10 +52,17 @@ NOT_PRIVATE = ("publish: the page holds text that the project's rules keep off t
 TOO_BIG = "publish: the page is larger than 25 MB; nothing was sent."
 UNREADABLE_GITHUB = "publish: GitHub could not be read just now; nothing was sent."
 NO_PUSH = "publish: your account may not write to %s; nothing was sent."
-NO_BRANCH = ("publish: the branch %s does not exist in %s. publish.py never creates a branch, a repository or a site. Create "
-             "it yourself, for example: git switch --orphan %s; git commit --allow-empty -m 'Start the page'; git push origin "
-             "%s. Then run this again.")
-PRIVATE_RECORD = ("publish: the record is private. Run again with --private-record if you mean to make this page public.")
+BRANCH_NOT_SAID = ("publish: the branch %s does not exist in %s, and the question that was answered did not say so. Run "
+                   "acts.py ask publish again; nothing was sent.")
+PRIVATE_NOT_SAID = ("publish: the record is private, and the question that was answered did not say so. Run acts.py ask publish "
+                    "again; nothing was sent.")
+NO_SITE = "GitHub Pages is not on for this branch; ask to set the public page up to get a site."
+EMPTY_REPOSITORY = "publish: %s has no commit yet, so a branch cannot be made there; nothing was sent."
+PAGES_REFUSED = ("publish: GitHub did not switch Pages on for %s (the account may lack the right, or the plan serves no Pages "
+                 "from a private repository). The page is on the branch.")
+SET_UP_FIRST = "publish: this is done on the user's answer; run acts.py ask publish and ask the question it prints."
+MINUTE = "GitHub may take a minute to show the new version."
+PAGES_ADDRESS = re.compile(r"https://[A-Za-z0-9][A-Za-z0-9.-]{0,252}(?:/[A-Za-z0-9._-]{1,100})?/")
 NOT_CONFIRMED = "publish: not confirmed; nothing was sent."
 MISMATCH = "publish: the file on the branch is not the page that was sent; look at the branch."
 NOT_SENT = "publish: GitHub did not take the page; nothing was published."
@@ -172,6 +179,37 @@ def held(record):
     return None
 
 
+def pages_state(to, branch):
+    """("on", address or None) when GitHub Pages serves this branch of `to` from its root, ("off", None) when there is no site,
+    ("other", None) when it serves another branch or folder. The address is kept only when it is of the form of PAGES_ADDRESS;
+    nothing else of GitHub's answer is kept. Raises what gh raises for a failure that is not a 404."""
+    try:
+        data = json.loads(recortex.gh(["api", "repos/%s/pages" % to]))
+    except recortex.GhError as error:
+        if missing(error):
+            return "off", None
+        raise
+    source = data.get("source") if isinstance(data, dict) else None
+    if not (isinstance(source, dict) and source.get("branch") == branch and source.get("path") == "/"):
+        return "other", None
+    address = data.get("html_url")
+    return "on", address if isinstance(address, str) and PAGES_ADDRESS.fullmatch(address) else None
+
+
+def create_branch_with_page(to, branch, path, data):
+    """One commit with no parent that holds the page and an empty .nojekyll, made through GitHub's git data calls, and the branch
+    that points at it. Raises recortex.GhError for a refusal; the caller says one fixed line."""
+    def post(what, body):
+        return json.loads(recortex.gh(["api", "-X", "POST", "repos/%s/git/%s" % (to, what), "--input", "-"],
+                                      stdin=json.dumps(body), timeout=120))
+    page = post("blobs", {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"})["sha"]
+    empty = post("blobs", {"content": "", "encoding": "utf-8"})["sha"]
+    tree = post("trees", {"tree": [{"path": path, "mode": "100644", "type": "blob", "sha": page},
+                                   {"path": ".nojekyll", "mode": "100644", "type": "blob", "sha": empty}]})["sha"]
+    commit = post("commits", {"message": MESSAGE, "tree": tree, "parents": []})["sha"]
+    post("refs", {"ref": "refs/heads/%s" % branch, "sha": commit})
+
+
 def receipts_path(record):
     folder = storage.folder(storage.state_top(), storage.repo_folder(record.lower()))
     return os.path.join(folder, RECEIPTS)
@@ -187,18 +225,22 @@ def read_receipts(record):
     rows = data.get("receipts") if isinstance(data, dict) and data.get("form") == 1 else None
     if not isinstance(rows, list):
         return []
-    return [row for row in rows[-RECEIPTS_KEPT:] if isinstance(row, dict) and set(row) == {"at", "to", "branch", "path", "sha"}
+    base = {"at", "to", "branch", "path", "sha"}
+    return [row for row in rows[-RECEIPTS_KEPT:] if isinstance(row, dict) and set(row) in (base, base | {"private"})
+            and (row.get("private") is None or type(row.get("private")) is bool)
             and isinstance(row["to"], str) and recortex.valid_repo(row["to"]) and isinstance(row["branch"], str)
             and BRANCH.fullmatch(row["branch"]) and isinstance(row["path"], str) and PATH.fullmatch(row["path"])
             and isinstance(row["sha"], str) and re.fullmatch(r"[0-9a-f]{40}", row["sha"])
             and type(row["at"]) is int and 0 < row["at"] < 4102444800]
 
 
-def keep_receipt(record, to, branch, path, sha):
-    """Keep what was published: the newest 20 of {at, to, branch, path, sha}, through storage.py. False when it could not be
-    written (one line is said; the publish stands)."""
+def keep_receipt(record, to, branch, path, sha, private=None):
+    """Keep what was published: the newest 20 of {at, to, branch, path, sha, private}, through storage.py; `private` says whether
+    the record was private (true), public (false) or unread (null), so that the question of the next publish can say it offline.
+    False when it could not be written (one line is said; the publish stands)."""
     try:
-        rows = read_receipts(record) + [{"at": int(time.time()), "to": to, "branch": branch, "path": path, "sha": sha}]
+        rows = read_receipts(record) + [{"at": int(time.time()), "to": to, "branch": branch, "path": path, "sha": sha,
+                                         "private": private if type(private) is bool else None}]
         storage.write_file(receipts_path(record), json.dumps({"form": 1, "receipts": rows[-RECEIPTS_KEPT:]}) + "\n")
         return True
     except (OSError, ValueError, storage.StorageError):
@@ -232,11 +274,36 @@ def warning(counts, record, kilobytes, to, branch, path, creates, target_private
     return lines
 
 
+def offer(config, record, path):
+    """The lines that end `mind.py --open` on a machine with no browser: one question, built here with no network call. When a page
+    was published from this machine before (the newest receipt), it is the question of `acts.py ask publish` for that target (the
+    receipt says whether the record was private), whose yes is the grant for exactly that command. Else it is a question that
+    does nothing by itself: where the page can go is checked, and asked once more, with the place named, before anything is
+    sent. The second option shows the path of the built file. `path` is that file."""
+    import acts
+    rows = read_receipts(record)
+    shown = "Nothing is sent. The file: %s" % path
+    if rows:
+        row = rows[-1]
+        values = {"record": record.lower(), "to": row["to"].lower(), "branch": row["branch"], "path": row["path"], "create": False,
+                  "pages": False, "private": row.get("private") is not False, "nosite": False}
+        body = acts.describe(acts.ACTS["publish"], values, "choice")
+    else:
+        body = {"id": "publish", "header": "Public page", "form": "choice",
+                "question": ("Put the recortex dashboard of %s on the web? No public page is set up from this machine yet, so "
+                             "recortex first checks where it can go, and asks you once more, with the place named, before "
+                             "anything is sent." % record),
+                "options": [{"label": "Set up a public page", "description": "Checks GitHub and asks once more.", "answer": "yes",
+                             "run": [acts.render(("acts.py", "ask", "publish"))]},
+                            {"label": "Show the file's path", "description": shown, "answer": "no", "run": []}]}
+    for item in body["options"]:
+        if item["answer"] == "no":
+            item["description"] = shown
+    return acts.question_lines(body)
+
+
 def run(args):
     import observer
-    if not observer.on_terminal():
-        print(NOT_TERMINAL)
-        return 1
     import setup
     config, record, line = setup.questions_project()
     if config is None:
@@ -281,26 +348,27 @@ def run(args):
         if not may_push:
             print(NO_PUSH % args.to)
             return 1
+        branch_exists, sha = True, None
         try:
             recortex.gh(["api", "repos/%s/branches/%s" % (args.to, args.branch)])
         except recortex.GhError as error:
-            if missing(error):
-                print(NO_BRANCH % (args.branch, args.to, args.branch, args.branch))
-                return 1
-            raise
-        sha = None
-        try:
-            found = json.loads(recortex.gh(["api", "repos/%s/contents/%s?ref=%s" % (args.to, args.path, args.branch)]))
-            if isinstance(found, dict) and isinstance(found.get("sha"), str) and re.fullmatch(r"[0-9a-f]{40}", found["sha"]):
-                sha = found["sha"]
-            elif isinstance(found, dict) and found.get("type") == "file":
-                raise ValueError("no sha")
-            else:
-                print("publish: %s is not a file on that branch; nothing was sent." % args.path)
-                return 1
-        except recortex.GhError as error:
             if not missing(error):
                 raise
+            branch_exists = False
+        if branch_exists:
+            try:
+                found = json.loads(recortex.gh(["api", "repos/%s/contents/%s?ref=%s" % (args.to, args.path, args.branch)]))
+                if isinstance(found, dict) and isinstance(found.get("sha"), str) and re.fullmatch(r"[0-9a-f]{40}", found["sha"]):
+                    sha = found["sha"]
+                elif isinstance(found, dict) and found.get("type") == "file":
+                    raise ValueError("no sha")
+                else:
+                    print("publish: %s is not a file on that branch; nothing was sent." % args.path)
+                    return 1
+            except recortex.GhError as error:
+                if not missing(error):
+                    raise
+        pages, _ = pages_state(args.to, args.branch)
         try:
             record_private = read_repository(record)[0]
         except (recortex.GhError, ValueError, TypeError):
@@ -308,10 +376,15 @@ def run(args):
     except (recortex.GhError, ValueError, TypeError, KeyError):
         print(UNREADABLE_GITHUB)
         return 1
+    switches = args.pages and pages == "off"
     kilobytes = (len(data) + 1023) // 1024
     for text in warning(counts, record, kilobytes, args.to, args.branch, args.path, sha is None, target_private is True,
                         record_private):
         print(text)
+    if not branch_exists:
+        print("It makes the branch %s there, holding only this page." % args.branch)
+    if switches:
+        print("It switches GitHub Pages on for that branch, which makes the branch a public website.")
     body = {"message": MESSAGE, "branch": args.branch, "content": base64.b64encode(data).decode("ascii")}
     if sha:
         body["sha"] = sha
@@ -320,31 +393,64 @@ def run(args):
         shown = dict(body, content="<%d bytes, sha256 %s>" % (len(data), hashlib.sha256(data).hexdigest()))
         print("would run: gh api repos/%s" % args.to)
         print("would run: gh api repos/%s/branches/%s" % (args.to, args.branch))
-        print("would run: gh api repos/%s/contents/%s?ref=%s" % (args.to, args.path, args.branch))
+        if branch_exists:
+            print("would run: gh api repos/%s/contents/%s?ref=%s" % (args.to, args.path, args.branch))
+        print("would run: gh api repos/%s/pages" % args.to)
         print("would run: gh api repos/%s" % record)
-        print("would run: gh %s   # %s" % (" ".join(command), json.dumps(shown, sort_keys=True)))
+        if branch_exists:
+            print("would run: gh %s   # %s" % (" ".join(command), json.dumps(shown, sort_keys=True)))
+        else:
+            for what in ("blobs", "blobs", "trees", "commits", "refs"):
+                print("would run: gh api -X POST repos/%s/git/%s --input -" % (args.to, what))
+            print("   # one commit with no parent: %s and an empty .nojekyll, message %s" % (args.path, json.dumps(MESSAGE)))
+        if switches:
+            print("would run: gh api -X POST repos/%s/pages --input -" % args.to)
         print("dry run: nothing was sent")
         return 0
+    # What GitHub says is held against the flags of the question that was answered, and never the flags against the user: a
+    # private record that the question did not say was private, and a branch it did not say would be made, stop the publish.
     if record_private is not False and not args.private_record:
-        print(PRIVATE_RECORD)
+        print(PRIVATE_NOT_SAID)
         return 1
-    word = "publish" if record_private is False else record
-    tty = observer.terminal()
-    if tty is None:
-        print(NOT_CONFIRMED)
+    if not branch_exists and not args.create_branch:
+        print(BRANCH_NOT_SAID % (args.branch, args.to))
         return 1
-    with tty:
-        typed = tty.ask("Type %s to confirm: " % ("the word publish" if record_private is False else
-                                                  "the record's full name, %s," % record))
-    if (typed != word) if record_private is False else (typed.lower() != record.lower()):
-        print(NOT_CONFIRMED)
-        return 1
+    if observer.on_terminal():
+        # the user's own terminal: a typed word, as it was
+        word = "publish" if record_private is False else record
+        tty = observer.terminal()
+        if tty is None:
+            print(NOT_CONFIRMED)
+            return 1
+        with tty:
+            typed = tty.ask("Type %s to confirm: " % ("the word publish" if record_private is False else
+                                                      "the record's full name, %s," % record))
+        if (typed != word) if record_private is False else (typed.lower() != record.lower()):
+            print(NOT_CONFIRMED)
+            return 1
+        import observer_grants
+        import observer_runtime
+        observer_grants.spend(observer_runtime.folder_key(), "publish")   # an answer nobody used is not kept for a later replay
+    else:
+        import acts
+        values = {"record": record.lower(), "to": args.to.lower(), "branch": args.branch, "path": args.path,
+                  "create": args.create_branch, "pages": args.pages, "private": args.private_record, "nosite": args.no_site}
+        if not acts.allowed("publish", values):
+            print(acts.refusal("publish", values)["note"])
+            return 1
     try:
-        recortex.gh(command, stdin=json.dumps(body), timeout=120)
+        if branch_exists:
+            recortex.gh(command, stdin=json.dumps(body), timeout=120)
+        else:
+            create_branch_with_page(args.to, args.branch, args.path, data)
     except recortex.GhTimeout:   # the write may have landed after gh gave up waiting
         print(UNCONFIRMED)
         return 1
-    except recortex.GhError:
+    except recortex.GhError as error:
+        print(EMPTY_REPOSITORY % args.to if not branch_exists and ("409" in str(error) or "empty" in str(error).lower())
+              else NOT_SENT)
+        return 1
+    except (ValueError, TypeError, KeyError):
         print(NOT_SENT)
         return 1
     try:
@@ -356,10 +462,27 @@ def run(args):
     if stored != expected:
         print(MISMATCH)
         return 1
-    print("published and read back: https://github.com/%s/blob/%s/%s" % (args.to, args.branch, args.path))
-    print("If %s serves this branch with GitHub Pages, the page is at its Pages address; publish.py does not switch Pages on."
-          % args.to)
-    if not keep_receipt(record, args.to, args.branch, args.path, expected):
+    refused = False
+    if switches:
+        try:
+            recortex.gh(["api", "-X", "POST", "repos/%s/pages" % args.to, "--input", "-"],
+                        stdin=json.dumps({"source": {"branch": args.branch, "path": "/"}}), timeout=60)
+        except recortex.GhError:   # never a failed publish: the page is on the branch
+            refused = True
+            print(PAGES_REFUSED % args.to)
+    try:
+        state, address = pages_state(args.to, args.branch)
+    except (recortex.GhError, ValueError, TypeError):
+        state, address = "other", None
+    if state == "on" and address:
+        print("published and read back.")
+        print("the page: " + address + ("" if args.path == "index.html" else args.path))
+        print(MINUTE)
+    else:
+        print("published and read back: https://github.com/%s/blob/%s/%s" % (args.to, args.branch, args.path))
+        if state == "off" and not args.pages and not refused:
+            print(NO_SITE)
+    if not keep_receipt(record, args.to, args.branch, args.path, expected, record_private):
         print("publish: the receipt could not be kept on this machine; the page is published.")
     return 0
 
@@ -367,10 +490,16 @@ def run(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--to", metavar="OWNER/NAME", help="the repository that gets the page")
-    parser.add_argument("--branch", metavar="BRANCH", help="its branch (it must exist)")
+    parser.add_argument("--branch", metavar="BRANCH", help="its branch")
     parser.add_argument("--path", default="index.html", help="the file in that branch (default index.html)")
+    parser.add_argument("--create-branch", action="store_true",
+                        help="the question said the branch is made, holding only the page, when it does not exist")
+    parser.add_argument("--pages", action="store_true",
+                        help="the question said GitHub Pages is switched on for the branch when no site is on")
     parser.add_argument("--private-record", action="store_true",
-                        help="you mean to make a page public that comes from a private record")
+                        help="the question said it makes a page public that comes from a private record")
+    parser.add_argument("--no-site", action="store_true",
+                        help="the question said GitHub Pages serves another branch, so the answer is the file's address")
     parser.add_argument("--dry-run", action="store_true", help="read GitHub and print what would be sent; send nothing")
     parser.add_argument("--list", action="store_true", help="what was published from this machine")
     args = parser.parse_args(argv)
