@@ -11,8 +11,9 @@ number of seconds since the epoch, UTC. It runs 10 minutes, and the holder renew
 
   taken       this worker holds it: nobody else works
   other       another host holds it and 120 seconds of clock skew have not passed since its expiry: the worker leaves quietly
-              and calls no model. A lease that cannot be read or does not fit the form counts as held until its file's
-              modification time plus the lease time plus the skew, and then as expired. It is never a reason to crash or
+              and calls no model. A lease that cannot be read, does not fit the form or runs further ahead than a lease
+              may (a clock far ahead wrote it) counts as held until its file's modification time plus the lease time plus
+              the skew, and then as expired. It is never a reason to crash or
               to post.
   expired     taken over through a claim that only one process can make (a hard link to the lease, the idea of
               index.take_lock, which this file does not touch): one of several contenders wins, the others see a live lease.
@@ -76,9 +77,12 @@ def clock():
     return time.time()
 
 
-def clock_text(seconds):
-    """HH:MM (UTC) of a number of seconds, as the fixed line shows it."""
-    return time.strftime("%H:%M", time.gmtime(seconds))
+def clock_text(seconds, now=None):
+    """HH:MM (UTC) of a number of seconds, as the fixed line shows it, with the date in front when it is not today's (UTC)."""
+    now = clock() if now is None else now
+    day = "%Y-%m-%d "
+    return time.strftime(day + "%H:%M" if time.strftime(day, time.gmtime(seconds)) != time.strftime(day, time.gmtime(now))
+                         else "%H:%M", time.gmtime(seconds))
 
 
 def _valid(data):
@@ -99,8 +103,8 @@ def _text(record):
 
 def read(folder):
     """(state, value, identity): ("none", None, None) when there is no lease; ("ok", the record, identity) for a lease of the
-    form; ("bad", the file's modification time, identity) for one that cannot be read or does not fit it. The identity is
-    (device, inode). Never raises."""
+    form; ("bad", the file's modification time, identity) for one that cannot be read, does not fit it or runs further ahead
+    than a lease may (more than the lease time and the skew from now). The identity is (device, inode). Never raises."""
     path = os.path.join(folder, LEASE)
     try:
         info = os.lstat(path)
@@ -115,6 +119,10 @@ def read(folder):
             raise ValueError("size")
         data = json.loads(storage.read_file(path) or "")
         if _valid(data):
+            if data["expires"] > clock() + SECONDS + SKEW:
+                # Beyond what a lease may run, whatever clock wrote it (a host whose clock was far ahead and then died): not
+                # believed, so that it counts as one that does not fit, until its file's time plus the lease time plus the skew.
+                return "bad", info.st_mtime, identity
             return "ok", data, identity
     except (storage.StorageError, OSError, ValueError, RecursionError):
         pass
@@ -144,7 +152,7 @@ def status(folder, now=None):
         until = peek(folder, now)
     except (OSError, ValueError, storage.StorageError):
         return ""
-    return HELD % clock_text(until) if until is not None else ""
+    return HELD % clock_text(until, now) if until is not None else ""
 
 
 class Lease:

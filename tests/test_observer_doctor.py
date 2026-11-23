@@ -192,7 +192,8 @@ class WordsTests(Box):
             lines = self.summary()
         found = [line for line in lines if line.startswith("  observer worker:")]
         self.assertEqual(1, len(found), lines)
-        self.assertRegex(found[0], r"^  observer worker: another host's observer worker holds this folder until [0-9]{2}:[0-9]{2} UTC$")
+        self.assertRegex(found[0], r"^  observer worker: another host's observer worker holds this folder until "
+                                   r"(?:[0-9]{4}-[0-9]{2}-[0-9]{2} )?[0-9]{2}:[0-9]{2} UTC$")   # with the date past midnight
         self.assertNotIn("login-1", "\n".join(lines))
         self.assertEqual("taken", lease.state)
 

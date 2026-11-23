@@ -292,6 +292,45 @@ class DamagedTests(Box):
                 self.clock.value = NOW
                 os.unlink(self.path)
 
+    def test_a_lease_that_runs_further_ahead_than_a_lease_may_counts_as_one_that_does_not_fit(self):
+        # The 1.7.0 review, N3: a host whose clock was far ahead and then died must not block the others until that time.
+        far = json.dumps({"host": LOGIN, "pid": 4, "token": "1" * 32, "expires": NOW + 10 ** 6})
+        self.write(far, age=0)
+        self.as_host(NODE)
+        self.assertEqual("bad", lease.read(self.folder)[0])
+        self.assertEqual(NOW + 600, lease.peek(self.folder))   # its file's time plus the lease time, not the far expiry
+        self.assertEqual("other", lease.acquire(self.folder).state)
+        self.clock.value = NOW + 600 + 121
+        self.assertIsNone(lease.peek(self.folder))
+        taken = lease.acquire(self.folder)
+        self.assertEqual("taken", taken.state)
+        self.assertEqual(self.clock.value + 600, self.record()["expires"])
+
+    def test_a_clock_that_is_ahead_by_the_allowed_skew_still_holds_its_lease(self):
+        edge = json.dumps({"host": LOGIN, "pid": 4, "token": "1" * 32, "expires": NOW + 600 + 120})
+        self.write(edge)
+        self.as_host(NODE)
+        self.assertEqual("ok", lease.read(self.folder)[0])
+        self.assertEqual(NOW + 720, lease.peek(self.folder))
+        beyond = json.dumps({"host": LOGIN, "pid": 4, "token": "1" * 32, "expires": NOW + 600 + 121})
+        self.write(beyond)
+        self.assertEqual("bad", lease.read(self.folder)[0])
+
+    def test_the_line_names_the_date_when_it_is_not_today(self):
+        self.assertEqual("2026-11-18 11:06:40", time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(NOW)))
+        self.assertEqual("11:16", lease.clock_text(NOW + 600, NOW))
+        self.assertEqual("2026-11-19 11:16", lease.clock_text(NOW + 600 + 86400, NOW))
+        self.assertEqual("2026-11-16 11:16", lease.clock_text(NOW + 600 - 2 * 86400, NOW))
+        evening = NOW + 46100   # 23:55:00 the same day: a lease of ten minutes then ends past midnight
+        self.clock.value = evening
+        self.as_host(NODE)
+        self.write(json.dumps({"host": LOGIN, "pid": 4, "token": "1" * 32, "expires": evening + 600}))
+        self.assertEqual("another host's observer worker holds this folder until 2026-11-19 00:05 UTC", lease.status(self.folder))
+        self.clock.value = evening - 3000   # earlier the same day: the same lease ends on the date that is not today's
+        self.assertEqual("another host's observer worker holds this folder until 2026-11-19 00:05 UTC", lease.status(self.folder))
+        self.clock.value = NOW + 13 * 3600   # after midnight, with the lease still held (the skew): today's date is not repeated
+        self.assertEqual("another host's observer worker holds this folder until 00:05 UTC", lease.status(self.folder))
+
     def test_a_lease_that_is_a_link_or_has_loose_permissions_is_held_then_replaced_and_never_followed(self):
         target = self.base / "elsewhere"
         target.write_text("keep")
@@ -623,7 +662,8 @@ class WorkerTests(unittest.TestCase):
         lease.acquire(self.state)
         self.host = NODE
         value = self.status()
-        self.assertRegex(value["host_lease"], r"^another host's observer worker holds this folder until [0-9]{2}:[0-9]{2} UTC$")
+        self.assertRegex(value["host_lease"], r"^another host's observer worker holds this folder until "
+                                                   r"(?:[0-9]{4}-[0-9]{2}-[0-9]{2} )?[0-9]{2}:[0-9]{2} UTC$")   # the date past midnight
         self.assertNotIn(LOGIN, json.dumps(value["host_lease"]))
         self.host = LOGIN
         self.assertNotIn("host_lease", self.status())
