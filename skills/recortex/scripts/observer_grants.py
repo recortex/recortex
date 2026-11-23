@@ -53,6 +53,11 @@ UNREADABLE = ("recortex observer: your answer could not be read on this machine,
               "folders above it, or run this command there.")
 PASS = re.compile(r"[0-9a-f]{32}")
 ANSWER = re.compile(r"[A-Za-z0-9_-]{1,80}")
+# What the file's list of used answers holds: the grant's kind and the answer's tool id ("map-toolu_01..."), since several
+# questions answered in one question call share one id, and for the level and the stronger model also the bare id, as 1.6.0
+# spent it (a 1.6.0 hook after a downgrade still refuses the replay).
+SPENT_ITEM = re.compile(r"(?:(?:level|strong|map)-)?[A-Za-z0-9_-]{1,80}")
+BARE_TOO = ("level", "strong")
 
 
 # ---------------------------------------------------------------- what a command needs
@@ -96,7 +101,7 @@ def _state():
         return empty
     if not isinstance(data, dict) or not isinstance(data.get("folders"), dict):
         return empty
-    spent = [item for item in data.get("spent", []) if isinstance(item, str) and ANSWER.fullmatch(item)]
+    spent = [item for item in data.get("spent", []) if isinstance(item, str) and SPENT_ITEM.fullmatch(item)]
     return {"folders": data["folders"], "spent": spent[-SPENT:]}
 
 
@@ -123,7 +128,8 @@ def _live(entry, now):
 
 def put(folder, kind, value, answer, now=None):
     """Record the grant for this folder: the user's answer `answer` (a tool id) to the question about `kind`. An answer that
-    was already used for a grant grants nothing again, whatever the transcript still holds."""
+    was already used for a grant of that kind grants nothing again, whatever the transcript still holds. Another kind's grant
+    from the same call is not refused: two questions answered in one question call share one tool id."""
     if kind not in QUESTION_OF or not ANSWER.fullmatch(str(answer)):
         return False
     if (kind == "level" and value not in runtime.LEVELS or kind == "strong" and value != STRONG_MODEL
@@ -131,13 +137,18 @@ def put(folder, kind, value, answer, now=None):
         return False
     now = time.time() if now is None else now
     with _writer() as state:
-        if answer in state["spent"]:
+        if _used(state["spent"], kind, answer):
             return False
         entry = state["folders"].setdefault(folder, {}).get(kind)
         if _live(entry, now) and entry.get("answer") == answer and entry.get("value") == value:
             return True   # the same answer, seen again before it was used: nothing changes
         state["folders"][folder][kind] = {"value": value, "answer": answer, "until": now + SECONDS}
     return True
+
+
+def _used(spent, kind, answer):
+    """True when `answer` was already used for a grant of `kind` (for the level and the stronger model also as the bare id)."""
+    return "%s-%s" % (kind, answer) in spent or kind in BARE_TOO and answer in spent
 
 
 def held(folder, wanted, now=None):
@@ -158,7 +169,10 @@ def take(folder, wanted, now=None):
         if not all(_live(entries.get(kind), now) and entries[kind].get("value") == value for kind, value in wanted):
             return False
         for kind, _ in wanted:
-            state["spent"].append(entries.pop(kind)["answer"])
+            answer = entries.pop(kind)["answer"]
+            state["spent"].append("%s-%s" % (kind, answer))
+            if kind in BARE_TOO:
+                state["spent"].append(answer)
     return True
 
 

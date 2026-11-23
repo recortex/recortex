@@ -524,6 +524,75 @@ class MapGrantTests(TranscriptBox):
         self.assertIsNone(grants.label_for("map", "off"))
 
 
+class OneCallTests(TranscriptBox):
+    """Two grant questions answered in one question call share the call's tool id: each grant is spent by its own kind, so the
+    second one is honored (the 1.7.0 review, S2)."""
+
+    MAP = "python3 /p/skills/recortex/scripts/observer.py --repo octo-org/octo-repo map-mode automatic --yes"
+    STRONG = "python3 /p/skills/recortex/scripts/setup.py observer --strong opus --yes"
+
+    def ask_both(self):
+        import setup_questions
+        asked, answers = [], {}
+        for kind, answer in (("strong", "Yes (Recommended)"), ("map", "Automatic (Recommended)")):
+            question = next(q for q in setup_questions.QUESTIONS if q.id == grants.QUESTION_OF[kind])
+            text = question.text.format(sort=80, middle=70, strong=8, proposals=2)
+            asked.append({"question": text, "header": kind, "multiSelect": False,
+                          "options": [{"label": o.label, "description": o.label} for o in question.options]})
+            answers[text] = answer
+        ident = "toolu_01bothquestions"
+        use = {"type": "assistant", "message": {"role": "assistant", "model": "claude-opus-5-5", "content": [
+            {"type": "tool_use", "id": ident, "name": "AskUserQuestion", "input": {"questions": asked}}]}}
+        result = {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": ident, "content": "User has answered your questions: ..."}]},
+                  "toolUseResult": {"questions": asked, "answers": answers}}
+        with open(self.path, "a") as handle:
+            handle.write(json.dumps(use) + "\n" + json.dumps(result) + "\n")
+
+    def test_the_second_grant_of_one_call_is_honored_after_the_first_was_used(self):
+        self.ask_both()
+        self.hook(self.STRONG)
+        self.assertTrue(self.held("strong", "opus"))
+        self.assertTrue(grants.take(self.folder, [("strong", "opus")]))   # the chain used the first
+        self.hook(self.MAP)
+        self.assertTrue(self.held("map", "automatic"))
+        self.assertTrue(grants.take(self.folder, [("map", "automatic")]))
+
+    def test_it_works_in_the_other_order_too(self):
+        self.ask_both()
+        self.hook(self.MAP)
+        self.assertTrue(grants.take(self.folder, [("map", "automatic")]))
+        self.hook(self.STRONG)
+        self.assertTrue(self.held("strong", "opus"))
+
+    def test_each_grant_of_the_call_is_still_used_once(self):
+        self.ask_both()
+        self.hook(self.STRONG)
+        self.hook(self.MAP)
+        self.assertTrue(grants.take(self.folder, [("strong", "opus"), ("map", "automatic")]))
+        self.hook(self.STRONG)
+        self.hook(self.MAP)
+        self.assertFalse(self.held("strong", "opus"))      # the same answer grants the same kind no second time
+        self.assertFalse(self.held("map", "automatic"))
+
+    def test_the_bare_id_stays_spent_for_the_level_and_the_stronger_model_as_the_earlier_version_reads_it(self):
+        self.assertTrue(grants.put(self.folder, "level", "everything", "toolu_a"))
+        self.assertTrue(grants.take(self.folder, [("level", "everything")]))
+        spent = grants._state()["spent"]
+        self.assertIn("toolu_a", spent)           # what 1.6.0 reads
+        self.assertIn("level-toolu_a", spent)
+        self.assertFalse(grants.put(self.folder, "strong", "opus", "toolu_a"))   # a bare id spent: refused, as before
+        self.assertFalse(grants.put(self.folder, "level", "everything", "toolu_a"))
+        self.assertTrue(grants.put(self.folder, "map", "automatic", "toolu_a"))   # the map has no earlier reader
+
+    def test_a_longest_answer_id_stays_spent_with_its_kind_in_front(self):
+        longest = "a" * 80
+        self.assertTrue(grants.put(self.folder, "map", "shadow", longest))
+        self.assertTrue(grants.take(self.folder, [("map", "shadow")]))
+        self.assertIn("map-" + longest, grants._state()["spent"])   # the form of the list still fits the longest id
+        self.assertFalse(grants.put(self.folder, "map", "shadow", longest))
+
+
 class RequestedTests(unittest.TestCase):
     def test_a_command_gives_the_kinds_it_names_and_leaves_the_others_out(self):
         table = (
