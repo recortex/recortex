@@ -61,6 +61,13 @@ ASKED = ("advisory", "disable", "release", "resume", "trust-ancestor", "undo")
 USERS_COMMAND_WORDS = re.compile(r"observer\.py\b.*?(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(ASKED), re.S)
 HOSTS_ANY = re.compile(r"(?:observer|setup)\.py\b.*--ho(?:s(?:ts?)?)?(?:\s+|=)[\"']?any\b", re.S)
 PUBLISH = re.compile(r"(?<![A-Za-z0-9_-])publish\.py\b")
+ACTS_SCRIPT = re.compile(r"(?<![A-Za-z0-9_-])acts\.py\b")   # asking a question is the main session's own call
+# A hook of the plugin is run by Claude Code, never by a session: a session that runs hooks.py or run_hook.sh with an event, and a
+# JSON of its own on stdin, would make the user's typed answer (hooks.py, prompt-submit) up. --doctor and --print read only.
+HOOK_RUN = re.compile(r"(?:hooks\.py|run_hook\.sh)\b.*?(?<![A-Za-z0-9_-])(?:session-start|subagent-start|prompt-submit|"
+                      r"pre-compact|subagent-stop)(?![A-Za-z0-9_-])", re.S)
+HOOK_DENIAL = ("recortex: the plugin's hooks are run by Claude Code, never by a session. What a hook reads is the user's own "
+               "prompt, and a session cannot make one.")
 PUBLISH_READS = re.compile(r"(?<![A-Za-z0-9_-])--(?:dry-run|list)(?![A-Za-z0-9_-])")   # these two read and send nothing
 SUBAGENT_DENIAL = ("recortex: this act is asked and run by the main session only, on the user's answer. Tell the main "
                    "session what is needed.")
@@ -112,9 +119,20 @@ def subagent_decision(data):
     if command is None:
         return None
     for text in texts:
-        if USERS_COMMAND_WORDS.search(text) or HOSTS_ANY.search(text) or (PUBLISH.search(text) and not PUBLISH_READS.search(text)):
+        if (USERS_COMMAND_WORDS.search(text) or HOSTS_ANY.search(text) or ACTS_SCRIPT.search(text)
+                or (PUBLISH.search(text) and not PUBLISH_READS.search(text))):
             return deny(SUBAGENT_DENIAL)
     return None
+
+
+def hook_decision(data):
+    """The denial for a Bash call, of the main session or of a subagent, that runs hooks.py or run_hook.sh with a hook event;
+    else None. Fitted to the obvious forms: the hook itself also checks that it was started by Claude Code (observer_grants.
+    plausibly_a_hook) before it takes a typed answer."""
+    command, texts = _spoken(data)
+    if command is None:
+        return None
+    return deny(HOOK_DENIAL) if any(HOOK_RUN.search(text) for text in texts) else None
 
 
 def page_decision(data):
@@ -175,7 +193,7 @@ def decide(raw, scripts=HERE):
         return deny(UNREADABLE) if ASK in raw else None
     if data.get("agent_type") == ASK:
         return ask_decision(data, scripts)
-    found = terminal_decision(data) or page_decision(data) or subagent_decision(data)
+    found = terminal_decision(data) or page_decision(data) or hook_decision(data) or subagent_decision(data)
     if found:
         return found
     record_grants(data)
@@ -189,7 +207,7 @@ def record_grants(data):
         return
     command = (data.get("tool_input") or {}).get("command") if isinstance(data.get("tool_input"), dict) else None
     if data.get("tool_name") not in ("Bash", "bash") or not isinstance(command, str) or not (
-            "observer" in command or "setup.py" in command or "publish.py" in command):
+            "observer" in command or "setup.py" in command or "publish.py" in command or "acts.py" in command):
         return
     try:
         import observer_grants

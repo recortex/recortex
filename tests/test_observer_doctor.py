@@ -99,9 +99,9 @@ class MachineTests(Box):
         self.addCleanup(os.chmod, self.claude, 0o700)
         text = self.doctor()
         words = self.row(text, "observer notes (capture)")
-        self.assertRegex(words, r"^not ready: source-permissions at native-config\. Run in your own terminal: python3 \S+/observer\.py "
-                                r"trust-ancestor --failing ; then the same with --yes$")
-        self.assertEqual("cannot be read, for the same reason; run the observer's commands in your own terminal until then",
+        self.assertRegex(words, r"^not ready: source-permissions at native-config\. Ask the trust question: python3 \S+/acts\.py "
+                                r"ask trust$")
+        self.assertEqual("cannot be read, for the same reason; ask the trust question first (acts.py ask trust)",
                          self.row(text, "answers given in a session (grants)"))
         self.assertNotIn(self.claude, text.split("on this machine:")[1].split("problem:")[0].replace(
             "trust-ancestor", ""))   # the summary names no folder of the user's: only the plugin's own script

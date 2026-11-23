@@ -263,7 +263,7 @@ class ObserverAdvisoryTests(unittest.TestCase):
                 mock.patch.object(runtime, "approval_valid", return_value=False), \
                 mock.patch.object(observer_store, "Store") as opened, mock.patch.object(observer, "emit") as emit:
             self.assertEqual(1, observer.main(["advisory", "mute", "f" * 64]))
-            self.assertEqual("terminal-required", emit.call_args[0][0]["code"])
+            self.assertEqual("approval", emit.call_args[0][0]["code"])
             self.assertEqual(1, observer.main(["advisory", "list"]))
             self.assertEqual("approval", emit.call_args[0][0]["code"])
             opened.assert_not_called()
@@ -285,14 +285,16 @@ class ObserverAdvisoryTests(unittest.TestCase):
         config = {"repo": fixtures.REPO, "observer": {"enabled": True, "advisory_mode": "deliver"}}
         with mock.patch.object(runtime, "stored_approval", return_value=None):
             self.assertEqual("off", runtime.settings(runtime.local_config(config))["advisory_mode"])
-        with mock.patch.object(observer.recortex, "load_config", return_value=config), \
-                mock.patch.object(runtime, "local_config", return_value=config), \
+        quiet = {"repo": fixtures.REPO, "observer": {"enabled": True}}   # what the folder's own settings say: advisory is off
+        with mock.patch.object(observer.recortex, "load_config", return_value=quiet), \
+                mock.patch.object(runtime, "local_config", return_value=quiet), \
                 mock.patch.object(observer.recortex, "resolve_repo", return_value=fixtures.REPO), \
                 mock.patch.object(observer.recortex, "allowed_users", return_value={"octocat"}), \
                 mock.patch.object(observer, "on_terminal", return_value=False), \
+                mock.patch.object(runtime, "approval_valid", return_value=True), \
                 mock.patch.object(runtime, "approve") as save, contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(1, observer.main(["advisory", "deliver", "--yes"]))
-            self.assertEqual("terminal-required", json.loads(out.getvalue())["code"])
+            self.assertEqual("advisory_unanswered", json.loads(out.getvalue())["code"])   # the user's answer is what it needs
             save.assert_not_called()
 
 

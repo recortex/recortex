@@ -887,6 +887,12 @@ class ObserverCliTests(unittest.TestCase):
         with patch.dict(os.environ,{'XDG_STATE_HOME':str(self.base/'state')}):
             observer_grants.put(os.path.realpath(other),'level','everything','toolu_test%d'%time.time_ns())   # the user's answer for that folder
         self.assertTrue(run('enable','--model','sonnet','--level','everything','--yes')['approved'])
+        result,value=self.cli('disable');self.assertEqual((1,'disable_unanswered'),(result.returncode,value['code']))   # a pipe: no answer
+        _,status=self.cli('status');self.assertTrue(status['approved'])
+        import acts
+        with patch.dict(os.environ,dict(self.env,XDG_STATE_HOME=str(self.base/'state')),clear=True):
+            values=acts.ACTS['disable'].values(acts.Context(str(self.project)))
+            observer_grants.put(os.path.realpath(self.project),'disable',acts.ACTS['disable'].value(values),'toolu_disable1')
         result,value=self.cli('disable');self.assertEqual(0,result.returncode);self.assertTrue(value['was_enabled'])
         _,status=self.cli('status');self.assertFalse(status['approved'])
         self.assertTrue(run('status')['approved'])
@@ -929,14 +935,44 @@ class ObserverCliTests(unittest.TestCase):
         finally:
             os.close(fd)
         return os.waitpid(pid,0)[1],seen
+    @unittest.skipIf(observer.inside_claude(),"the user's own terminal is outside every Claude Code session")
     def test_publication_pause_survives_process_restart(self):
         self.cli('enable','--model','sonnet','--level','everything','--yes');self.cli('pause','publication')
         _,status=self.cli('status');self.assertTrue(status['publication_paused']);self.assertFalse(status['capture_paused'])
-        result,value=self.cli('resume','publication')  # from a pipe, as Claude Code's Bash tool runs it: refused
-        self.assertEqual((1,'terminal-required'),(result.returncode,value['code']))
+        result,value=self.cli('resume','publication')  # from a pipe, as Claude Code's Bash tool runs it: it needs the user's answer
+        self.assertEqual((1,'resume_unanswered'),(result.returncode,value['code']))
         _,status=self.cli('status');self.assertTrue(status['publication_paused'])
         code,seen=self.on_terminal(('resume','publication'),b'resume')
         self.assertEqual(0,code,seen);_,status=self.cli('status');self.assertFalse(status['publication_paused'])
+    def test_a_terminal_a_session_made_confirms_nothing_whatever_it_types(self):
+        # What a pseudo-terminal helper gives a command: a controlling terminal, and stdin and stdout on it. The session writes
+        # the word itself, so inside a session (CLAUDECODE, or a claude program among the parents) the word is never asked.
+        import pty
+        hold_id=self.hold();self.cli('enable','--model','sonnet','--level','everything','--yes')
+        for args,word in ((('release',hold_id),b'release'),(('disable',),b'disable')):
+            pid,fd=pty.fork()
+            if pid==0:
+                try:
+                    os.chdir(self.project)
+                    os.execve(sys.executable,[sys.executable,str(ROOT/'skills/recortex/scripts/observer.py')]+list(args),
+                              dict(self.env,CLAUDECODE='1'))
+                finally:
+                    os._exit(127)
+            seen=b''
+            try:
+                while True:
+                    try:
+                        chunk=os.read(fd,4096)
+                    except OSError:
+                        break
+                    if not chunk:break
+                    seen+=chunk
+                    if b'to confirm' in seen:os.write(fd,word+b'\n')
+            finally:
+                os.close(fd)
+            os.waitpid(pid,0)
+            self.assertNotIn(b'to confirm',seen,args);self.assertIn(args[0].encode()+b'_unanswered',seen,args)
+        self.assertEqual(['active'],self.held());self.assertEqual([os.path.realpath(self.project)],list(self.approvals()))
     def test_automatic_enable_refused_without_runtime_proof(self):
         result,value=self.cli('enable','--mode','automatic','--model','sonnet','--level','everything','--yes')
         self.assertEqual(1,result.returncode);self.assertFalse(value['approved']);self.assertEqual('runtime-gate',value['code'])
@@ -958,7 +994,7 @@ class ObserverCliTests(unittest.TestCase):
         # Pipes and no controlling terminal: what Claude Code's Bash tool gives a command.
         done=subprocess.run(command,cwd=self.project,env=self.env,input='release\n',capture_output=True,text=True,
                             timeout=10,start_new_session=True)
-        self.assertEqual(1,done.returncode);self.assertEqual('terminal-required',json.loads(done.stdout)['code'])
+        self.assertEqual(1,done.returncode);self.assertEqual('release_unanswered',json.loads(done.stdout)['code'])
         # A terminal on stdin and stdout, but no controlling terminal: /dev/tty cannot be opened.
         import pty
         main,child=pty.openpty()
@@ -967,7 +1003,7 @@ class ObserverCliTests(unittest.TestCase):
                                 timeout=10,start_new_session=True)
             os.close(child);child=None
             self.assertEqual(1,done.returncode)
-            self.assertIn(b'terminal-required',os.read(main,4096))
+            self.assertIn(b'release_unanswered',os.read(main,4096))
         finally:
             os.close(main)
             if child is not None:os.close(child)
@@ -999,6 +1035,7 @@ class ObserverCliTests(unittest.TestCase):
             os.close(fd)
         os.waitpid(pid,0)
         self.assertNotIn(b'Type release to confirm',seen);self.assertEqual(['active'],self.held())
+    @unittest.skipIf(observer.inside_claude(),"the user's own terminal is outside every Claude Code session")
     def test_release_succeeds_in_a_terminal_after_the_user_confirms(self):
         import pty
         hold_id=self.hold()
@@ -1032,12 +1069,13 @@ class ObserverCliTests(unittest.TestCase):
         self.assertNotEqual(0,status);self.assertIn(b'not-confirmed',seen);self.assertEqual(['active'],self.held())
         status,seen=run(b'release\n')
         self.assertEqual(0,status,seen);self.assertIn(b'"released": true',seen);self.assertEqual(['released'],self.held())
+    @unittest.skipIf(observer.inside_claude(),"the user's own terminal is outside every Claude Code session")
     def test_disable_asks_on_the_users_terminal_while_a_hold_applies(self):
         import pty
         self.cli('enable','--model','sonnet','--level','everything','--yes')
         self.hold()
         result,value=self.cli('disable')  # pipes: refused, and the folder stays enabled
-        self.assertEqual(1,result.returncode);self.assertEqual('terminal-required',value['code'])
+        self.assertEqual(1,result.returncode);self.assertEqual('disable_unanswered',value['code'])
         self.assertEqual([os.path.realpath(self.project)],list(self.approvals()))
         pid,fd=pty.fork()
         if pid==0:

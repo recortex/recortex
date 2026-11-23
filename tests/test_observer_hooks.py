@@ -80,9 +80,11 @@ class ObserverHookTests(unittest.TestCase):
         self.config = on
         with Store(REPO) as store:
             hold_id = store.holds()[0]["id"]
+        self.assertEqual("deny", self.run_hook(command="git push")["hookSpecificOutput"]["permissionDecision"])
+        # what releases it is the user's answer to a question, which the commands check for themselves (test_observer_acts)
         for command in ('script -qec "python3 observer.py release %s" /dev/null' % hold_id,
                         "python3 skills/recortex/scripts/observer.py disable"):
-            self.assertEqual("deny", self.run_hook(command=command)["hookSpecificOutput"]["permissionDecision"], command)
+            self.assertNotIn("hookSpecificOutput", self.run_hook(command=command), command)
 
     def entry_and_hold(self):
         import observer_runtime
@@ -121,8 +123,9 @@ class ObserverHookTests(unittest.TestCase):
             self.assertEqual("deny", result["hookSpecificOutput"]["permissionDecision"])
             self.assertNotIn("hookSpecificOutput", self.run_hook(command="git status"))
 
-    def cli(self, *args, answer=None):
-        """observer.py in this process, with a terminal that answers `answer`, or none at all."""
+    def cli(self, *args, answer=None, real=False):
+        """observer.py in this process, with a terminal that answers `answer`, or none at all. `real` keeps
+        observer_grants.needs, so that the grants a command needs are checked."""
         import contextlib, io, observer
         tty = None
         if answer is not None:
@@ -132,7 +135,9 @@ class ObserverHookTests(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.object(observer.recortex, "load_config", return_value={"repo": REPO, "hub": 1}), \
                 mock.patch.object(observer, "terminal", return_value=tty), \
-                mock.patch("observer_grants.needs", return_value=[]), contextlib.redirect_stdout(out):   # who may enable: test_jobs_enable
+                mock.patch.object(observer, "on_terminal", return_value=tty is not None), \
+                (contextlib.nullcontext() if real else mock.patch("observer_grants.needs", return_value=[])), \
+                contextlib.redirect_stdout(out):   # who may enable: test_jobs_enable
             code = observer.main(list(args))
         return code, json.loads(out.getvalue().splitlines()[-1]), tty
 
@@ -151,9 +156,13 @@ class ObserverHookTests(unittest.TestCase):
         self.assertEqual((0, True), (result, value["approved"]), value)
         self.assertEqual("automatic", self.folder_entry()["settings"]["mode"])
 
-    def test_replacing_this_folders_entry_while_its_holds_apply_is_asked_on_the_users_terminal(self):
+    def test_replacing_this_folders_entry_while_its_holds_apply_is_asked_as_a_question_or_on_the_users_terminal(self):
         # An entry for the same repository keeps its holds in force: nothing to ask. One that names another
-        # repository would stop that repository's holds applying here: asked on the user's own terminal.
+        # repository would stop that repository's holds applying here: the user's answer to the question of acts.py (kind
+        # replace), or a typed word on their own terminal.
+        import acts
+        import observer
+        import observer_grants
         import observer_holds
         import observer_runtime
         self.entry_and_hold()
@@ -168,11 +177,25 @@ class ObserverHookTests(unittest.TestCase):
         with Store(other, config={}) as store:
             source = {"source_id": "s9", "role": "user", "direct_user": True, "text": "/recortex hold git-push"}
             store.update_holds(lambda holds: holds + [observer_holds.make_hold(source, other, "git-push")])
-        result, value, _ = self.cli("enable", "--model", "sonnet", "--level", "everything", "--yes")
-        self.assertEqual((1, "terminal-required"), (result, value["code"]))
-        self.assertIn("separate terminal", value["note"])
+        result, value, _ = self.cli("enable", "--model", "sonnet", "--level", "everything", "--yes", real=True)
+        self.assertEqual((1, "replace_unanswered"), (result, value["code"]))
+        self.assertIn("acts.py ask replace", value["note"])
+        self.assertNotIn("terminal", value["note"])
         self.assertEqual(other, self.folder_entry()["repo"])
-        result, value, tty = self.cli("enable", "--model", "sonnet", "--level", "everything", "--yes", answer="enable")
+        folder = observer_runtime.folder_key(str(self.project))
+        replacing = acts.replace_values(REPO, str(self.project))
+        self.assertEqual({"old": other, "new": REPO}, replacing)
+        observer_grants.put(folder, "replace", acts.ACTS["replace"].value(replacing), "toolu_01replace")
+        observer_grants.put(folder, "level", "everything", "toolu_01level")
+        result, value, _ = self.cli("enable", "--model", "sonnet", "--level", "everything", "--yes", real=True)   # on the answers
+        self.assertEqual((0, True), (result, value["approved"]), value)
+        self.assertEqual(REPO, self.folder_entry()["repo"])
+        self.assertFalse(observer_grants.held(folder, [("replace", acts.ACTS["replace"].value(replacing))]))   # used once
+        observer_runtime.approve(other, {"observer": {"enabled": True, "level": "everything", "model": "haiku",
+                                                      "publisher_id": observer_runtime.publisher_id(create=True)}},
+                                 str(self.project))
+        with mock.patch.object(observer, "on_terminal", return_value=True):   # the user's terminal: a typed word
+            result, value, tty = self.cli("enable", "--model", "sonnet", "--level", "everything", "--yes", answer="enable")
         self.assertEqual(0, result, value)
         self.assertIn("while holds apply", tty.ask.call_args.args[0])
         self.assertEqual(REPO, self.folder_entry()["repo"])
@@ -344,14 +367,14 @@ class ObserverHookTests(unittest.TestCase):
         self.assertFalse(self.granted(key))
         self.assertTrue(self.granted(other))
 
-    def test_resume_is_asked_on_the_users_terminal(self):
+    def test_resume_is_a_typed_word_on_the_users_terminal_and_the_users_answer_anywhere_else(self):
         import observer_runtime
         observer_runtime.approve(REPO, {"observer": {"enabled": True, "level": "everything", "model": "haiku",
                                                      "publisher_id": observer_runtime.publisher_id(create=True)}},
                                  str(self.project))
         self.assertEqual(0, self.cli("resume", "publication")[0])  # nothing paused: nothing to ask
         self.assertEqual(0, self.cli("pause", "publication")[0])
-        for answer, code in ((None, "terminal-required"), ("no", "not-confirmed")):
+        for answer, code in ((None, "resume_unanswered"), ("no", "not-confirmed")):
             result, value, _ = self.cli("resume", "all", answer=answer)
             self.assertEqual((1, code), (result, value["code"]), answer)
             with Store(REPO) as store:
@@ -360,33 +383,26 @@ class ObserverHookTests(unittest.TestCase):
         with Store(REPO) as store:
             self.assertFalse(store.get_control("publication_paused"))
 
-    def test_the_users_control_commands_are_denied_from_the_session_always(self):
-        # release, disable and resume are the user's, run in their own terminal: a session's Bash call naming them is
-        # denied whether or not a hold applies, read as the shell splits it. A guard against mistakes, not a
-        # boundary. Automatic mode is the setup wizard's to turn on, on the user's answer.
+    def test_the_users_control_commands_are_not_denied_to_the_main_session_by_the_hold_hook(self):
+        # release, disable, resume and undo refuse by themselves for want of the user's answer (acts.py); a subagent's call is
+        # denied by pretool_guard. The hold hook stops what a hold names and nothing else, with a hold or without one.
         import observer_runtime
         observer_runtime.approve(REPO, {"observer": {"enabled": True, "level": "everything", "model": "haiku",
                                                      "publisher_id": observer_runtime.publisher_id(create=True)}},
                                  str(self.project))
-        denied = ("python3 skills/recortex/scripts/observer.py resume all", "python3 observer.py resume publication",
-                  "python3 'observer.py' 're''sume' all", 'python3 obs"erver".py "resume"',
-                  "python3 observer.py release 0123456789abcdef01234567", "python3 observer.py disable",
-                  "python3 observer.py undo 3", 'python3 skills/recortex/scripts/observer.py "un""do" 12',
-                  "python3 observer.py 'resume all")  # does not split: read as written
+        asked = ("python3 skills/recortex/scripts/observer.py resume all", "python3 observer.py resume publication",
+                 "python3 observer.py release 0123456789abcdef01234567", "python3 observer.py disable",
+                 "python3 observer.py undo 3", "python3 observer.py trust-ancestor --failing --yes",
+                 "python3 observer.py advisory deliver --yes")
         for with_hold in (False, True):
             if with_hold:
                 self.append("/recortex hold git-push")
                 self.run_hook(event="stop")
-            for command in denied:
-                result = self.run_hook(command=command)
-                self.assertEqual("deny", result["hookSpecificOutput"]["permissionDecision"], (with_hold, command))
-                self.assertIn("in a separate terminal", result["hookSpecificOutput"]["permissionDecisionReason"])
-            for command in ("python3 observer.py status", "python3 observer.py pending", "python3 observer.py holds",
-                            "python3 observer.py pause publication", "python3 observer.py enable --model haiku",
-                            "python3 observer.py enable --mode automatic --model haiku --yes"):
+            for command in asked + ("python3 observer.py status", "python3 observer.py pending",
+                                    "python3 observer.py holds", "python3 observer.py pause publication"):
                 self.assertNotIn("hookSpecificOutput", self.run_hook(command=command), (with_hold, command))
-        with mock.patch("observer_hooks.observer_runtime.stored_approval", return_value=None):
-            self.assertNotIn("hookSpecificOutput", self.run_hook(command="python3 observer.py resume all"))
+            self.assertEqual("deny", self.run_hook(command="git push")["hookSpecificOutput"]["permissionDecision"] if with_hold
+                             else "deny")
 
     def test_disable_checks_the_entrys_holds_whatever_the_project_file_names(self):
         import contextlib, io, observer, observer_runtime
@@ -395,7 +411,7 @@ class ObserverHookTests(unittest.TestCase):
         with mock.patch.object(observer.recortex, "load_config", return_value={"repo": "octo-org/other", "hub": 1}), \
                 mock.patch.object(observer, "terminal", return_value=None), contextlib.redirect_stdout(out):
             self.assertEqual(1, observer.main(["disable"]))
-        self.assertEqual("terminal-required", json.loads(out.getvalue())["code"])
+        self.assertEqual("disable_unanswered", json.loads(out.getvalue())["code"])
         self.assertIsNotNone(observer_runtime.stored_approval(str(self.project)))
 
     def test_unreadable_approvals_stop_what_a_hold_could_stop(self):
@@ -577,7 +593,8 @@ class ObserverHookTests(unittest.TestCase):
             result = self.run_hook()
             self.assertEqual("deny", result["hookSpecificOutput"]["permissionDecision"], text)
             if "command-name" in text:  # the session is told how, once; the same set of lines is not repeated
-                self.assertIn("run observer.py release HOLD_ID in a separate terminal", result["systemMessage"])
+                self.assertIn("a hold is released on the user's answer to its question", result["systemMessage"])
+                self.assertIn("acts.py ask release HOLD_ID", result["systemMessage"])
         # Neither does a hook's own prompt field, which a model can craft by running the hook itself.
         hooks.handle("prompt-submit", dict(self.data, prompt=typed), self.config, REPO)
         with mock.patch.object(observer.sys, "stdin", io.StringIO(json.dumps(dict(self.data, prompt=typed)))), \

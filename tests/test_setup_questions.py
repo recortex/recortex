@@ -1861,8 +1861,8 @@ class CaptureGateTests(Box):
         self.assertIn("Notes cannot be taken on this machine yet: a folder above Claude Code's transcripts belongs to another "
                       "account or can be written by a shared group (source-permissions).", blocks[0])
         self.assertIn("The record brief and the task reminder work without it.", blocks[0])
-        self.assertRegex(blocks[0], r"run in your own terminal, outside Claude Code: python3 \S+/observer\.py trust-ancestor "
-                                    r"--failing ; then the same with --yes\. The question is asked again after that\.$")
+        self.assertRegex(blocks[0], r"ask the trust question: python3 \S+/acts\.py ask trust\. The question is asked again after "
+                                    r"that\.$")
         self.assertNotIn("observer-level (recommended)", done.stdout)
         self.assertNotIn("Everything", done.stdout)
 
@@ -1873,8 +1873,8 @@ class CaptureGateTests(Box):
         self.assertIn("observer-level", blocked)
         self.assertEqual("capture-not-ready", blocked["observer-level"]["reason"])
         self.assertEqual("source-permissions", blocked["observer-level"]["code"])
-        self.assertTrue(blocked["observer-level"]["commands"][0].endswith("observer.py trust-ancestor --failing"))
-        self.assertTrue(blocked["observer-level"]["commands"][1].endswith("observer.py trust-ancestor --failing --yes"))
+        self.assertEqual(1, len(blocked["observer-level"]["commands"]))   # the one command that asks the trust question
+        self.assertTrue(blocked["observer-level"]["commands"][0].endswith("acts.py ask trust"))
         self.assertNotIn("observer-level", [q["id"] for q in value["open"]])
 
     def test_the_hook_does_not_count_a_blocked_question_and_the_doctor_names_it(self):

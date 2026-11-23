@@ -57,15 +57,17 @@ class Box(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def run_cli(self, *args, terminal=False):
+    def run_cli(self, *args, terminal=False, real=False):
+        """observer.py in this process; `real` keeps observer_grants.needs, so that the grants a command needs are checked."""
         out = io.StringIO()
-        with mock.patch("observer_grants.needs", return_value=[]), contextlib.redirect_stdout(out), \
-                mock.patch.object(observer, "on_terminal", return_value=terminal):
+        needs = contextlib.nullcontext() if real else mock.patch("observer_grants.needs", return_value=[])
+        with needs, contextlib.redirect_stdout(out), mock.patch.object(observer, "on_terminal", return_value=terminal):
             code = observer.main(list(args))
         return code, json.loads(out.getvalue())
 
-    def enable(self, *extra, terminal=False):
-        return self.run_cli("enable", "--model", "sonnet", "--level", "everything", "--yes", *extra, terminal=terminal)
+    def enable(self, *extra, terminal=False, real=False):
+        return self.run_cli("enable", "--model", "sonnet", "--level", "everything", "--yes", *extra, terminal=terminal,
+                            real=real)
 
     def entry(self):
         return runtime.stored_approval(self.folder)
@@ -132,9 +134,9 @@ class BindingTests(Box):
         with host(NODE):
             self.assertEqual("host", self.reason())
             self.assertEqual(runtime.APPROVAL_NOTES["host-old"], runtime.approval_note("host", self.entry()))
-            self.assertIn("setup.py observer", runtime.APPROVAL_NOTES["host-old"])
-            self.assertIn("--yes once in your own terminal, or answer the level question in a session",
-                          runtime.APPROVAL_NOTES["host-old"])   # a session needs the answer (RebindTests)
+            self.assertIn("Ask the level question (setup.py questions) once", runtime.APPROVAL_NOTES["host-old"])
+            self.assertNotIn("terminal", runtime.APPROVAL_NOTES["host-old"])   # a session needs the answer (RebindTests)
+            self.assertIn("acts.py ask hosts", runtime.APPROVAL_NOTES["host"])
         with host(NODE):   # one enable there (on the user's answer: RebindTests) rewrites it with the key file
             self.enable()
             self.assertEqual("", self.reason())
@@ -256,12 +258,22 @@ class WriteTests(Box):
             self.assertEqual("any", runtime.binding(self.entry()))
             self.assertEqual("", self.reason())
 
-    def test_hosts_any_off_a_terminal_is_refused_and_stores_nothing(self):
-        code, value = self.enable("--hosts", "any")
-        self.assertEqual((1, "terminal-required"), (code, value["code"]))
-        self.assertEqual(observer.HOSTS_ANY, value["note"])
+    def test_hosts_any_off_a_terminal_needs_the_users_answer_and_stores_nothing_without_it(self):
+        folder = runtime.folder_key(self.folder)
+        observer_grants.put(folder, "level", "everything", "toolu_01level")   # the level's own answer is not the hosts' answer
+        code, value = self.enable("--hosts", "any", real=True)
+        self.assertEqual((1, "hosts_unanswered"), (code, value["code"]))
+        self.assertIn("acts.py ask hosts", value["note"])
+        self.assertNotIn("terminal", value["note"])
         self.assertIsNone(self.entry())
-        code, value = self.run_cli("enable", "--model", "sonnet", "--level", "everything", "--hosts", "any")   # a preview
+        self.assertTrue(observer_grants.held(folder, [("level", "everything")]))   # a refusal spends nothing
+        observer_grants.put(folder, "hosts", "any", "toolu_01hosts")
+        code, value = self.enable("--hosts", "any", real=True)   # both grants, taken in one call
+        self.assertEqual((0, True), (code, value["approved"]))
+        self.assertEqual("any", self.entry()["hosts"])
+        self.assertFalse(observer_grants.held(folder, [("hosts", "any")]))
+        self.assertFalse(observer_grants.held(folder, [("level", "everything")]))
+        code, value = self.run_cli("enable", "--model", "sonnet", "--level", "everything", "--hosts", "any", real=True)   # a preview
         self.assertEqual((0, False), (code, value["approved"]))
 
     def test_hosts_shared_writes_no_any_mark_and_drops_an_earlier_one(self):
@@ -493,36 +505,49 @@ class LabelAndPassTests(Box):
         code, value = self.enable("--pass", forged)
         self.assertEqual(0, code)
         self.assertEqual("session", self.entry()["given"])
-        code, value = self.enable("--hosts", "any", "--pass", forged)
-        self.assertEqual((1, "terminal-required"), (code, value["code"]))
+        code, value = self.enable("--hosts", "any", "--pass", forged, real=True)
+        self.assertEqual((1, "hosts_unanswered"), (code, value["code"]))   # a word nobody gave is no answer
         self.assertEqual("session", self.entry()["given"])
         self.assertNotIn("hosts", self.entry())
 
-    def test_hosts_any_goes_through_a_chain_only_when_it_was_started_on_a_terminal_with_the_flag(self):
+    def test_hosts_any_goes_through_a_chain_only_when_the_chain_was_answered_for_it(self):
         import setup
         with mock.patch.object(observer, "on_terminal", return_value=True):
             plain = setup.chain_pass(self.folder_key(), "everything", None, [])
-        code, value = self.enable("--hosts", "any", "--pass", plain)
-        self.assertEqual((1, "terminal-required"), (code, value["code"]))   # the chain had no --hosts any
-        with mock.patch.object(observer, "on_terminal", return_value=True):
+        code, value = self.enable("--hosts", "any", "--pass", plain, real=True)
+        self.assertEqual((1, "hosts_unanswered"), (code, value["code"]))   # the chain was not answered for --hosts any
+        self.assertIsNone(self.entry())
+        with mock.patch.object(observer, "on_terminal", return_value=True):   # started on the terminal with the flag
             word = setup.chain_pass(self.folder_key(), "everything", None, [], hosts="any")
-        code, value = self.enable("--hosts", "any", "--pass", word)
+        code, value = self.enable("--hosts", "any", "--pass", word, real=True)
         self.assertEqual((0, True), (code, value["approved"]))
         self.assertEqual(("terminal", "any"), (self.entry()["given"], self.entry()["hosts"]))
-        with mock.patch.object(observer, "on_terminal", return_value=False):   # started in a session: the flag is dropped
-            word = setup.chain_pass(self.folder_key(), "everything", None, [], hosts="any")
-        code, value = self.enable("--hosts", "any", "--pass", word)
-        self.assertEqual((1, "terminal-required"), (code, value["code"]))
+        runtime.forget(self.folder)
+        with mock.patch.object(observer, "on_terminal", return_value=False), \
+                mock.patch.object(observer_grants, "take", return_value=True) as took:   # started in a session, on the answers
+            word = setup.chain_pass(self.folder_key(), "everything", None,
+                                    [("level", "everything"), ("hosts", "any")], hosts="any")
+        self.assertEqual([("level", "everything"), ("hosts", "any")], took.call_args[0][1])
+        code, value = self.enable("--hosts", "any", "--pass", word, real=True)
+        self.assertEqual((0, True), (code, value["approved"]))
+        self.assertEqual(("session", "any"), (self.entry()["given"], self.entry()["hosts"]))
 
-    def test_setup_stops_before_any_step_for_hosts_any_off_a_terminal(self):
+    def test_setup_takes_the_hosts_answer_before_any_step_and_stops_without_it(self):
         import setup
-        argv = ["observer", "--level", "everything", "--hosts", "any", "--dry-run"]
         out = io.StringIO()
         with mock.patch.object(observer, "on_terminal", return_value=False), contextlib.redirect_stdout(out):
-            code = setup.main(argv)
-        self.assertEqual(1, code)
-        self.assertIn(observer.HOSTS_ANY, out.getvalue())
-        self.assertNotIn("would run", out.getvalue())
+            code = setup.main(["observer", "--level", "everything", "--hosts", "any", "--dry-run"])
+        self.assertEqual(0, code)   # a dry run changes nothing, so it needs no answer
+        self.assertIn("would run", out.getvalue())
+        argv = ["observer", "--level", "everything", "--hosts", "any", "--yes"]
+        out = io.StringIO()
+        with mock.patch.object(observer, "on_terminal", return_value=False), contextlib.redirect_stdout(out), \
+                mock.patch.object(setup, "run_observer_steps") as steps, \
+                mock.patch.object(setup, "questions_project", return_value=({"repo": REPO, "hub": 4}, REPO, "")), \
+                mock.patch.object(setup, "stored_observer", return_value={}):
+            setup.main(argv)
+        self.assertIn("observer: not turned on. ", out.getvalue())
+        steps.assert_not_called()
 
     def test_the_label_comes_from_on_terminal_not_from_stdin_and_stdout(self):
         class Tty(io.StringIO):
@@ -643,8 +668,7 @@ class CaptureLineTests(Box):
         text = self.line({"ready": False, "code": "source-owner", "boundary": "native-projects", "fix": "trust-ancestor",
                           "issues": [{"code": "source-owner", "boundary": "native-projects"}]})
         self.assertRegex(text, r"^capture: not ready \(source-owner at native-projects\); notes cannot be taken, and a session "
-                               r"cannot read your answer here\. Run in your own terminal: python3 \S+/observer\.py "
-                               r"trust-ancestor --failing ; then the same with --yes$")
+                               r"cannot read your answer here\. Ask the trust question: python3 \S+/acts\.py ask trust$")
         other = self.line({"ready": False, "code": "source-symlink", "boundary": "source-directory",
                            "issues": [{"code": "source-symlink", "boundary": "source-directory"}]})
         self.assertIn("observer.py status --source-details", other)
@@ -657,15 +681,15 @@ class CaptureLineTests(Box):
         import setup
         spaced = "/home/octo cat/.claude/plugins/recortex/skills/recortex/scripts"
         quoted = "'%s/observer.py'" % spaced
+        asked = "'%s/acts.py'" % spaced
         commands = observer_sources.trust_commands(spaced)
-        self.assertEqual(["python3 %s trust-ancestor --failing" % quoted, "python3 %s trust-ancestor --failing --yes" % quoted],
-                         commands)
-        self.assertEqual(spaced + "/observer.py", __import__("shlex").split(commands[0])[1])
+        self.assertEqual(["python3 %s ask trust" % asked], commands)
+        self.assertEqual(spaced + "/acts.py", __import__("shlex").split(commands[0])[1])
         failing = {"ready": False, "code": "source-symlink", "boundary": "source-directory",
                    "issues": [{"code": "source-symlink", "boundary": "source-directory"}]}
         with mock.patch.object(setup, "HERE", spaced):
             self.assertIn("python3 %s status --source-details" % quoted, self.line(failing))
-            self.assertIn("python3 %s status --source-details." % quoted,
+            self.assertIn("python3 %s status --source-details and tell the user what it shows." % quoted,
                           setup.blocked_text([{"id": "observer-level", "code": "source-symlink", "commands": []}]))
         with mock.patch.object(hooks, "__file__", spaced + "/hooks.py"), \
                 mock.patch.object(observer_sources, "preflight", return_value=failing):

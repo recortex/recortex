@@ -1375,7 +1375,11 @@ def observer_step(answers, root, python, dry):
     import observer_grants
     folder = observer_runtime.folder_key(root)
     import acts
-    replacing = acts.replace_values(repo, root)
+    import observer
+    state, replacing = acts.replace_state(repo, root)
+    if state == "unknown" and not observer.on_terminal():   # holds that cannot be read may be active: never passed over
+        print("observer: not turned on. " + acts.HOLDS_UNREADABLE)
+        return
     replace = acts.ACTS["replace"].value(replacing) if replacing else ""
     word = chain_pass(folder, level, strong or None,
                       observer_grants.needs(stored_observer(repo, root), level, strong or None, mode,

@@ -637,8 +637,8 @@ class RequestedTests(unittest.TestCase):
 
     def test_map_mode_is_a_grant_row_and_a_session_may_run_it(self):
         self.assertEqual("grant", observer_hooks.COMMANDS["map-mode"])
-        self.assertNotIn("map-mode", observer_hooks.TERMINAL_ONLY)
-        self.assertNotIn("map-mode", pretool_guard.USERS_ONLY)
+        self.assertNotIn("map-mode", observer_hooks.ASKED)   # it has a setup question of its own, not an act's
+        self.assertNotIn("map-mode", pretool_guard.ASKED)
         self.assertIsNone(pretool_guard.decide(json.dumps({"tool_name": "Bash", "tool_input": {
             "command": "python3 /p/skills/recortex/scripts/observer.py map-mode automatic --yes"}})))
 
@@ -735,14 +735,17 @@ class InsideClaudeTests(unittest.TestCase):
     def test_the_commands_that_ask_for_the_users_terminal_use_it(self):
         import inspect
         source = inspect.getsource(observer)
-        for place in ("answered=on_terminal()", "if args.yes and not on_terminal():", "on_terminal() or store.take_grant"):
+        for place in ("answered=on_terminal()", "terminal() if on_terminal() else None", "on_terminal() or store.take_grant"):
             self.assertIn(place, source)
+        self.assertEqual(3, source.count("terminal() if on_terminal() else None"))   # settle, release and disable
+        import acts
+        self.assertIn("observer.on_terminal()", inspect.getsource(acts.allowed))
 
 
 class TableTests(unittest.TestCase):
     def test_enable_is_a_grant_row_and_the_hook_still_refuses_only_the_users_own_commands(self):
         self.assertEqual("grant", observer_hooks.COMMANDS["enable"])
-        self.assertNotIn("enable", observer_hooks.TERMINAL_ONLY)
+        self.assertNotIn("enable", observer_hooks.ASKED)
 
 
 if __name__ == "__main__":

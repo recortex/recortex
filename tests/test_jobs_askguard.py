@@ -189,7 +189,8 @@ class TerminalTests(unittest.TestCase):
         out = pretool_guard.decide(json.dumps(call(THROUGH_A_TERMINAL[0], agent="general-purpose")))
         self.assertEqual(pretool_guard.TERMINAL_DENIAL, out["hookSpecificOutput"]["permissionDecisionReason"])
         self.assertNotIn("ab12cd34", json.dumps(out))
-        self.assertIn("their own terminal", pretool_guard.TERMINAL_DENIAL)
+        self.assertIn("Ask the user the question the command names.", pretool_guard.TERMINAL_DENIAL)
+        self.assertNotIn("own terminal", pretool_guard.TERMINAL_DENIAL)
 
     def test_the_hook_script_denies_them_in_every_project_and_leaves_the_rest(self):
         folder = tempfile.TemporaryDirectory()

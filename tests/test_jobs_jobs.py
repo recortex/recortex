@@ -382,50 +382,73 @@ class UndoTests(JobsBox):
 
 
 class UndoIsTheUsersTests(JobsBox):
-    """undo changes GitHub, so it is the user's own command on their terminal, as release is."""
+    """undo changes GitHub, so it needs the user's answer to the question of acts.py (kind undo), or a typed word on their own
+    terminal, as release does."""
 
     def act_to_undo(self):
         self.finish_task()
         self.jobs()
         return self.acts(["task_closed"])[0]["id"]
 
-    def test_a_session_has_no_terminal_and_undo_changes_nothing(self):
+    def test_a_session_has_no_answer_and_undo_changes_nothing_and_names_the_question(self):
         act = self.act_to_undo()
         writes = len(self.writes())
         code, text = self.cli("undo", str(act))
-        self.assertEqual((1, "terminal-required"), (code, json.loads(text)["code"]))
-        self.assertIn("separate terminal", json.loads(text)["note"])
+        self.assertEqual((1, "undo_unanswered"), (code, json.loads(text)["code"]))
+        self.assertIn("acts.py ask undo %d" % act, json.loads(text)["note"])
+        self.assertNotIn("terminal", json.loads(text)["note"])
         self.assertEqual(writes, len(self.writes()))
         self.assertEqual("closed", self.issue_state(7))
 
+    def test_on_the_users_answer_it_undoes_once(self):
+        import acts
+        import observer_grants
+        act = self.act_to_undo()
+        with store_module.Store(REPO, create=False, readonly=True, config=self.pcfg) as db:
+            values = acts.undo_values(REPO, db.act(act))
+        self.assertEqual("task_closed", values["akind"])
+        self.assertIn("It reopens task #7.", acts.ACTS["undo"].text(values))
+        observer_grants.put(runtime.folder_key(), "undo", acts.ACTS["undo"].value(values), "toolu_01undo")
+        code, text = self.cli("undo", str(act))
+        self.assertEqual((0, "reopened"), (code, json.loads(text)["code"]), text)
+        self.assertEqual("open", self.issue_state(7))
+        self.assertFalse(observer_grants.held(runtime.folder_key(), [("undo", acts.ACTS["undo"].value(values))]))   # once
+        code, text = self.cli("undo", str(act))   # undone before: nothing to reverse, and nothing to answer
+        self.assertEqual("already_undone", json.loads(text)["code"])
+
     def test_on_the_users_terminal_it_asks_for_the_word_undo(self):
         act = self.act_to_undo()
-        with mock.patch.object(observer, "confirmed", return_value="not-confirmed"):
+        tty = mock.MagicMock()
+        tty.__enter__.return_value = tty
+        tty.ask.return_value = "no"
+        with mock.patch.object(observer, "terminal", return_value=tty), mock.patch.object(observer, "on_terminal", return_value=True):
             code, text = self.cli("undo", str(act))
         self.assertEqual((1, "not-confirmed"), (code, json.loads(text)["code"]))
         self.assertEqual("closed", self.issue_state(7))
-        asked = []
-        with mock.patch.object(observer, "confirmed", side_effect=lambda word, question: asked.append((word, question))):
+        tty.ask.return_value = "undo"
+        with mock.patch.object(observer, "terminal", return_value=tty), mock.patch.object(observer, "on_terminal", return_value=True):
             code, text = self.cli("undo", str(act))
         self.assertEqual((0, "reopened"), (code, json.loads(text)["code"]), text)
-        self.assertEqual("undo", asked[0][0])
+        self.assertIn("Type undo to confirm", tty.ask.call_args.args[0])
         self.assertEqual("open", self.issue_state(7))
 
 
 class CommandTableTests(unittest.TestCase):
-    """Every subcommand of observer.py is in the table the hook's pattern is made from; each is safe, grant or terminal."""
+    """Every subcommand of observer.py is in the table the hook's pattern is made from; each is safe or grant."""
 
     def test_the_table_has_a_row_for_each_subcommand_and_no_other(self):
         names = set(observer.parser()._subparsers._group_actions[0].choices)
         self.assertEqual(names, set(hooks.COMMANDS))
-        self.assertEqual({"safe", "grant", "terminal"}, set(hooks.COMMANDS.values()))
+        self.assertEqual({"safe", "grant"}, set(hooks.COMMANDS.values()))
 
-    def test_the_hooks_refusal_names_exactly_the_terminal_rows(self):
-        terminal = {name for name, how in hooks.COMMANDS.items() if how == "terminal"}
-        self.assertEqual({"release", "disable", "resume", "undo", "advisory", "trust-ancestor"}, terminal)
+    def test_the_asked_rows_are_grant_rows_and_a_subagents_call_of_exactly_those_is_denied(self):
+        import pretool_guard
+        self.assertEqual(("advisory", "disable", "release", "resume", "trust-ancestor", "undo"), hooks.ASKED)
+        self.assertTrue(all(hooks.COMMANDS[name] == "grant" for name in hooks.ASKED))
         for name in hooks.COMMANDS:
-            data = {"tool_name": "Bash", "tool_input": {"command": "python3 skills/recortex/scripts/observer.py %s 1" % name}}
-            self.assertEqual(name in terminal, hooks._undo(data), name)
+            call = {"tool_name": "Bash", "agent_id": "agent-1",
+                    "tool_input": {"command": "python3 skills/recortex/scripts/observer.py %s 1" % name}}
+            self.assertEqual(name in hooks.ASKED, pretool_guard.subagent_decision(call) is not None, name)
 
     def test_each_row_is_explained_where_the_command_is_defined(self):
         with open(os.path.join(ts.SCRIPTS, "observer.py"), encoding="utf-8") as handle:

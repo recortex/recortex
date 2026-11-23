@@ -451,15 +451,28 @@ def confirmed(word, question):
         return None if tty.ask(question + " Type %s to confirm: " % word) == word else "not-confirmed"
 
 
+def spend_unused(*kinds):
+    """The act was done on the user's own terminal, which needs no answer: a grant of that kind that nobody used is spent with
+    its answer (observer_grants.spend), so that the answer cannot be replayed later."""
+    import observer_grants
+    for kind in kinds:
+        observer_grants.spend(runtime.folder_key(), kind)
+
+
 def settle(kind, word, question, values):
     """None when the act may go on; else the refusal to emit. On the user's own terminal the user types `word` to confirm
     `question`; anywhere else the act needs the one-time grant for exactly `values` (acts.allowed), which the hook records from
     the user's answer to the question of acts.py, and the refusal names that question. Called after every other check has
-    passed and right before the first change, so that a refusal for another reason spends nothing."""
-    tty = terminal()
+    passed and right before the first change, so that a refusal for another reason spends nothing. The branch is chosen by
+    on_terminal() (outside every Claude Code session), never by whether /dev/tty can be opened: a session can give a command a
+    pseudo-terminal of its own, and then type the word itself."""
+    tty = terminal() if on_terminal() else None
     if tty is not None:
         with tty:
-            return None if tty.ask(question + " Type %s to confirm: " % word) == word else {"code": "not-confirmed"}
+            if tty.ask(question + " Type %s to confirm: " % word) != word:
+                return {"code": "not-confirmed"}
+        spend_unused(kind)
+        return None
     import acts
     return None if acts.allowed(kind, values) else acts.refusal(kind, values)
 
@@ -475,6 +488,7 @@ def release(store, hold_id, tty=None):
             hold_id, hold.get("action"), " " + json.dumps(hold["command"]) if hold.get("command") else "", store.repo)
         if tty.ask(question) != "release":
             return {"code": "not-confirmed", "hold_id": hold_id}
+        spend_unused("release")
     else:
         import acts
         values = {"repo": store.repo, "hold": hold_id, "action": hold.get("action")}
@@ -806,14 +820,15 @@ def main(argv=None):
                 active = [None]  # holds that cannot be read may be active
             # On the user's own terminal a typed word confirms, as it did, while holds apply; anywhere else the act needs the
             # user's answer to the question of acts.py (kind disable), with or without holds.
-            tty = terminal()
+            tty = terminal() if on_terminal() else None   # the user's own terminal only: see settle
             if tty is not None:
                 with tty:
                     if active and tty.ask("Holds of %s stop applying in this folder. Type disable to confirm: " % name) != "disable":
                         emit({"code": "not-confirmed"}); return 1
+                spend_unused("disable")
             else:
                 import acts
-                values = {"folder": runtime.folder_key()}
+                values = acts.ACTS["disable"].values(acts.Context())
                 if not acts.allowed("disable", values):
                     emit(acts.refusal("disable", values)); return 1
             emit({"action": "disable", "folder": runtime.folder_key(), "was_enabled": runtime.forget()}); return 0
@@ -901,9 +916,9 @@ def main(argv=None):
             import observer_grants
             folder = runtime.folder_key()
             here = on_terminal()
-            replacing = acts.replace_values(repo) if args.yes else None
+            state, replacing = acts.replace_state(repo) if args.yes else ("none", None)
             confirm = None
-            if replacing and here:
+            if state != "none" and here:   # holds that apply, or that cannot be read and may: the user types the word
                 confirm = lambda: confirmed("enable", "This replaces this folder's settings while holds apply.")
             # Where the approval is given: the user's own terminal, or a session (Claude Code's Bash tool has none). A command
             # of setup.py's chain has captured output, so the chain says where it was started (its pass, observer_grants).
@@ -916,11 +931,13 @@ def main(argv=None):
                                                holds=runtime.binding_holds(repo), hosts=args.hosts,
                                                stored_hosts="any" if runtime.keeps_any(repo) else "",
                                                replace=acts.ACTS["replace"].value(replacing) if replacing else None)
-            if wanted:   # asked last, with the hold check, once every setting has been checked: the answer is for this level
+            if state == "unknown" and not here:   # never passed over: holds that cannot be read may be active
+                confirm = lambda: "holds_unreadable"
+            elif wanted:   # asked last, with the hold check, once every setting has been checked: the answer is for this level
                 holds_confirm = confirm
 
                 def confirm():
-                    for kind, value in wanted:
+                    for kind, value in sorted(wanted, key=lambda want: {"replace": 0, "hosts": 1}.get(want[0], 2)):
                         if not (observer_grants.in_pass(folder, [(kind, value)], args.enable_pass)
                                 or observer_grants.held(folder, [(kind, value)])):
                             return {"hosts": "hosts_unanswered", "replace": "replace_unanswered"}.get(kind, "enable_unanswered")
@@ -931,9 +948,13 @@ def main(argv=None):
                 observer_grants.take(folder, wanted)   # the user's answer is used once
             if result.get("code") == "enable_unanswered":
                 result = observer_grants.refused(result)
+            elif result.get("code") == "holds_unreadable":
+                result = dict(result, note=acts.HOLDS_UNREADABLE)
             elif result.get("code") in ("hosts_unanswered", "replace_unanswered"):
                 kind = result["code"].split("_")[0]
                 result = dict(result, **acts.refusal(kind, {"hosts": {"hosts": "any"}, "replace": replacing}[kind]))
+            if here and result.get("approved"):
+                spend_unused("level", "strong", "hosts", "replace")
             emit(result)
             return int(args.yes and not result["approved"])
         if args.command == "limits":
@@ -1014,7 +1035,7 @@ def main(argv=None):
                                   for row in store.pending(limit=100)],
                       "events": [{key: row[key] for key in ("eventkey", "state", "reason")} for row in store.events(limit=100)]}); return 0
             if args.command == "release":
-                tty = terminal()
+                tty = terminal() if on_terminal() else None   # the user's own terminal only: see settle
                 if tty is None:
                     result = release(store, args.hold_id)
                 else:
@@ -1078,12 +1099,17 @@ def main(argv=None):
                 if args.command == "resume" and any(store.get_control(scope + "_paused", False) for scope in scopes):
                     # A pause is the user's control; undoing it is a typed word on their own terminal, and anywhere else
                     # their answer to the question of acts.py (kind resume).
+                    import acts
+                    paused, at = acts.ACTS["resume"].on_store(store, args.scope)
                     refused = settle("resume", "resume", "Resume %s for %s?" % (" and ".join(scopes), repo),
-                                     {"repo": repo.lower(), "scope": args.scope})
+                                     {"repo": repo.lower(), "scope": args.scope, "at": at})
                     if refused:
                         emit(refused); return 1
                 for scope in scopes:
                     store.set_control(scope + "_paused", args.command == "pause")
+                    # when it was paused: the question that lifts it names that moment (acts.py, kind resume), so that an answer
+                    # about an earlier pause does not count for this one
+                    store.set_control(scope + "_paused_at", int(time.time()) if args.command == "pause" else 0)
                 emit({"action": args.command, "scope": args.scope}); return 0
             if args.command == "runtime-check":
                 ok, tiers = runtime_check(repo, options, store)

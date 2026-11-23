@@ -21,8 +21,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "skills" / "recortex" / "scripts"))
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT))
+import acts  # noqa: E402
 import hooks  # noqa: E402
 import observer  # noqa: E402
+import observer_grants  # noqa: E402
+import observer_runtime  # noqa: E402
 import observer_hooks  # noqa: E402
 import observer_sources as sources  # noqa: E402
 import pretool_guard  # noqa: E402
@@ -372,19 +375,47 @@ class CommandTests(CommandBox):
                              (row["path"], row["uid"], row["mode"], row["code"], row["world"]))
             self.assertRegex(row["owner"], r"^(|[A-Za-z0-9._-]{1,32})$")
             self.assertIn("Each folder is accepted only while its owner, group and mode stay as shown", value["note"])
-            self.assertIn("Run the same command with --yes to trust them.", value["note"])
+            self.assertIn("run acts.py ask trust and ask it", value["note"])
             self.assertFalse(self.trusted_file().exists())
 
-    def test_yes_needs_the_users_own_terminal_and_then_stores_the_folder(self):
+    def grant(self, path=None):
+        """The one-time grant the hook records from the user's answer to the trust question, for the folders as they look now."""
+        found = acts.trust_rows(str(self.project), path)
+        values = acts.ACTS["trust"]._values(found[1])
+        observer_grants.put(observer_runtime.folder_key(str(self.project)), "trust", acts.ACTS["trust"].value(values), "toolu_01trust")
+        return values
+
+    def test_yes_needs_the_users_answer_or_terminal_and_then_stores_the_folder(self):
         with self.foreign():
             code, value = self.run_cli("trust-ancestor", str(self.shared), "--yes")
-            self.assertEqual((1, "terminal-required"), (code, value["code"]))
-            self.assertIn("separate terminal, outside Claude Code", value["note"])
+            self.assertEqual((1, "trust_answer_unreadable"), (code, value["code"]))   # the transcript is what fails here
+            self.assertIn("acts.py ask trust", value["note"])
+            self.assertNotIn("terminal", value["note"])
             self.assertFalse(self.trusted_file().exists())
-            code, value = self.run_cli("trust-ancestor", str(self.shared), "--yes", terminal=True)
+            self.grant(str(self.shared))
+            code, value = self.run_cli("trust-ancestor", str(self.shared), "--yes")   # on the answer: once
             self.assertEqual((0, True), (code, value["approved"]))
             self.assertTrue(value["capture_preflight"]["ready"])
             self.assertEqual(0, self.run_cli("status")[0])
+            self.run_cli("trust-ancestor", "--forget", str(self.shared))
+            code, value = self.run_cli("trust-ancestor", str(self.shared), "--yes")   # the grant was spent
+            self.assertEqual((1, "trust_answer_unreadable"), (code, value["code"]))
+            code, value = self.run_cli("trust-ancestor", str(self.shared), "--yes", terminal=True)   # the terminal needs none
+            self.assertEqual((0, True), (code, value["approved"]))
+
+    def test_a_folder_that_changed_since_the_question_was_asked_stores_nothing(self):
+        with self.foreign():
+            self.grant(str(self.shared))
+        with seen_as(self.shared, uid=FOREIGN + 1, mode=0o755):   # another owner than the one the answer was for
+            code, value = self.run_cli("trust-ancestor", str(self.shared), "--yes")
+            self.assertEqual((1, "trust_answer_unreadable"), (code, value["code"]))
+            self.assertFalse(self.trusted_file().exists())
+        with self.foreign():
+            rows = [dict(row, mode="0700") for row in acts.trust_rows(str(self.project))[1]]   # the rows the question named
+            with self.assertRaises(sources.TrustError) as caught:
+                sources.trust_add(rows, str(self.project))
+            self.assertEqual("trust_changed", str(caught.exception))
+            self.assertFalse(self.trusted_file().exists())
 
     def test_a_world_writable_folder_adds_the_fixed_warning(self):
         with seen_as(self.shared, uid=FOREIGN, mode=0o777):
@@ -430,16 +461,13 @@ class CommandTests(CommandBox):
             value = self.run_cli("trust-ancestor", "--list")[1]
             self.assertFalse(value["entries"][0]["matches"])
 
-    def test_forget_needs_the_terminal(self):
+    def test_forget_needs_no_answer_because_it_only_does_less(self):
         with self.foreign():
             self.run_cli("trust-ancestor", str(self.shared), "--yes", terminal=True)
-            code, value = self.run_cli("trust-ancestor", "--forget", str(self.shared))
-            self.assertEqual((1, "terminal-required"), (code, value["code"]))
             self.assertEqual(1, len(sources.read_trusted()[1]))
-            code, value = self.run_cli("trust-ancestor", "--forget", str(self.shared), terminal=True)
+            code, value = self.run_cli("trust-ancestor", "--forget", str(self.shared))
             self.assertEqual((0, True), (code, value["forgotten"]))
-            self.assertEqual(({}, 1), (sources.read_trusted()[1], self.run_cli("trust-ancestor", "--forget", str(self.shared),
-                                                                               terminal=True)[0]))
+            self.assertEqual(({}, 1), (sources.read_trusted()[1], self.run_cli("trust-ancestor", "--forget", str(self.shared))[0]))
 
     def test_an_unreadable_trusted_file_is_a_code_and_is_not_replaced(self):
         with self.foreign():
@@ -461,26 +489,26 @@ class CommandTests(CommandBox):
             self.assertEqual("", row["owner"])
             self.assertNotIn("rm -rf", json.dumps(row))
 
-    def test_status_prints_the_two_commands_with_the_scripts_full_path(self):
+    def test_status_prints_the_one_command_that_asks_the_trust_question_with_the_scripts_full_path(self):
         with self.foreign():
             value = self.run_cli("status")[1]
             fix = value["capture_fix"]
-            script = os.path.join(os.path.dirname(os.path.abspath(observer.__file__)), "observer.py")
-            self.assertEqual(["python3 %s trust-ancestor --failing" % script,
-                              "python3 %s trust-ancestor --failing --yes" % script], fix["commands"])
-            self.assertEqual("Run them in your own terminal, outside Claude Code.", fix["note"])
+            script = os.path.join(os.path.dirname(os.path.abspath(observer.__file__)), "acts.py")
+            self.assertEqual(["python3 %s ask trust" % script], fix["commands"])
+            self.assertEqual("Ask the trust question: run acts.py ask trust.", fix["note"])
             self.assertNotIn("capture_note", value)
             self.run_cli("trust-ancestor", "--failing", "--yes", terminal=True)
         with seen_as(self.shared, uid=FOREIGN + 3, mode=0o755):
             value = self.run_cli("status")[1]
             self.assertEqual("changed", value["capture_preflight"]["trust"])
             self.assertEqual("A folder you trusted changed its owner, group or mode and is refused again. Look at it, then run "
-                             "trust-ancestor again.", value["capture_note"])
+                             "acts.py ask trust and ask the question it prints.", value["capture_note"])
 
-    def test_the_command_is_a_terminal_row_of_the_hooks_table(self):
-        self.assertEqual("terminal", observer_hooks.COMMANDS["trust-ancestor"])
-        self.assertIn("trust-ancestor", observer_hooks.TERMINAL_ONLY)
-        self.assertTrue(observer_hooks._undo({"tool_name": "Bash", "tool_input": {"command": "python3 x/observer.py trust-ancestor"}}))
+    def test_the_command_is_a_grant_row_of_the_hooks_table_and_its_question_is_asked(self):
+        self.assertEqual("grant", observer_hooks.COMMANDS["trust-ancestor"])
+        self.assertIn("trust-ancestor", observer_hooks.ASKED)
+        self.assertFalse(hasattr(observer_hooks, "TERMINAL_ONLY"))
+        self.assertFalse(hasattr(observer_hooks, "_undo"))
 
 
 class RootFolderTests(CommandBox):
@@ -552,18 +580,20 @@ class GuardTests(unittest.TestCase):
         data = dict({"tool_name": "Bash", "tool_input": {"command": command}}, **extra)
         return pretool_guard.decide(json.dumps(data))
 
-    def test_the_session_cannot_run_the_users_own_commands_in_any_project(self):
+    def test_a_subagent_cannot_run_an_act_in_any_project_and_the_main_session_is_not_denied_for_one(self):
         for command in ("python3 /x/skills/recortex/scripts/observer.py trust-ancestor --failing --yes",
                         "python3 /x/observer.py --repo octo-org/octo-repo trust-ancestor /home",
                         "python3 /x/observer.py enable --model sonnet --level everything --hosts any --yes",
                         "python3 /x/observer.py enable --hosts=any --yes", "python3 /x/setup.py observer --level everything --hosts any --yes",
                         "python3 /x/setup.py observer --hosts 'any' --dry-run", "python3 /x/publish.py --to octo-org/octo-repo --branch pages",
-                        "cd /x && python3 publish.py --list", "python3 /x/observer.py release abc", "python3 /x/observer.py disable"):
-            for extra in ({}, {"agent_id": "a1", "agent_type": "general-purpose"}):
-                out = self.decide(command, **extra)
-                self.assertIsNotNone(out, (command, extra))
-                self.assertEqual("deny", out["hookSpecificOutput"]["permissionDecision"])
-                self.assertEqual(pretool_guard.USERS_DENIAL, out["hookSpecificOutput"]["permissionDecisionReason"])
+                        "cd /x && python3 publish.py --send", "python3 /x/observer.py release abc", "python3 /x/observer.py disable"):
+            out = self.decide(command, agent_id="a1", agent_type="general-purpose")
+            self.assertIsNotNone(out, command)
+            self.assertEqual("deny", out["hookSpecificOutput"]["permissionDecision"])
+            self.assertEqual(pretool_guard.SUBAGENT_DENIAL, out["hookSpecificOutput"]["permissionDecisionReason"])
+            self.assertIsNone(self.decide(command), command)   # the main session's call refuses by itself, for want of an answer
+        for command in ("python3 /x/publish.py --list", "python3 /x/publish.py --to octo-org/octo-repo --branch pages --dry-run"):
+            self.assertIsNone(self.decide(command, agent_id="a1"), command)   # these two read and send nothing
 
     def test_a_command_over_several_lines_or_with_a_shortened_option_is_stopped_too(self):
         # The 1.7.0 review, N1: a line break (with a quote that is never closed, so that the shell's words cannot be told) and a
@@ -575,9 +605,9 @@ class GuardTests(unittest.TestCase):
                         "python3 /x/observer.py enable --model sonnet --level everything --host any --yes",
                         "python3 /x/observer.py enable --ho any --yes", "python3 /x/observer.py enable --hos=any --yes",
                         "python3 /x/setup.py observer --level everything --ho 'any' --yes"):
-            out = self.decide(command)
+            out = self.decide(command, agent_id="a1")
             self.assertIsNotNone(out, command)
-            self.assertEqual(pretool_guard.USERS_DENIAL, out["hookSpecificOutput"]["permissionDecisionReason"], command)
+            self.assertEqual(pretool_guard.SUBAGENT_DENIAL, out["hookSpecificOutput"]["permissionDecisionReason"], command)
 
     def test_the_parsers_of_observer_and_setup_take_no_shortened_option(self):
         import argparse
@@ -618,13 +648,19 @@ class GuardTests(unittest.TestCase):
                         "python3 /x/observer.py status --source-details", "ls /home/octocat/publish"):
             self.assertIsNone(self.decide(command), command)
 
-    def test_the_list_equals_the_terminal_rows_of_the_hooks_table(self):
-        self.assertEqual(tuple(sorted(pretool_guard.USERS_ONLY)), observer_hooks.TERMINAL_ONLY)
-        self.assertEqual(sorted(pretool_guard.USERS_ONLY), list(pretool_guard.USERS_ONLY))
+    def test_the_list_equals_the_asked_rows_of_the_hooks_table_and_the_acts(self):
+        self.assertEqual(pretool_guard.ASKED, observer_hooks.ASKED)
+        self.assertEqual(sorted(pretool_guard.ASKED), list(pretool_guard.ASKED))
+        self.assertTrue(all(observer_hooks.COMMANDS[name] == "grant" for name in observer_hooks.ASKED))
+        subcommand = {"release": "release", "disable": "disable", "resume": "resume", "undo": "undo", "trust": "trust-ancestor",
+                      "advisory": "advisory", "reminder": "advisory"}
+        self.assertEqual(set(observer_hooks.ASKED), {subcommand[kind] for kind in acts.ACTS if kind in subcommand})
 
     def test_the_wrapper_starts_python_for_publish_and_this_file_does_not_import_the_hooks(self):
         shell = (ROOT / "skills" / "recortex" / "scripts" / "run_pretool_guard.sh").read_text()
         self.assertIn("*publish.py*", shell)
+        self.assertIn("*acts.py*", shell)
+        self.assertIn("*mind.html*", shell)
         source = (ROOT / "skills" / "recortex" / "scripts" / "pretool_guard.py").read_text()
         self.assertNotRegex(source, r"(?m)^\s*(?:import|from)\s+observer_hooks\b")
 
@@ -736,7 +772,7 @@ class UnreadableAnswerTests(CommandBox):
             code, value = self.enable()
             self.assertEqual((1, "enable_answer_unreadable", "source-owner"), (code, value["code"], value["reason"]))
             self.assertEqual(observer_grants.UNREADABLE % "source-owner", value["note"])
-            self.assertIn("observer.py trust-ancestor --failing", value["note"])
+            self.assertIn("acts.py ask trust", value["note"])
             self.assertFalse(value["approved"])
 
     def test_the_note_sends_to_trust_ancestor_only_for_the_codes_it_can_mend(self):
@@ -747,10 +783,10 @@ class UnreadableAnswerTests(CommandBox):
             self.assertIn("(%s)" % code, note)
             if code in sources.TRUSTABLE:
                 self.assertEqual(observer_grants.UNREADABLE % code, note)
-                self.assertIn("observer.py trust-ancestor --failing", note)
+                self.assertIn("acts.py ask trust", note)
             else:
                 self.assertEqual(observer_grants.UNREADABLE_OTHER % code, note, code)
-                self.assertNotIn("trust-ancestor --failing", note)
+                self.assertNotIn("acts.py ask trust", note)
                 self.assertIn("observer.py status --source-details", note)
                 self.assertIn("CLAUDE_CONFIG_DIR", note)
         self.assertEqual(("source-owner", "source-permissions"), sources.TRUSTABLE)
@@ -773,6 +809,7 @@ class UnreadableAnswerTests(CommandBox):
         code, value = self.enable()
         self.assertEqual((1, "enable_unanswered"), (code, value["code"]))
         self.assertEqual(observer_grants.UNANSWERED, value["note"])
+        self.assertNotIn("terminal", value["note"])
         self.assertNotIn("reason", value)
 
     def test_a_folder_with_no_transcript_yet_is_not_an_unreadable_answer(self):

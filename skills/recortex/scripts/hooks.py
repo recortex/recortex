@@ -264,8 +264,10 @@ TYPED = ("recortex: the user's typed answer to the plugin's question was recorde
 
 
 def typed_answer(data):
-    """True when this prompt, the main session's own (not a subagent's), is the typed answer to a question that `acts.py ask
-    --typed` noted: the grant for that option is then recorded (observer_grants.typed). Never raises."""
+    """True when this prompt, the main session's own (not a subagent's), is the typed "yes" to a question that `acts.py ask
+    --typed` noted for this same session: the grant for that option is then recorded (observer_grants.typed), only when this
+    process was started the way Claude Code starts a hook (plausibly_a_hook), and the act confirms the words against the
+    transcript before it runs (confirm_typed). A typed "no" removes the note and the grant, and prints nothing. Never raises."""
     try:
         if not isinstance(data, dict) or data.get("agent_id") or data.get("agent_type"):
             return False
@@ -274,7 +276,8 @@ def typed_answer(data):
             return False
         import observer_grants
         import observer_runtime
-        return observer_grants.typed(observer_runtime.folder_key(), prompt)
+        return observer_grants.typed(observer_runtime.folder_key(), prompt, data.get("session_id"),
+                                     plausible=observer_grants.plausibly_a_hook) == "yes"
     except Exception:  # noqa: BLE001 - a hook never fails over a typed answer
         return False
 

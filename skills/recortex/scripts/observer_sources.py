@@ -887,6 +887,53 @@ DIALOG_SHAPES = {
 }
 # The plugin's own questions: the held memory, the task, the draft and the setup questions' templates, and any question
 # that holds the word recortex. The observer must not record the user's answers about the observer.
+def typed_words(data, project_root, since, max_bytes=ANSWER_BYTES, seconds=TAIL_SECONDS):
+    """The set of prompts the user typed in the main transcript from byte `since` to its end, each as
+    observer_grants.words_of reads a reply (typed_prompt: only text the user typed, never a tool result or a subagent's turn).
+    The check before an act of a typed answer. Read as `answered` reads: this project's main transcript only, through checked
+    descriptors, within `max_bytes` and `seconds`. Raises SourceError when it cannot be read."""
+    import observer_grants
+    session = data.get("session_id")
+    path = approved_path(data.get("transcript_path"), project_root, session)
+    if os.path.basename(path) != session + ".jsonl" or os.path.dirname(path) != project_directory(project_root):
+        raise SourceError("source-project")
+    size = os.stat(path, follow_symlinks=False).st_size
+    position = max(since, size - max_bytes, 0)
+    skip = position > 0 and _read(path, position - 1, 1) != b"\n"
+    until = time.monotonic() + seconds
+    found, buffer = set(), b""
+    while position < size:
+        if time.monotonic() > until:
+            raise SourceError("source-incomplete")
+        chunk = _read(path, position, min(MAX_READ, size - position))
+        if not chunk:
+            break
+        position += len(chunk)
+        buffer += chunk
+        rows = buffer.split(b"\n")
+        buffer = rows.pop()
+        for row in rows:
+            if skip:
+                skip = False
+                continue
+            if b'"user"' not in row:
+                continue
+            try:
+                record = json.loads(row)
+            except (ValueError, UnicodeError, RecursionError):
+                continue
+            message = record.get("message") if isinstance(record, dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                text = "".join(block.get("text", "") for block in content if isinstance(block, dict)
+                               and block.get("type") == "text" and isinstance(block.get("text"), str))
+            else:
+                text = content if isinstance(content, str) else ""
+            if (record.get("type") == "user" and not record.get("isSidechain") and typed_prompt(record, content, text)):
+                found.add(observer_grants.words_of(text))
+    return found
+
+
 OWN_DIALOG = re.compile(r"(?i:recortex)|\A[ \t\r\n]*Memory [0-9a-f]{8} \([a-z]+\) on #[0-9]+: |"
                         r"\A[ \t\r\n]*Task [0-9a-f]{8}: (?:open a task |every step of #[0-9]+ is done)|"
                         r"\A[ \t\r\n]*Project Map [0-9a-f]{8}: |"

@@ -29,6 +29,7 @@ import os
 import re
 import shlex
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -39,6 +40,8 @@ ASK = ("recortex: this is done on the user's answer. Run acts.py ask %s, ask the
        "options, and run this command again after a yes.")
 NOT_SET_UP = "acts: this project is not set up, or its repository is not in your trusted list, so nothing is asked."
 TYPED_LINE = "To choose, reply with the words of one option, for example: %s"
+TYPED_UNRECORDED = ("acts: a typed answer cannot be recorded here, because the plugin's hook did not see this command, so "
+                    "nothing is asked.")
 DESCRIPTION = re.compile(r"[A-Za-z0-9 .,;:'()/_#-]{20,120}")
 KIND = re.compile(r"[a-z]{1,10}")
 ASCII_PATH = re.compile(r"/[A-Za-z0-9 ._/+@%=,:~-]{0,300}")
@@ -48,6 +51,9 @@ SCOPE_WORDS = {"capture": "note taking", "publication": "posting", "all": "note 
 EFFECT = {"task_closed": "reopens task #%d", "task_opened": "closes task #%d as not planned",
           "task_rendered": "puts back the body of #%d from its backup", "hub_rendered": "puts back the hub's body from its backup"}
 ROWS_SHOWN = 6
+HOLDS_UNREADABLE = ("recortex observer: this machine's observer approval or its holds could not be read, so it is not known "
+                    "whether holds would stop applying; nothing was replaced. Run hooks.py --doctor and tell the user what it "
+                    "shows.")
 OPERATORS = frozenset(";&|(){}<>`") | {"&&", "||", ";;", "|&", ">>", "<<"}
 
 
@@ -67,6 +73,11 @@ def _repo_of(words_before, config):
 
 def _short(text):
     return " ".join(text.split())
+
+
+def moment(seconds):
+    """A time as the questions print it: UTC, to the minute. Only a whole number of seconds is printed."""
+    return time.strftime("%Y-%m-%d %H:%M", time.gmtime(seconds)) + " UTC"
 
 
 def digest(kind, *values):
@@ -240,9 +251,9 @@ class Release(Act):
                 % (values["hold"][:8], values["repo"], HOLD_WORDS[values["action"]]))
 
     def options(self, values):
-        return [option("Release the hold", "The stop ends now; the session may do it again.", "yes",
+        return [option("Release hold %s" % values["hold"][:8], "The stop ends now; the session may do it again.", "yes",
                        [("observer.py", "release", values["hold"])]),
-                option("Keep the hold", "Nothing changes; the stop stays.", "no")]
+                option("Keep hold %s" % values["hold"][:8], "Nothing changes; the stop stays.", "no")]
 
     def value(self, values):
         return digest(self.kind, values["repo"], values["hold"])
@@ -264,19 +275,29 @@ class Disable(Act):
             entry = None
         if entry is None:
             raise ActError("acts: the observer is not on for this folder, so there is nothing to turn off.")
-        return {"folder": runtime.folder_key(ctx.root)}
+        return self.values(ctx)
+
+    def values(self, ctx):
+        """The folder and the time its approval was made: the question names that approval, so that an answer about an earlier
+        one does not count for this."""
+        import observer_runtime as runtime
+        try:
+            entry = runtime.stored_approval(ctx.root)
+            at = entry.get("approved_at") if isinstance(entry, dict) else None
+        except Exception:  # noqa: BLE001
+            at = None
+        return {"folder": runtime.folder_key(ctx.root), "approved": int(at) if type(at) in (int, float) and 0 < at < 2 ** 40 else 0}
 
     def from_command(self, words, ctx):
         call = observer_call(words)
         if call is None or call[1] != "disable":
             return None
-        import observer_runtime as runtime
-        return {"folder": runtime.folder_key(ctx.root)}
+        return self.values(ctx)
 
     def text(self, values):
         return ("Turn the recortex observer off for this folder? It stops taking notes, drafting and posting here. What it "
                 "posted stays on GitHub and its queue is kept. Holds you set for this folder's repository stop applying "
-                "here.")
+                "here." + (" Its approval was made at %s." % moment(values["approved"]) if values["approved"] else ""))
 
     def options(self, values):
         return [option("Turn the observer off", "No notes, drafts or posts from this folder until you turn it on again.",
@@ -284,26 +305,36 @@ class Disable(Act):
                 option("Leave it on", "Nothing changes; the observer stays on in this folder.", "no")]
 
     def value(self, values):
-        return digest(self.kind, values["folder"])
+        return digest(self.kind, values["folder"], values["approved"])
 
 
 class Resume(Act):
     kind, header = "resume", "Pause"
 
-    def parse(self, args, ctx):
+    def on_store(self, store, scope):
+        """(whether a pause of the scope is on, when the newest was made: whole seconds, 0 when unknown) in an open store."""
+        scopes = ("capture", "publication") if scope == "all" else (scope,)
+        on = [name for name in scopes if store.get_control(name + "_paused", False)]
+        times = [store.get_control(name + "_paused_at", 0) for name in on]
+        times = [t for t in times if type(t) is int and 0 < t < 2 ** 40]
+        return bool(on), max(times) if times else 0
+
+    def _paused(self, repo, scope, config):
         import observer_store
+        try:
+            with observer_store.Store(repo, create=False, readonly=True, config=config) as store:
+                return self.on_store(store, scope)
+        except Exception:  # noqa: BLE001
+            return False, 0
+
+    def parse(self, args, ctx):
         scope = args.scope or "all"
         if args.values or scope not in SCOPE_WORDS or ctx.repo is None:
             raise ActError("acts: resume takes no value, and --scope capture, publication or all.")
-        scopes = ("capture", "publication") if scope == "all" else (scope,)
-        try:
-            with observer_store.Store(ctx.repo, create=False, readonly=True, config=ctx.config) as store:
-                paused = any(store.get_control(name + "_paused", False) for name in scopes)
-        except Exception:  # noqa: BLE001
-            paused = False
+        paused, at = self._paused(ctx.repo, scope, ctx.config)
         if not paused:
             raise ActError("acts: nothing is paused in that scope, so there is nothing to resume.")
-        return {"repo": ctx.repo.lower(), "scope": scope}
+        return {"repo": ctx.repo.lower(), "scope": scope, "at": at}
 
     def from_command(self, words, ctx):
         call = observer_call(words)
@@ -314,19 +345,20 @@ class Resume(Act):
         repo = call[0] or ctx.config.get("repo")
         if scope not in SCOPE_WORDS or len(rest) > 1 or not recortex.valid_repo(repo):
             return None
-        return {"repo": repo.lower(), "scope": scope}
+        return {"repo": repo.lower(), "scope": scope, "at": self._paused(repo, scope, ctx.config)[1]}
 
     def text(self, values):
-        return ("Resume the recortex observer's %s for %s? You paused it. After a yes it goes on from where it stopped."
-                % (SCOPE_WORDS[values["scope"]], values["repo"]))
+        when = " at %s" % moment(values["at"]) if values["at"] else ""
+        return ("Resume the recortex observer's %s for %s? You paused it%s. After a yes it goes on from where it stopped."
+                % (SCOPE_WORDS[values["scope"]], values["repo"], when))
 
     def options(self, values):
         words = ("observer.py", "resume") + (() if values["scope"] == "all" else (values["scope"],))
-        return [option("Resume the observer", "It takes up the paused work again.", "yes", [words]),
+        return [option("Resume the %s" % SCOPE_WORDS[values["scope"]], "It takes up the paused work again.", "yes", [words]),
                 option("Keep it paused", "Nothing changes; the pause stays.", "no")]
 
     def value(self, values):
-        return digest(self.kind, values["repo"], values["scope"])
+        return digest(self.kind, values["repo"], values["scope"], values["at"])
 
     def ask_words(self, values):
         return ["--scope", values["scope"]]
@@ -580,10 +612,10 @@ class Reminder(Act):
 
     def options(self, values):
         if values["muted"]:
-            return [option("Mute this reminder", "It is no longer added to prompts for this task.", "yes",
+            return [option("Mute reminder %s" % values["id"][:8], "It is no longer added to prompts for this task.", "yes",
                            [("observer.py", "advisory", "mute", values["id"])]),
                     option("Keep showing it", "Nothing changes; the reminder keeps coming.", "no")]
-        return [option("Show this reminder again", "It is added to matching prompts for this task again.", "yes",
+        return [option("Show reminder %s again" % values["id"][:8], "It is added to matching prompts for this task again.", "yes",
                        [("observer.py", "advisory", "unmute", values["id"])]),
                 option("Keep it muted", "Nothing changes; the reminder stays quiet.", "no")]
 
@@ -597,20 +629,29 @@ class Reminder(Act):
 class Replace(Act):
     kind, header = "replace", "Settings"
 
-    def _values(self, new, ctx):
+    def state(self, new, ctx):
+        """("none", None): no holds would stop applying; ("known", values): holds of another repository would, and they are
+        read; ("unknown", None): the approval or the holds cannot be read, so holds may be active (what entry_holds reports as
+        [None]). The unknown state is never passed over: the enable that meets it refuses with HOLDS_UNREADABLE."""
         import observer
         import observer_runtime as runtime
         if not recortex.valid_repo(new):
-            return None
+            return "none", None
         held = observer.entry_holds(keep=new)
-        if not held or held == [None]:
-            return None
+        if not held:
+            return "none", None
+        if held == [None]:
+            return "unknown", None
         try:
             entry = runtime.stored_approval(ctx.root)
         except Exception:  # noqa: BLE001
-            return None
+            return "unknown", None
         old = entry.get("repo") if isinstance(entry, dict) else None
-        return {"old": old, "new": new.lower()} if recortex.valid_repo(old) else None
+        return ("known", {"old": old, "new": new.lower()}) if recortex.valid_repo(old) else ("unknown", None)
+
+    def _values(self, new, ctx):
+        state, values = self.state(new, ctx)
+        return values if state == "known" else None
 
     def parse(self, args, ctx):
         new = args.to or ctx.repo
@@ -660,10 +701,16 @@ for _act in (Release(), Disable(), Resume(), Undo(), Trust(), Hosts(), Advisory(
     register(_act)
 
 
+def replace_state(new, root=None):
+    """The three states of replacing this folder's observer settings with settings for `new`: ("none", None), ("known", values)
+    and ("unknown", None); see Replace.state. Unknown is a state of its own, never "none"."""
+    return ACTS["replace"].state(new, Context(root))
+
+
 def replace_values(new, root=None):
     """The values of the act that replaces this folder's observer settings, which are for another repository whose holds apply,
-    with settings for `new`, or None when no hold would stop applying."""
-    return ACTS["replace"]._values(new, Context(root))
+    with settings for `new`, or None when no hold would stop applying or they cannot be read (replace_state tells those apart)."""
+    return replace_state(new, root)[1]
 
 
 def undo_values(repo, row):
@@ -698,14 +745,26 @@ def asks(command, root=None):
     return found
 
 
+def asking(command):
+    """True for a Bash command that runs `acts.py ask`: the hook notes the session that asks (observer_grants.note_asking)."""
+    if not isinstance(command, str) or "acts.py" not in command or len(command) > 4000:
+        return False
+    for words in segments(command):
+        found = script_args(words, "acts.py")
+        if found is not None and positionals(found[1])[:1] == ["ask"]:
+            return True
+    return False
+
+
 def allowed(kind, values, root=None):
     """True on the user's own terminal, else when a live one-time grant for exactly this act and these values is there (it
     is spent). Called right before the first change, after every other check passed."""
     import observer
-    if observer.on_terminal():
-        return True
     import observer_grants
     import observer_runtime as runtime
+    if observer.on_terminal():
+        observer_grants.spend(runtime.folder_key(root), kind)   # an answer nobody used is not kept for a later replay
+        return True
     return observer_grants.take(runtime.folder_key(root), [(kind, ACTS[kind].value(values))])
 
 
@@ -772,7 +831,10 @@ def ask_main(args):
         import observer_runtime as runtime
         choices = [[item["label"], item["value"] or act.value(values)] for item in act.options(values)
                    if item["answer"] == "yes"]
-        observer_grants.asked_put(runtime.folder_key(ctx.root), kind, choices)
+        nos = [item["label"] for item in act.options(values) if item["answer"] == "no"]
+        if not observer_grants.asked_put(runtime.folder_key(ctx.root), kind, choices, nos):
+            print(TYPED_UNRECORDED)
+            return 1
     if args.json:
         print(json.dumps(body, sort_keys=True))
         return 0
