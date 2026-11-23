@@ -97,7 +97,7 @@ PAGE_DENIAL = ("recortex: a built dashboard page is never committed, copied to a
 # these is denied with a fixed line, so that padding cannot make a denial fall away. Everything else is left alone.
 CAP = 32768
 PROTECTED = re.compile(r"hooks\.py|run_hook\.sh|session_start_hook\.sh|prompt-submit|dashboard-server-|launch-|claude|mind\.html|"
-                       r"observer\.py|setup\.py|publish\.py|acts\.py|dashboard_action|tmux|screen|xdotool|ydotool|wtype")
+                       r"observer\.py|setup\.py|publish\.py|acts\.py|dashboard_action|tmux|screen|xdotool|ydotool|wtype|127\.0\.0\.1:|localhost:")
 TOO_LONG = ("recortex: this command is too long to check, and it names something that only the user or Claude Code may run. "
             "Run it in shorter parts.")
 ALARM_SECONDS = 3
@@ -105,16 +105,18 @@ ALARM_SECONDS = 3
 # sends keys (tmux send-keys, screen -X, xdotool, ydotool, wtype) is denied.
 KEYS_TOOLS = re.compile(r"(?<![A-Za-z0-9_-])(?:xdotool|ydotool|wtype)(?![A-Za-z0-9_-])")
 TMUX_NAME = re.compile(r"(?<![A-Za-z0-9_-])tmux(?![A-Za-z0-9_-])")
-TMUX_KEYS = re.compile(r"(?<![A-Za-z0-9_-])(?:send-keys|send|paste-buffer|pasteb|send-prefix)(?![A-Za-z0-9_-])")
+TMUX_KEYS = re.compile(r"(?<![A-Za-z0-9_-])(?:send(?:-[a-z]*)?|paste[a-z-]*)(?![A-Za-z0-9_-])")   # send, send-keys, send-prefix, paste-buffer, pasteb
+TMUX_PIPE = re.compile(r"(?<![A-Za-z0-9_-])pipe-pane(?![A-Za-z0-9_-])")
+TMUX_PIPE_IN = re.compile(r"\s-[A-Za-z]*I")   # pipe-pane -I sends a command's output into the pane as keys
 SCREEN_NAME = re.compile(r"(?<![A-Za-z0-9_-])screen(?![A-Za-z0-9_-])")
-SCREEN_KEYS = re.compile(r"\s-X(?![A-Za-z0-9_-])")
+SCREEN_KEYS = re.compile(r"\s-[A-Za-z]*X(?![A-Za-z0-9_-])")
 KEYS_DENIAL = ("recortex: a command that sends keystrokes to a terminal (tmux send-keys, screen -X, xdotool, ydotool, wtype) is "
                "never run by a session: it could answer the user's question for them.")
 # `dashboard_action.py` run with a BROWSER of the command's own makes the browser program read the launch file, which holds the link
 # with changes on: the user's browser is the one the user set.
-BROWSER_NAME = re.compile(r"(?<![A-Za-z0-9_])BROWSER(?![A-Za-z0-9_])")
-BROWSER_DENIAL = ("recortex: dashboard_action.py is not run with a BROWSER of the command's own: the user's browser opens the "
-                  "dashboard.")
+ENVIRONMENT = re.compile(r"(?:^|[\s;&|(])[A-Za-z_][A-Za-z0-9_]*=|(?<![A-Za-z0-9_-])(?:export|env)(?![A-Za-z0-9_-])")
+BROWSER_DENIAL = ("recortex: dashboard_action.py is not run with an environment of the command's own (a BROWSER, a PATH, an "
+                  "assignment, export or env): the user's browser opens the dashboard.")
 LIVE_NAMES = re.compile(r"dashboard-server-|launch-[0-9a-f]{8}\.html")
 LIVE_PORT = re.compile(r"(?:127\.0\.0\.1|localhost):")
 LIVE_TOOLS = re.compile(r"(?<![A-Za-z0-9_-])(?:curl|wget|nc|ncat|netcat)(?![A-Za-z0-9_-])")
@@ -132,7 +134,7 @@ def live_decision(data):
     for text in texts:
         if LIVE_NAMES.search(text) or (LIVE_PORT.search(text) and LIVE_TOOLS.search(text)):
             return deny(LIVE_DENIAL)
-        if "dashboard_action" in text and BROWSER_NAME.search(text):
+        if "dashboard_action" in text and ENVIRONMENT.search(text):
             return deny(BROWSER_DENIAL)
     return None
 
@@ -146,7 +148,9 @@ def keys_decision(data):
         return None
     for text in texts:
         tmux, screen = TMUX_NAME.search(text), SCREEN_NAME.search(text)
+        pipe = TMUX_PIPE.search(text, tmux.end()) if tmux else None
         if (KEYS_TOOLS.search(text) or (tmux and TMUX_KEYS.search(text, tmux.end()))
+                or (pipe and TMUX_PIPE_IN.search(text, pipe.end()))
                 or (screen and SCREEN_KEYS.search(text, screen.start()))):
             return deny(KEYS_DENIAL)
     return None
@@ -171,6 +175,7 @@ def segments(command):
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
+        lexer.commenters = ""   # text after a # is still looked at: a model's comment is no reason to skip a word
         words = list(lexer)
     except ValueError:
         return []
@@ -234,9 +239,29 @@ def publish_only_reads(command):
     """True when every command of the line that names publish.py carries --dry-run or --list itself (the two forms that read and
     send nothing), and publish.py is named as a word of a command: one hidden in a quotation, or named by a command that does not
     carry the flag, is not."""
+    if "\n" in command.strip() or "\r" in command:
+        return False
     named = [words for words in segments(command) if any(PUBLISH.search(word) for word in words)]
-    return bool(named) and all(any(word in ("--dry-run", "--list") for word in words) for words in named) \
-        and all(os.path.basename(word) == "publish.py" or not PUBLISH.search(word) for words in named for word in words)
+    if not named or not counts_agree(command, named, PUBLISH):
+        return False
+    for words in named:   # [python] <path>/publish.py, the script word plain, and the flag among the words after it
+        spots = [number for number, word in enumerate(words) if PUBLISH.search(word)]
+        if len(spots) != 1:
+            return False
+        number = spots[0]
+        if os.path.basename(words[number]) != "publish.py" or re.search(r"[\s$`]", words[number]) or number > 1 \
+                or (number == 1 and not os.path.basename(words[0]).startswith("python")):
+            return False
+        if not any(word in ("--dry-run", "--list") for word in words[number + 1:]):
+            return False
+    return True
+
+
+def counts_agree(command, named, pattern):
+    """True when `pattern` is found as many times in the command with its quotes taken out as in the words of the commands that
+    were split out of it: a name that the split does not account for (hidden in a quotation, in text after a #, behind a line
+    break) leaves the command with no exemption."""
+    return len(pattern.findall(QUOTES.sub("", command))) == sum(len(pattern.findall(word)) for words in named for word in words)
 
 
 def hook_decision(data):
@@ -255,8 +280,10 @@ def hook_only_reads(command):
     """True when every command of the line that names a hook is exactly `[python] <path>/hooks.py --doctor` or `--print`: a hook
     named in a quotation, run with an event, or followed by anything else on the line (a later command is its own, and is looked at
     on its own) is not."""
+    if "\n" in command.strip() or "\r" in command:
+        return False   # a line break is a command separator that this reader does not split at: no exemption
     named = [words for words in segments(command) if any(HOOK_RUN.search(word) for word in words)]
-    if not named:
+    if not named or not counts_agree(command, named, HOOK_RUN):
         return False
     for words in named:
         spots = [number for number, word in enumerate(words) if os.path.basename(word) in HOOK_NAMES]
@@ -265,7 +292,9 @@ def hook_only_reads(command):
         number = spots[0]
         if any(HOOK_RUN.search(word) for other, word in enumerate(words) if other != number):
             return False   # a second hook named in a longer word
-        if os.path.basename(words[number]) != "hooks.py" or words[number + 1:] not in (["--doctor"], ["--print"]):
+        tail = words[number + 1:]   # the flag, and at most a comment after it (a word that starts with #: counts agree, so it names no hook)
+        if os.path.basename(words[number]) != "hooks.py" or tail[:1] not in (["--doctor"], ["--print"]) \
+                or (len(tail) > 1 and not tail[1].startswith("#")):
             return False
         if number > 1 or (number == 1 and not os.path.basename(words[0]).startswith("python")):
             return False

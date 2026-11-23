@@ -1021,7 +1021,7 @@ class GuardTests(unittest.TestCase):
     def test_dashboard_action_with_a_browser_of_the_commands_own_is_denied(self):
         script = os.path.join(ts.SCRIPTS, "dashboard_action.py")
         for command in ("BROWSER=echo python3 %s open" % script, "env BROWSER=cat python3 %s open" % script,
-                        "export BROWSER=cat; python3 %s open" % script, "python3 %s open # BROWSER" % script,
+                        "export BROWSER=cat; python3 %s open" % script,
                         "BROWSER='sh -c \"cat %%s\"' python3 %s open" % script):
             for extra in ({}, {"agent_id": "a1"}):
                 with self.subTest(command=command, extra=extra):
@@ -1097,6 +1097,89 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(pretool_guard.TOO_LONG, json.loads(run("python3 /x/hooks.py prompt-submit"))["hookSpecificOutput"]
                          ["permissionDecisionReason"])
         self.assertEqual("", run("ls -l"))
+
+    def test_text_after_a_hash_and_names_the_split_does_not_account_for_leave_no_exemption(self):
+        publish = "python3 /x/publish.py --to octo-org/octo-pages --branch gh-pages --dry-run"
+        for command, extra in (("python3 /x/hooks.py --doctor # python3 /x/hooks.py prompt-submit", {}),
+                               ("python3 /x/hooks.py --doctor #python3 /x/run_hook.sh x", {}),
+                               (publish + " # python3 /x/publish.py --to a/b --branch main", {"agent_id": "a1"})):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.decide(command, **extra)["hookSpecificOutput"]["permissionDecision"])
+        self.assertIsNone(self.decide("python3 /x/hooks.py --doctor # looks fine"))
+        self.assertIsNone(self.decide(publish + " # a dry run", agent_id="a1"))
+        pattern = pretool_guard.HOOK_RUN
+        self.assertFalse(pretool_guard.counts_agree("python3 /x/hooks.py --doctor", [], pattern))   # the split found none
+        self.assertTrue(pretool_guard.counts_agree("python3 /x/hooks.py --doctor", [["python3", "/x/hooks.py", "--doctor"]], pattern))
+
+    def test_a_line_break_leaves_no_exemption(self):
+        publish = "python3 /x/publish.py --to octo-org/octo-pages --branch gh-pages --dry-run"
+        for command, extra in (("python3 /x/hooks.py --doctor\npython3 /x/hooks.py prompt-submit", {}),
+                               ("python3 /x/hooks.py --doctor\rpython3 /x/hooks.py prompt-submit", {}),
+                               (publish + "\npython3 /x/publish.py --to a/b --branch main", {"agent_id": "a1"}),
+                               (publish + "\r\npython3 /x/publish.py --to a/b --branch main", {"agent_id": "a1"}),
+                               # the flag on a line of its own is another command's word, not this one's
+                               ("python3 /x/publish.py --to octo-org/octo-pages --branch gh-pages\necho --dry-run", {"agent_id": "a1"}),
+                               ("python3 /x/publish.py --to octo-org/octo-pages --branch gh-pages\r\necho --list", {"agent_id": "a1"})):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.decide(command, **extra)["hookSpecificOutput"]["permissionDecision"])
+        self.assertIsNone(self.decide("python3 /x/hooks.py --doctor\n"))   # a closing line break is only the end of the line
+        self.assertIsNone(self.decide(publish + "\n", agent_id="a1"))
+
+    def test_the_publish_exemption_needs_the_plain_shape_of_the_hook_one(self):
+        flag = " --to octo-org/octo-pages --branch gh-pages --dry-run"
+        for command in ("python3 '/tmp/a b/publish.py'" + flag, 'python3 "$HOME/publish.py"' + flag, "env python3 /x/publish.py" + flag,
+                        "bash /x/publish.py" + flag, "python3 -u /x/publish.py" + flag, "python3 /x/publish.py /x/publish.py" + flag):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.decide(command, agent_id="a1")["hookSpecificOutput"]["permissionDecision"])
+        for command in ("python3 /x/publish.py" + flag, "/x/publish.py" + flag, "python3.14 /x/publish.py --list"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.decide(command, agent_id="a1"))
+
+    def test_tmux_and_screen_keys_match_by_prefix_and_the_pipe_that_types(self):
+        for command in ("tmux send-k Enter", "tmux send-prefix", "tmux paste -t 0", "tmux paste-buffer", "tmux pasteb",
+                        "tmux pipe-pane -I -t 0 'cat /tmp/x'", "tmux pipe-pane -t 0 -IO 'cat /tmp/x'", "screen -S s -X stuff x",
+                        "screen -dX stuff x", "screen -rX stuff x"):
+            with self.subTest(command=command):
+                found = self.decide(command)
+                self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
+        for command in ("tmux pipe-pane -t 0 'cat >> /tmp/log'", "tmux ls", "tmux set-option status off", "screen -ls", "screen -dmS work"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.decide(command))
+
+    def test_out_of_time_the_loopback_forms_are_protected_and_the_prefilter_words_are_covered(self):
+        def run(command):
+            raw = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+            out = io.StringIO()
+            with mock.patch.object(sys, "stdin", io.StringIO(raw)), mock.patch.object(sys, "stdout", out), \
+                    mock.patch.object(pretool_guard, "decide", side_effect=TimeoutError("slow")):
+                pretool_guard.main()
+            return out.getvalue()
+
+        for command in ("curl http://127.0.0.1:47001/x", "wget localhost:47001"):
+            self.assertIn("deny", run(command), command)
+        # every word of the wrapper's prefilter is read by a decision of the guard: the timeout covers the same names
+        with open(os.path.join(ts.SCRIPTS, "run_pretool_guard.sh"), encoding="utf-8") as handle:
+            text = handle.read()
+        case = text[text.index("case \"$plain\" in") + 1:text.index(") ;;")]
+        words = [word.strip("*") for word in re.findall(r"\*[^*|\s]+\*", case)]
+        broad = {"recortex", "observer", "hook"}   # prefilter words that only start Python: the guard's own names are the specific ones
+        for word in words:
+            if word not in broad:
+                self.assertRegex(word, pretool_guard.PROTECTED, word)
+
+    def test_dashboard_action_runs_with_no_environment_of_the_commands_own(self):
+        script = os.path.join(ts.SCRIPTS, "dashboard_action.py")
+        for command in ("PATH=/tmp/x:$PATH python3 %s open" % script, "env X=1 python3 %s open" % script,
+                        "export FOO=1; python3 %s open" % script, "FOO=1 BAR=2 python3 %s open" % script,
+                        "env -i python3 %s open" % script, "cd /x && DISPLAY=:0 python3 %s open --suggestions" % script):
+            for extra in ({}, {"agent_id": "a1"}):
+                with self.subTest(command=command, extra=extra):
+                    found = self.decide(command, **extra)
+                    self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
+        for command in ("python3 %s open" % script, "python3 %s open --suggestions" % script, "python3 %s link" % script,
+                        "cd /x && python3 %s status" % script, "python3 %s open --impacts impact-1-%s" % (script, "a" * 64)):
+            with self.subTest(command=command):
+                self.assertIsNone(self.decide(command))
 
     DENIED = (("python3 /x/hooks.py prompt-submit < f.json", {}), ("bash /x/run_hook.sh prompt-submit", {}),
               ("/x/session_start_hook.sh", {}), ("python3\t/x/hooks.py\tprompt-submit", {}),
