@@ -332,6 +332,8 @@ def subagent_stop(data):
             usage.note_unmeasured(found[1], str(error))
         return
     except (OSError, ValueError):
+        # a transcript that cannot be read at all: the same note, with the code for it (usage.py show and --doctor say so)
+        usage.note_unmeasured(found[1], "source-unavailable")
         return
     if measured is not None and usage.note_agent(found[1], agent, measured[1], measured[0]):
         usage.clear_unmeasured(found[1])

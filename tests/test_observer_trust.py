@@ -651,6 +651,21 @@ class UnmeasuredTests(tu.SubagentBox):
             self.assertEqual(1, len(self.rows("agents")))
             self.assertIsNone(usage.unmeasured(tu.ts.REPO))
 
+    def test_a_transcript_that_cannot_be_read_at_all_leaves_the_note_with_its_own_code(self):
+        # The 1.7.0 review, N10: an error of the file system or a value that does not fit was a silent return.
+        self.install()
+        for error in (PermissionError("denied"), OSError("input error"), ValueError("not a transcript")):
+            with self.subTest(type(error).__name__):
+                usage.clear_unmeasured(tu.ts.REPO)
+                with mock.patch.object(usage, "measure", side_effect=error):
+                    self.stop()
+                self.assertEqual("source-unavailable", usage.unmeasured(tu.ts.REPO)[1])
+                self.assertIn("(source-unavailable)", usage.UNMEASURED_LINE % "source-unavailable")
+        self.assertEqual([], self.rows("agents"))
+        self.stop()   # a transcript that reads again is measured, and the note goes
+        self.assertEqual(1, len(self.rows("agents")))
+        self.assertIsNone(usage.unmeasured(tu.ts.REPO))
+
     def test_the_note_holds_a_time_and_a_code_of_the_fixed_set_only(self):
         for code in ("source-owner", "source-unavailable"):
             self.assertTrue(usage.note_unmeasured(tu.ts.REPO, code, now=tu.NOW))
