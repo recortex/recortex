@@ -1,6 +1,6 @@
 {
   "name": "recortex",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "An observer that follows each Claude Code session, a record of the project in GitHub issues, and a cortex that works from it in every session.",
   "author": {
     "name": "recortex",

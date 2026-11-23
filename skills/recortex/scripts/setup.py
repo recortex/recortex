@@ -141,14 +141,14 @@ NAME = re.compile(r"[\w .'-]{1,60}|@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 
 # One fixed line for each state of recortex.gh_account() but "ready": no text of gh's own output.
 NOT_READY = {
-    "missing": "not ready: the GitHub CLI gh was not found. Install it from https://cli.github.com, then run "
-               "`gh auth login` in a terminal, and start setup again.",
-    "signed-out": "not ready: gh is not signed in to github.com. Run `gh auth login` in a terminal (in Claude Code, "
-                  "type `! gh auth login`), then start setup again.",
-    "slow": "not ready: gh did not answer within %d seconds. Check the network, or run `gh auth status` in a terminal "
-            "to see why, then start setup again." % recortex.GH_CHECK_SECONDS,
+    "missing": "not ready: the GitHub CLI gh was not found. Install it from https://cli.github.com, sign it in with "
+               "`gh auth login`, and start setup again.",
+    "signed-out": "not ready: gh is not signed in to github.com. It is signed in with `gh auth login`; then start setup "
+                  "again.",
+    "slow": "not ready: gh did not answer within %d seconds. Check the network, or run `gh auth status` and tell the user "
+            "what it says, then start setup again." % recortex.GH_CHECK_SECONDS,
     "unnamed": "not ready: gh could not read the signed-in account from GitHub: the token may be invalid or "
-               "expired, or GitHub could not be reached. Run `gh auth status` in a terminal to see why, then start "
+               "expired, or GitHub could not be reached. Run `gh auth status` and tell the user what it says, then start "
                "setup again.",
 }
 READY = "ready: gh is signed in to github.com as %s; Python %d.%d"

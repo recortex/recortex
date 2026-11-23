@@ -61,7 +61,7 @@ REASONS = {
     "entry": "the board entry of the project file does not fit",
     "setup": "the board does not read back as it was set up",
 }
-SCOPE_LINE = ("the gh login lacks the project scope; run `gh auth refresh -s project` in your terminal, then run "
+SCOPE_LINE = ("the gh login lacks the project scope; it is added with `gh auth refresh -s project`, then run "
               "setup again. The scope lets gh read and write all of your GitHub projects; the plugin touches only the "
               "one board you chose.")
 

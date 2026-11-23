@@ -1022,7 +1022,7 @@ def setup_doctor_lines(repo, config, record):
 
 GH_STATES = {
     "ready": "signed in to github.com as %s",
-    "signed-out": "not signed in to github.com; run `gh auth login` in a terminal",
+    "signed-out": "not signed in to github.com; it is signed in with `gh auth login`",
     "slow": "no answer within %d seconds" % recortex.GH_CHECK_SECONDS,
     "unnamed": "GitHub did not name the signed-in account: the token may be invalid, or GitHub could not be reached "
                "(an answer that is not a GitHub login is not shown)",

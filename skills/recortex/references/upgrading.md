@@ -17,6 +17,16 @@ Then start a new session. Add `--scope project` or `--scope local` if that is ho
 
 A copy of the plugin installed another way (a folder under `~/.claude/skills/` with hooks from `templates/settings-hook-snippet.json`, or a second plugin entry) stays as it is. Copy the new `skills/recortex` folder in, remove the old folder, and change the four hook commands to `$HOME/.claude/skills/recortex/scripts/`. Two copies enabled at once print two briefs, so disable or uninstall the other one.
 
+## Version 1.8.0: the session asks, and runs it for you
+
+recortex no longer tells you to run a command. Every act that was yours to run is now one question that the session asks you (a multiple-choice question, word for word) and runs when you answer: lifting a hold or a pause, switching the observer off, undoing one of its acts, trusting folders above Claude Code's transcripts, an approval for any host, its reminders on prompts, replacing a folder's settings for another repository, and putting the dashboard page on the web. A question is answered once, for exactly the act it names, within ten minutes; the command takes that answer or refuses and names the question. The trust question alone may be answered by typing the label of its yes option, where Claude Code's transcript cannot be read here. A command typed in a shell of your own still works as it did, typed words included.
+
+The dashboard on a machine with no browser says one line, "The dashboard is ready; this machine has no browser.", and asks one question: update the public page and get its link, or show the file's path. The first public page may create what it needs, and the question says so: a branch that holds only the page (one commit with no parent) and GitHub Pages switched on for it. A private record is published only on a question that says PRIVATE. `publish.py` prints the page's link and reads the page back. The page is never committed, copied or sent by hand: a command that names `mind.html` together with `git`, `gh`, `curl`, `scp`, `rsync`, `sftp` or `wget` is stopped.
+
+The names the plugin had before version 0.5.0 are no longer read: a project file, local folders, variables and a triage workflow under those names are ignored, earlier than this page once promised. Rename them to `.recortex.json`, `recortex` and `RECORTEX_`. The markers in posted comments keep their prefix: it is the record format. The session-start brief no longer carries the sentence about the earlier name.
+
+Going back to 1.7.1: it does not know the act grants, so its session is refused where 1.8.0 asked, and it does not read a receipt that 1.8.0 wrote with the new `private` key (it prints "nothing has been published"). Nothing in the record or the index changes.
+
 ## Version 1.7.1: a plainer skill description
 
 The skill's description, the line shown in the slash-command menu, says what recortex does. Nothing else changes.

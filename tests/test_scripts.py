@@ -2427,7 +2427,7 @@ class HookTests(RecordSandbox):
             return [line for line in result.stdout.split("\n") if line.startswith("gh:")], result.stdout
 
         self.assertEqual(["gh: found (%s); signed in to github.com as octocat" % sys.executable], gh_lines()[0])
-        self.assertEqual(["gh: found (%s); not signed in to github.com; run `gh auth login` in a terminal"
+        self.assertEqual(["gh: found (%s); not signed in to github.com; it is signed in with `gh auth login`"
                           % sys.executable], gh_lines(env={"FAKE_GH_SIGNED_OUT": "1"})[0])
         absent = os.path.join(self.dir, "absent", "gh")
         self.assertEqual(["gh: not found (%s); install it from https://cli.github.com" % absent],
@@ -4648,12 +4648,12 @@ class SetupTests(Sandbox):
                                  env={"RECORTEX_TRUSTED_FILE": listed_in_file})
         self.assertIn("trusted: %s is already in %s" % (REPO, listed_in_file), both.stdout)   # a list counts as the variable does
 
-    NOT_FOUND = ("not ready: the GitHub CLI gh was not found. Install it from https://cli.github.com, then run "
-                 "`gh auth login` in a terminal, and start setup again.\n")
-    SIGNED_OUT = ("not ready: gh is not signed in to github.com. Run `gh auth login` in a terminal (in Claude Code, "
-                  "type `! gh auth login`), then start setup again.\n")
+    NOT_FOUND = ("not ready: the GitHub CLI gh was not found. Install it from https://cli.github.com, sign it in with "
+                 "`gh auth login`, and start setup again.\n")
+    SIGNED_OUT = ("not ready: gh is not signed in to github.com. It is signed in with `gh auth login`; then start setup "
+                  "again.\n")
     UNNAMED = ("not ready: gh could not read the signed-in account from GitHub: the token may be invalid or expired, "
-               "or GitHub could not be reached. Run `gh auth status` in a terminal to see why, then start setup "
+               "or GitHub could not be reached. Run `gh auth status` and tell the user what it says, then start setup "
                "again.\n")
 
     def gh_log(self):
@@ -4775,7 +4775,7 @@ class SetupTests(Sandbox):
         sys.path.insert(0, SCRIPTS)
         import setup
         self.assertEqual("not ready: gh did not answer within 10 seconds. Check the network, or run `gh auth status` "
-                         "in a terminal to see why, then start setup again.", setup.NOT_READY["slow"])
+                         "and tell the user what it says, then start setup again.", setup.NOT_READY["slow"])
         self.assertEqual(10, recortex.GH_CHECK_SECONDS)
 
     def test_answers_are_checked_strictly(self):
@@ -5729,7 +5729,7 @@ class SetupTests(Sandbox):
     def test_without_the_project_scope_the_rest_of_the_setup_is_done_and_one_fixed_line_says_what_to_run(self):
         root, result = self.apply_with_board("new", env={"FAKE_GH_NO_PROJECT_SCOPE": "1"})
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertIn("the gh login lacks the project scope; run `gh auth refresh -s project` in your terminal, then "
+        self.assertIn("the gh login lacks the project scope; it is added with `gh auth refresh -s project`, then "
                       "run setup again.", result.stdout)
         self.assertIn("The scope lets gh read and write all of your GitHub projects", result.stdout)
         self.assertIn("board: not set up; the rest of the setup is done. Run `board.py setup --mode new --yes`",
@@ -13864,7 +13864,7 @@ class BoardWriteTests(BoardSandbox):
     def test_a_missing_scope_prints_the_fixed_line_and_changes_nothing(self):
         result = self.tool("board.py", "setup", "--mode", "new", "--yes", env={"FAKE_GH_NO_PROJECT_SCOPE": "1"})
         self.assertEqual(2, result.returncode)
-        self.assertIn("the gh login lacks the project scope; run `gh auth refresh -s project` in your terminal",
+        self.assertIn("the gh login lacks the project scope; it is added with `gh auth refresh -s project`",
                       result.stdout)
         self.assertNotIn("projects", self.repo())
         self.assertNotIn("board", json.loads(open(os.path.join(self.project, recortex.CONFIG_NAME)).read()))
