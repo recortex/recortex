@@ -45,7 +45,7 @@ def session_environment(folder, remote):
     trusted = folder / "trusted-repos"
     trusted.write_text(REPO + " octocat\n", encoding="utf-8")
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith((names.ENV_PREFIX, names.OLD_ENV_PREFIX, "FAKE_GH_", "CLAUDE_"))}
+           if not key.startswith((names.ENV_PREFIX, "FAKE_GH_", "CLAUDE_"))}
     env.update({"RECORTEX_GH": shlex.join([sys.executable, str(ROOT / "tests" / "fake_gh.py")]),
                 "FAKE_GH_STATE": str(remote), "RECORTEX_CONFIG": str(config),
                 "RECORTEX_TRUSTED_FILE": str(trusted), "RECORTEX_LINK_PAUSE": "0",

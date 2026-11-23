@@ -123,8 +123,12 @@ class CommandFileTests(unittest.TestCase):
         self.assertIn("mind.py --open", dashboard)
         self.assertIn("index.py sync", dashboard)
         self.assertIn("missing or outdated index", dashboard)
-        self.assertIn("manuscript", dashboard)
-        self.assertIn("address it printed", dashboard)
+        # 1.8.0: the command opens the live dashboard (spec 16.6); the manuscript view is a link inside it, not a line of the command
+        self.assertIn("dashboard_action.py open", dashboard)
+        self.assertIn("view-only link it printed", dashboard)
+        self.assertIn("line recortex showed above your reply", dashboard)
+        self.assertIn("Never tell the user to forward a port", dashboard)
+        self.assertNotIn("manuscript", dashboard)
 
 class AskAgentTests(unittest.TestCase):
     def setUp(self):

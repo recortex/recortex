@@ -84,7 +84,7 @@ class Replay:
         # Clear inherited local authorization and faults; an override cannot turn
         # this executable into a live publication or load a real user's source.
         env = {key: value for key, value in os.environ.items()
-               if not key.startswith((names.ENV_PREFIX, names.OLD_ENV_PREFIX, "FAKE_GH_", "CLAUDE_"))}
+               if not key.startswith((names.ENV_PREFIX, "FAKE_GH_", "CLAUDE_"))}
         trusted = self.base / "trusted"
         trusted.write_text(REPO + " octocat\n", encoding="utf-8")
         env.update(XDG_STATE_HOME=str(self.base / "state"), XDG_CACHE_HOME=str(self.base / "cache"),

@@ -5013,7 +5013,8 @@ class SetupTests(Sandbox):
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             self.assertIn("not written: CLAUDE.md already has a Project record section\n", result.stdout, mode)
             self.assertNotIn("note: that section", result.stdout, mode)
-            self.assertNotIn(first, result.stdout, mode)
+            # the checkout's own path may hold the first name (a folder of the developer's); only what setup says counts
+            self.assertNotIn(first, result.stdout.replace(self.dir, "").replace(ROOT, ""), mode)
             self.assertEqual(old_snippet, recortex.read_text(claude))  # never rewritten
 
     def test_apply_writes_no_file_through_a_symlink(self):
@@ -14114,7 +14115,7 @@ class BoardWriteTests(BoardSandbox):
     def test_a_login_that_reads_projects_and_cannot_write_them_gets_the_scope_line(self):
         result = self.tool("board.py", "setup", "--mode", "new", "--yes", env={"FAKE_GH_NO_WRITE_SCOPE": "1"})
         self.assertEqual(1, result.returncode)
-        self.assertIn("the gh login lacks the project scope; run `gh auth refresh -s project`", result.stdout)
+        self.assertIn("the gh login lacks the project scope; it is added with `gh auth refresh -s project`, then run setup again", result.stdout)
 
     def test_a_page_cursor_that_is_not_a_cursor_never_reaches_a_query(self):
         self.in_process()
