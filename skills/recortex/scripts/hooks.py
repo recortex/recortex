@@ -637,8 +637,13 @@ def produce(event, data, budget, config, repo, hub):
             return text
         # The task reminder has its own opt-in and needs no observer. It comes last, after what else the prompt carries, also when
         # the prompt hook is off and when nothing else is printed; it has a cap of its own (task_reminder.CAP).
-        extra, slow = task_reminder_line(repo, config, db, record, data, entry, budget)
-        if slow:
+        extra, problem = task_reminder_line(repo, config, db, record, data, entry, budget)
+        if problem in ("unreadable", "failed"):   # one fixed line a session, the reason in --doctor
+            import task_reminder
+            extra = (task_reminder.UNREADABLE_LINE if problem == "unreadable" else task_reminder.FAILED_LINE) \
+                if not entry.get("reminder_told") else ""
+            entry["reminder_told"] = True
+        elif problem:
             extra = guidance.SKIPPED if not entry.get("skip_told") else ""
             entry["skip_told"] = True
         if settings.get("enabled") is False:
@@ -704,20 +709,29 @@ def observer_delivers(repo, config):
 
 
 def task_reminder_line(repo, config, db, record, data, entry, budget):
-    """(text, slow): the task reminder for this prompt of the main session, "" when there is none, and whether working it out
-    ran out of time. Nothing is done unless this machine chose it for this repository (task_reminder.read), the input holds no
-    agent_id or agent_type (a subagent's prompt), and the observer does not deliver it itself. It reads only the prompt and the
-    local index: no model call, no network. Any failure gives no line."""
+    """(text, problem): the task reminder for this prompt of the main session, "" when there is none, and what kept it from
+    being worked out: "" for nothing, "slow" (it ran out of time), "unreadable" (this machine's setting cannot be read) or
+    "failed" (the check raised: a note is kept for --doctor). The caller says each problem once a session, in a fixed line.
+    Nothing is done unless this machine chose it for this repository (task_reminder.read), the input holds no agent_id or
+    agent_type (a subagent's prompt), and the observer does not deliver it itself. It reads only the prompt and the local index:
+    no model call, no network. A failure never fails the hook."""
     try:
         if not isinstance(data, dict) or data.get("agent_id") or data.get("agent_type"):
-            return "", False
+            return "", ""
         import task_reminder
         found = task_reminder.read(repo)
+        if found["state"] == "unreadable":   # the user may have chosen "on": say that it cannot be known
+            return "", "" if observer_delivers(repo, config) else "unreadable"
         if found["state"] != "chosen" or found["mode"] != "on" or observer_delivers(repo, config):
-            return "", False
+            return "", ""
         return task_reminder.line(db, repo, record.allowed, data.get("prompt"), entry, pointer_seconds(budget, "prompt-submit"))
     except Exception:  # noqa: BLE001 - a hook never fails over a reminder
-        return "", False
+        try:
+            import task_reminder
+            task_reminder.note_failed(repo)
+        except Exception:  # noqa: BLE001
+            pass
+        return "", "failed"
 
 
 def pointer_seconds(budget, event):
@@ -1088,12 +1102,23 @@ def machine_summary(repo, config, problems):
         if observer_delivers(repo, config):
             return "delivered by the observer"
         if found["state"] == "chosen" and found["mode"] == "on":
+            at = task_reminder.failed(repo)
+            if at is not None:
+                return ("on, but the last check failed on %s and no line was added for that prompt; the line tells the session "
+                        "once" % time.strftime("%Y-%m-%d", time.gmtime(at)))
             return "on"
         return "off (setup.py task-reminder set --mode on --yes turns it on)"
 
     def dashboard():
+        import dashboard_notes
         hook = config.get("prompt_hook")
-        return "off with the prompt hook" if isinstance(hook, dict) and hook.get("enabled") is False else "on"
+        if isinstance(hook, dict) and hook.get("enabled") is False:
+            return "off with the prompt hook"
+        at = dashboard_notes.failed(repo)
+        if at is not None:
+            return ("on, but a note of what you recorded in the dashboard could not be kept on %s, so a session was not told of "
+                    "it" % time.strftime("%Y-%m-%d", time.gmtime(at)))
+        return "on"
 
     def grants():
         words, code, blocked = capture()

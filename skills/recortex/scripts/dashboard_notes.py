@@ -9,8 +9,9 @@ reads it.
 The file is `dashboard-notes.json` in the repository's folder of the hook state, beside prompt-state.json (storage.py: a private
 folder, mode 0600, no link followed): {"form": 1, "notes": [{"at": seconds, "kind": one of KINDS, "issue": a whole number}]},
 the newest 200, none older than seven days, at most 32,768 bytes. It holds no text of the record. The writer takes a lock of its
-own; a note that cannot be written never fails a dashboard action (add returns False). The reader is strict: a file that does not
-fit as a whole gives no note at all, and nothing is created by reading.
+own; a note that cannot be written never fails a dashboard action (add returns False, and keeps the day of the failure in a file of
+its own, `dashboard-notes-failed.json`, for hooks.py --doctor: a session that was never told is not silent about it there). The
+reader is strict: a file that does not fit as a whole gives no note at all, and nothing is created by reading.
 
 Standard library only."""
 
@@ -23,6 +24,8 @@ import field_sheet
 import storage
 
 FILE = "dashboard-notes.json"
+FAILED_FILE = "dashboard-notes-failed.json"
+FAILED_CAP = 200
 LOCK = "dashboard-notes.lock"
 FORM = 1
 KINDS = ("step", "map", "verdict", "edit")
@@ -71,9 +74,46 @@ def _read(repo):
     return data["notes"]
 
 
+def note_failed(repo, now=None):
+    """Keep the second at which a note could not be written: {"at": seconds}, beside the notes. True when kept. Never raises."""
+    try:
+        storage.write_file(os.path.join(_folder(repo, create=True), FAILED_FILE),
+                           json.dumps({"at": int(time.time() if now is None else now)}) + "\n")
+        return True
+    except Exception:  # noqa: BLE001 - the mark is for the doctor; when it cannot be kept either, the action still goes on
+        return False
+
+
+def clear_failed(repo):
+    """Remove the mark of a failure (a note was kept since). Never raises, and costs one look at the folder when there is none."""
+    try:
+        folder = _folder(repo)
+        if folder is not None and os.path.lexists(os.path.join(folder, FAILED_FILE)):
+            storage.remove_file(folder, FAILED_FILE)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def failed(repo):
+    """The second of the mark, or None when there is none or it is not exactly what note_failed writes. Read only."""
+    try:
+        folder = _folder(repo)
+        path = os.path.join(folder, FAILED_FILE) if folder else None
+        info = storage.check_path(path, "file") if path else False
+        if not info or info.st_size > FAILED_CAP:
+            return None
+        value = json.loads(storage.read_file(path) or "")
+        if isinstance(value, dict) and set(value) == {"at"} and type(value["at"]) is int and 0 < value["at"] < TIME_MAX:
+            return value["at"]
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def add(repo, kind, issue, now=None):
     """Keep one note: this happened on `issue`. True when written; False when it was not (a kind off the list, an issue that is
-    no whole number from 1 to 10 ** 18, a file that cannot be read or written). Never raises: a dashboard action goes on."""
+    no whole number from 1 to 10 ** 18, a file that cannot be read or written; the last is kept for the doctor, see
+    note_failed). Never raises: a dashboard action goes on."""
     try:
         if kind not in KINDS or type(issue) is not int or not 1 <= issue <= ISSUE_MAX:
             return False
@@ -89,8 +129,10 @@ def add(repo, kind, issue, now=None):
             fresh.append({"at": now, "kind": kind, "issue": issue})
             text = json.dumps({"form": FORM, "notes": fresh[-KEEP:]}) + "\n"
             storage.write_file(os.path.join(_folder(repo, create=True), FILE), text)
+        clear_failed(repo)
         return True
     except Exception:  # noqa: BLE001 - a note must never fail the action it follows
+        note_failed(repo)
         return False
 
 

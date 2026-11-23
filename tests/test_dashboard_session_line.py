@@ -90,6 +90,38 @@ class NoteFileTests(Box):
         self.assertFalse(notes.add(self.repo, "step", 7, now=5))
         self.assertEqual("{", Path(self.path()).read_text())
 
+    def machine_row(self):
+        config = recortex.load_config()
+        found = [line for line in hooks.machine_summary(self.repo, config, [])
+                 if line.strip().startswith("line about the dashboard on prompts:")]
+        return found[0].split(":", 1)[1].strip()
+
+    def test_a_note_that_could_not_be_kept_is_marked_for_the_doctor_and_a_later_note_clears_it(self):
+        self.assertEqual("on", self.machine_row())
+        real = storage.write_file
+
+        def full(path, text, *args, **kwargs):   # the notes file cannot be written; the small mark beside it can
+            if os.path.basename(path) == notes.FILE:
+                raise OSError("disk full")
+            return real(path, text, *args, **kwargs)
+        with mock.patch.object(storage, "write_file", side_effect=full):
+            self.assertFalse(notes.add(self.repo, "step", 7, now=5))
+        self.assertIsNotNone(notes.failed(self.repo))
+        self.assertRegex(self.machine_row(), r"^on, but a note of what you recorded in the dashboard could not be kept on "
+                                             r"[0-9]{4}-[0-9]{2}-[0-9]{2}, so a session was not told of it$")
+        self.assertTrue(notes.add(self.repo, "step", 7, now=6))
+        self.assertIsNone(notes.failed(self.repo))
+        self.assertEqual("on", self.machine_row())
+
+    def test_a_bad_argument_is_not_a_failure_of_this_machine_and_the_mark_is_read_strictly(self):
+        self.assertFalse(notes.add(self.repo, "other", 7, now=5))
+        self.assertIsNone(notes.failed(self.repo))
+        folder = storage.folder(storage.state_top(), storage.repo_folder(self.repo.lower()))
+        for text in ('{"at": "x"}', '{"at": 5, "more": 1}', "[1]", "{", '{"at": true}'):
+            Path(os.path.join(folder, notes.FAILED_FILE)).write_text(text)
+            self.assertIsNone(notes.failed(self.repo), text)
+        self.assertEqual("on", self.machine_row())
+
     def test_since_reads_strictly_and_a_file_that_does_not_fit_gives_nothing(self):
         self.put({"form": 1, "notes": [note(5), note(10, "map", 4), note(20, "verdict", 4)]})
         self.assertEqual([10, 20], [n["at"] for n in notes.since(self.repo, 5)])

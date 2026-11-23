@@ -8,7 +8,8 @@ It makes no model call and posts nothing; it reads the prompt and the local copy
 
 The setting is the user's own, in task-reminders.json in the private folder of the configuration top (storage.py), written
 through a lock exactly as writing.py writes its file. The project file holds nothing of it. A file that cannot be read is never
-replaced, and the hook then says nothing. No grant is needed to switch it on: it raises no level and takes no action (the
+replaced, and the hook then says so once a session in one fixed line (UNREADABLE_LINE). A check that fails for a reason other than
+the time limit (FAILED_LINE) leaves a note of the day for hooks.py --doctor, and is told the same way. No grant is needed to switch it on: it raises no level and takes no action (the
 setup session records the user's answer with `setup.py task-reminder set --mode on --yes`).
 
 Python 3 standard library only. The line carries addresses of the trusted repository, whole numbers and ids of fixed forms
@@ -38,6 +39,12 @@ DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 NOT_READABLE = {"storage": "the folder or the file is not safe to read", "form": "the file is not in the form the plugin "
                 "writes", "large": "the file is larger than the plugin writes"}
 ENTRY_KEYS = {"mode", "day"}
+FAILED_FILE = "task-reminder-failed.json"
+FAILED_CAP = 200
+# One fixed line each, told once a session by the hook, which points to the doctor; the reason is in hooks.py --doctor only.
+UNREADABLE_LINE = ("recortex: the task reminder setting of this machine cannot be read, so no reminder is added. "
+                   "Run hooks.py --doctor.")
+FAILED_LINE = "recortex: the task reminder could not be worked out for a prompt, so none is added. Run hooks.py --doctor."
 
 
 def path():
@@ -118,6 +125,48 @@ def record(repo, mode, day=None):
     return day
 
 
+def _failed_path(repo, create=False):
+    folder = storage.folder(storage.state_top(), storage.repo_folder(repo.lower()), create=create, tighten=create)
+    return folder, None if folder is None else os.path.join(folder, FAILED_FILE)
+
+
+def note_failed(repo, now=None):
+    """Keep the second at which the check last failed for a reason that is no time limit (a schema change, a bug):
+    {"at": seconds}, in the repository's folder of the hook state. True when kept. Never raises."""
+    try:
+        import time
+        _, target = _failed_path(repo, create=True)
+        storage.write_file(target, json.dumps({"at": int(time.time() if now is None else now)}) + "\n")
+        return True
+    except (OSError, ValueError, TypeError, storage.StorageError):
+        return False
+
+
+def clear_failed(repo):
+    """Remove the note (a check that worked). Never raises, and costs one look at the folder when there is none."""
+    try:
+        folder, target = _failed_path(repo)
+        if folder is not None and os.path.lexists(target):
+            storage.remove_file(folder, FAILED_FILE)
+    except (OSError, ValueError, TypeError, storage.StorageError):
+        pass
+
+
+def failed(repo):
+    """The second of the note, or None when there is none or it is not exactly what note_failed writes. Read only."""
+    try:
+        _, target = _failed_path(repo)
+        info = storage.check_path(target, "file") if target else False
+        if not info or info.st_size > FAILED_CAP:
+            return None
+        value = json.loads(storage.read_file(target) or "")
+        if isinstance(value, dict) and set(value) == {"at"} and type(value["at"]) is int and 0 < value["at"] < 4102444800:
+            return value["at"]
+    except (OSError, ValueError, RecursionError, storage.StorageError):
+        pass
+    return None
+
+
 def sentence(repo, found=None):
     """One fixed sentence for what is chosen here."""
     found = found or read(repo)
@@ -145,32 +194,35 @@ def form(repo):
 
 
 def line(db, repo, allowed, prompt, entry, seconds, now=None):
-    """(text, slow): the line to add to this prompt, or "", and whether the check ran out of time (then the caller says so
-    once). `entry` is the session's entry of the prompt state: the fingerprints already told are kept in it, so that each
-    item is told once a session. Nothing is printed that does not fit FORM and CAP."""
+    """(text, problem): the line to add to this prompt, or "", and what went wrong: "" for nothing, "slow" when the check ran
+    out of time and "failed" when it raised (a note is then kept for the doctor); the caller says so once a session. `entry` is
+    the session's entry of the prompt state: the fingerprints already told are kept in it, so that each item is told once a
+    session. Nothing is printed that does not fit FORM and CAP."""
     import decision_impact
     import guidance
     import observer_advisory
     import observer_context
     if not isinstance(prompt, str) or not prompt.strip():
-        return "", False
+        return "", ""
     fresh = observer_context.freshness(db, now)
     try:
         with decision_impact.time_limit(seconds, db):
             pointer = observer_advisory.change_pointer(db, repo, allowed, {"freshness": fresh}, prompt[:PROMPT_CHARS])
     except decision_impact.TooSlow:
         guidance.note_skip(repo, "prompt-submit", seconds)
-        return "", True
-    except Exception:  # noqa: BLE001 - a reminder that cannot be worked out is no reminder; the brief goes on
-        return "", False
+        return "", "slow"
+    except Exception:  # noqa: BLE001 - the brief goes on without it; the doctor and the session's one line say so
+        note_failed(repo)
+        return "", "failed"
+    clear_failed(repo)   # the check worked
     if not pointer or not isinstance(pointer.get("fingerprint"), str):
-        return "", False
+        return "", ""
     told = [item for item in entry.get("reminded_ids", []) if isinstance(item, str) and FINGERPRINT.fullmatch(item)]
     mark = pointer["fingerprint"][:16]
     if not FINGERPRINT.fullmatch(mark) or mark in told:
-        return "", False
+        return "", ""
     entry["reminded_ids"] = (told + [mark])[-REMEMBERED:]
     text = pointer.get("text")
     if not isinstance(text, str) or len(text) > CAP or not form(repo).fullmatch(text):
-        return "", False
-    return text, False
+        return "", ""
+    return text, ""
