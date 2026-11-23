@@ -66,7 +66,6 @@ STOPPED = {"stopped": "The live dashboard was stopped.",
 SWITCHED_OFF = "The live dashboard is switched off here (RECORTEX_DASHBOARD or the plugin's settings.json)."
 MAYBE_NOT_REACHED = "If the link does not open on your machine, the page can also go on the web."
 VIEW_LINE = "live dashboard, view only: %s"
-CHANGE_LINE = "recortex dashboard: %s"
 ABOVE = "Your private link with changes on is in the line recortex showed above this reply."
 POLICY = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
           "base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
@@ -1143,7 +1142,8 @@ def offer_after_link():
 
 
 def link_command(args):
-    import observer
+    """The view-only link, to a session and to a terminal alike: the link with changes on is the hook's line and the browser that
+    `open` opens, never this command's output."""
     problem = project_problem()
     if problem:
         print("dashboard_action.py: " + problem, file=sys.stderr)
@@ -1156,8 +1156,6 @@ def link_command(args):
         print("The live dashboard is not running here.")
         return 1
     print(VIEW_LINE % dashboard_server.link(state, root, state["view"]))
-    if observer.on_terminal():
-        print(CHANGE_LINE % dashboard_server.link(state, root, state["change"]))
     return 0
 
 

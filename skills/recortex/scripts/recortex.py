@@ -5,6 +5,7 @@ Set RECORTEX_GH to replace the gh command (the tests point it at a local fake).
 The plugin's names, and its environment variables, are read through names.py.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -51,9 +52,33 @@ def open_page(uri):
     if sys.platform.startswith("linux") and not any(os.environ.get(name) for name in ("DISPLAY", "WAYLAND_DISPLAY", "BROWSER")):
         return False
     try:
-        return bool(webbrowser.open(uri))
+        with _streams_to_nowhere():   # what a BROWSER program prints is not the session's output
+            return bool(webbrowser.open(uri))
     except Exception:  # noqa: BLE001 - no browser is no error
         return False
+
+
+@contextlib.contextmanager
+def _streams_to_nowhere():
+    """Standard output and error (the descriptors, which a browser program started by webbrowser inherits) go to /dev/null for the
+    length of the block, and come back after."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved = []
+    try:
+        null = os.open(os.devnull, os.O_WRONLY)
+        for number in (1, 2):
+            saved.append((number, os.dup(number)))
+            os.dup2(null, number)
+        os.close(null)
+    except OSError:
+        pass
+    try:
+        yield
+    finally:
+        for number, copy in saved:
+            os.dup2(copy, number)
+            os.close(copy)
 
 
 def gh(args, stdin=None, timeout=60, errors=None, binary=False):

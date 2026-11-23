@@ -49,7 +49,6 @@ PTY_HELPERS = ("script", "unbuffer", "expect", "socat", "faketty", "pty", "openp
                "ssh", "setsid", "nohup")
 PTY_HELPER = re.compile(r"(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(PTY_HELPERS), re.I)
 USERS_COMMAND = re.compile(r"(?:observer|setup|publish|acts)\.py")
-LIVE_LINK = re.compile(r"dashboard_action\.py\b.*?(?<![A-Za-z0-9_-])link(?![A-Za-z0-9_-])", re.S)
 OBSERVER_UNDER_CLAUDE = re.compile(r"CLAUDECODE")   # a command that names this variable and observer.py or setup.py is working round the check
 # The commands that perform an act the user answers a question for: a Bash call of a subagent that names one of these (or
 # `--hosts any`, or publish.py) is stopped in every project, observer on or off, because what they do is the user's own decision,
@@ -59,14 +58,20 @@ ASKED = ("advisory", "disable", "release", "resume", "trust-ancestor", "undo")
 # re.S: a command may run over several lines (a backslash and a line break, or a quote that is never closed). The option is
 # matched with its prefixes too (--ho, --hos, --host), which argparse would read as --hosts; the parsers of observer.py and
 # setup.py no longer accept an abbreviation (allow_abbrev=False), and this holds for a command written for an older version.
-USERS_COMMAND_WORDS = re.compile(r"observer\.py\b.*?(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(ASKED), re.S)
-HOSTS_ANY = re.compile(r"(?:observer|setup)\.py\b.*--ho(?:s(?:ts?)?)?(?:\s+|=)[\"']?any\b", re.S)
+# Each of these is one search for a name and one search after it (never a pattern that runs on from every name to the end of the
+# command, which is quadratic on a long command): an act word after the first observer.py, or `--hosts any` after the first
+# observer.py or setup.py, is the same as one after any of them.
+OBSERVER_NAME = re.compile(r"observer\.py\b")
+ASKED_WORD = re.compile(r"(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(ASKED))
+ANY_NAME = re.compile(r"(?:observer|setup)\.py\b")
+HOSTS_OPTION = re.compile(r"--ho(?:s(?:ts?)?)?(?:\s+|=)[\"']?any\b")
 PUBLISH = re.compile(r"(?<![A-Za-z0-9_-])publish\.py\b")
 ACTS_SCRIPT = re.compile(r"(?<![A-Za-z0-9_-])acts\.py\b")   # asking a question is the main session's own call
 # A hook of the plugin is run by Claude Code, never by a session: a session that runs hooks.py or run_hook.sh with an event, and a
 # JSON of its own on stdin, would make the user's typed answer (hooks.py, prompt-submit) up. --doctor and --print read only.
 HOOK_RUN = re.compile(r"(?<![A-Za-z0-9_-])(?:hooks\.py|run_hook\.sh|session_start_hook\.sh)")
-HOOK_READS = re.compile(r"(?<![A-Za-z0-9_-])hooks\.py\s+--(?:doctor|print)\s*$")   # the two forms that only read
+HOOK_NAMES = ("hooks.py", "run_hook.sh", "session_start_hook.sh")
+HOOK_READS = ("--doctor", "--print")   # the two forms of hooks.py that only read
 HOOK_DENIAL = ("recortex: the plugin's hooks are run by Claude Code, never by a session. What a hook reads is the user's own "
                "prompt, and a session cannot make one.")
 # A session never starts another Claude Code session to answer in the user's place: the hooks of that session are genuine ones.
@@ -74,10 +79,9 @@ CLAUDE_FLAGS = ("-p", "--print", "--resume", "--continue", "-r", "-c")
 CLAUDE_DENIAL = ("recortex: a session never starts another Claude Code session (claude -p, --print, --resume or --continue) to "
                  "answer for the user.")
 QUOTES = re.compile(r"[\\'\"]")   # taken out of the command before it is read: a quote or a backslash inside a name changes nothing
-PUBLISH_READS = re.compile(r"(?<![A-Za-z0-9_-])--(?:dry-run|list)(?![A-Za-z0-9_-])")   # these two read and send nothing
 SUBAGENT_DENIAL = ("recortex: this act is asked and run by the main session only, on the user's answer. Tell the main "
                    "session what is needed.")
-TERMINAL_DENIAL = ("recortex: observer.py, setup.py, publish.py, acts.py and dashboard_action.py link are not run through a program that makes a "
+TERMINAL_DENIAL = ("recortex: observer.py, setup.py, publish.py and acts.py are not run through a program that makes a "
                    "terminal or hides where they run (script, unbuffer, expect, socat, faketty, pty, tmux, screen, ssh, setsid, "
                    "nohup): what they do is the user's own answer. Ask the user the question the command names.")
 # A built dashboard page (mind.py's output) is never committed, copied to a branch or sent by hand: that skips the privacy check
@@ -89,6 +93,28 @@ PAGE_DENIAL = ("recortex: a built dashboard page is never committed, copied to a
                "file, tell them its path.")
 
 
+# What a long command must not hide: when the command is longer than CAP, or the check runs out of time, a command that names one of
+# these is denied with a fixed line, so that padding cannot make a denial fall away. Everything else is left alone.
+CAP = 32768
+PROTECTED = re.compile(r"hooks\.py|run_hook\.sh|session_start_hook\.sh|prompt-submit|dashboard-server-|launch-|claude|mind\.html|"
+                       r"observer\.py|setup\.py|publish\.py|acts\.py|dashboard_action|tmux|screen|xdotool|ydotool|wtype")
+TOO_LONG = ("recortex: this command is too long to check, and it names something that only the user or Claude Code may run. "
+            "Run it in shorter parts.")
+ALARM_SECONDS = 3
+# Keystrokes into the user's own terminal press Enter on the first option of a question, which is always the yes: a Bash call that
+# sends keys (tmux send-keys, screen -X, xdotool, ydotool, wtype) is denied.
+KEYS_TOOLS = re.compile(r"(?<![A-Za-z0-9_-])(?:xdotool|ydotool|wtype)(?![A-Za-z0-9_-])")
+TMUX_NAME = re.compile(r"(?<![A-Za-z0-9_-])tmux(?![A-Za-z0-9_-])")
+TMUX_KEYS = re.compile(r"(?<![A-Za-z0-9_-])(?:send-keys|send|paste-buffer|pasteb|send-prefix)(?![A-Za-z0-9_-])")
+SCREEN_NAME = re.compile(r"(?<![A-Za-z0-9_-])screen(?![A-Za-z0-9_-])")
+SCREEN_KEYS = re.compile(r"\s-X(?![A-Za-z0-9_-])")
+KEYS_DENIAL = ("recortex: a command that sends keystrokes to a terminal (tmux send-keys, screen -X, xdotool, ydotool, wtype) is "
+               "never run by a session: it could answer the user's question for them.")
+# `dashboard_action.py` run with a BROWSER of the command's own makes the browser program read the launch file, which holds the link
+# with changes on: the user's browser is the one the user set.
+BROWSER_NAME = re.compile(r"(?<![A-Za-z0-9_])BROWSER(?![A-Za-z0-9_])")
+BROWSER_DENIAL = ("recortex: dashboard_action.py is not run with a BROWSER of the command's own: the user's browser opens the "
+                  "dashboard.")
 LIVE_NAMES = re.compile(r"dashboard-server-|launch-[0-9a-f]{8}\.html")
 LIVE_PORT = re.compile(r"(?:127\.0\.0\.1|localhost):")
 LIVE_TOOLS = re.compile(r"(?<![A-Za-z0-9_-])(?:curl|wget|nc|ncat|netcat)(?![A-Za-z0-9_-])")
@@ -106,21 +132,59 @@ def live_decision(data):
     for text in texts:
         if LIVE_NAMES.search(text) or (LIVE_PORT.search(text) and LIVE_TOOLS.search(text)):
             return deny(LIVE_DENIAL)
+        if "dashboard_action" in text and BROWSER_NAME.search(text):
+            return deny(BROWSER_DENIAL)
+    return None
+
+
+def keys_decision(data):
+    """The denial for a Bash call, of the main session or of a subagent, that sends keystrokes to a terminal or a screen: tmux with
+    send-keys, send or paste-buffer after its name, screen with -X after its name, xdotool, ydotool or wtype; else None. `tmux ls`
+    and a plain `screen` pass. A guard against the obvious forms."""
+    command, texts = _spoken(data)
+    if command is None:
+        return None
+    for text in texts:
+        tmux, screen = TMUX_NAME.search(text), SCREEN_NAME.search(text)
+        if (KEYS_TOOLS.search(text) or (tmux and TMUX_KEYS.search(text, tmux.end()))
+                or (screen and SCREEN_KEYS.search(text, screen.start()))):
+            return deny(KEYS_DENIAL)
     return None
 
 
 def terminal_decision(data):
-    """The denial for a Bash call that runs observer.py, setup.py, publish.py, acts.py or `dashboard_action.py link` through a
-    pseudo-terminal helper, a program that hides where it runs, or a command that names CLAUDECODE; else None. `link` prints the
-    link with changes on when it sees the user's own terminal, so it is held to the same rule as the acts."""
+    """The denial for a Bash call that runs observer.py, setup.py, publish.py or acts.py through a pseudo-terminal helper, a
+    program that hides where it runs, or a command that names CLAUDECODE; else None."""
     tool_input = data.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if data.get("tool_name") in ("Bash", "bash") and isinstance(command, str):
         for text in (command, QUOTES.sub("", command)):   # a quote or a backslash inside a name changes nothing
-            if USERS_COMMAND.search(text) or LIVE_LINK.search(text):
+            if USERS_COMMAND.search(text):
                 if PTY_HELPER.search(text) or OBSERVER_UNDER_CLAUDE.search(text):
                     return deny(TERMINAL_DENIAL)
     return None
+
+
+def segments(command):
+    """The commands of a shell line, each a list of words (quotes taken out), split at ; & | and the like; [] when it does not
+    split. Linear in the length of the command."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        return []
+    found, current = [], []
+    for word in words:
+        if word and set(word) <= set(";&|(){}<>"):
+            if current:
+                found.append(current)
+            current = []
+        else:
+            current.append(word)
+    if current:
+        found.append(current)
+    return found
 
 
 def _spoken(data):
@@ -149,10 +213,30 @@ def subagent_decision(data):
     if command is None:
         return None
     for text in texts:
-        if (USERS_COMMAND_WORDS.search(text) or HOSTS_ANY.search(text) or ACTS_SCRIPT.search(text)
-                or (PUBLISH.search(text) and not PUBLISH_READS.search(text))):
+        if asks_an_act(text) or hosts_any(text) or ACTS_SCRIPT.search(text):
             return deny(SUBAGENT_DENIAL)
+    if any(PUBLISH.search(text) for text in texts) and not publish_only_reads(command):
+        return deny(SUBAGENT_DENIAL)
     return None
+
+
+def asks_an_act(text):
+    first = OBSERVER_NAME.search(text)
+    return bool(first and ASKED_WORD.search(text, first.end()))
+
+
+def hosts_any(text):
+    first = ANY_NAME.search(text)
+    return bool(first and HOSTS_OPTION.search(text, first.end()))
+
+
+def publish_only_reads(command):
+    """True when every command of the line that names publish.py carries --dry-run or --list itself (the two forms that read and
+    send nothing), and publish.py is named as a word of a command: one hidden in a quotation, or named by a command that does not
+    carry the flag, is not."""
+    named = [words for words in segments(command) if any(PUBLISH.search(word) for word in words)]
+    return bool(named) and all(any(word in ("--dry-run", "--list") for word in words) for words in named) \
+        and all(os.path.basename(word) == "publish.py" or not PUBLISH.search(word) for words in named for word in words)
 
 
 def hook_decision(data):
@@ -162,10 +246,30 @@ def hook_decision(data):
     command, texts = _spoken(data)
     if command is None:
         return None
-    for text in texts:
-        if HOOK_RUN.search(text) and not HOOK_READS.search(text.strip()):
-            return deny(HOOK_DENIAL)
+    if any(HOOK_RUN.search(text) for text in texts) and not hook_only_reads(command):
+        return deny(HOOK_DENIAL)
     return None
+
+
+def hook_only_reads(command):
+    """True when every command of the line that names a hook is exactly `[python] <path>/hooks.py --doctor` or `--print`: a hook
+    named in a quotation, run with an event, or followed by anything else on the line (a later command is its own, and is looked at
+    on its own) is not."""
+    named = [words for words in segments(command) if any(HOOK_RUN.search(word) for word in words)]
+    if not named:
+        return False
+    for words in named:
+        spots = [number for number, word in enumerate(words) if os.path.basename(word) in HOOK_NAMES]
+        if len(spots) != 1:
+            return False
+        number = spots[0]
+        if any(HOOK_RUN.search(word) for other, word in enumerate(words) if other != number):
+            return False   # a second hook named in a longer word
+        if os.path.basename(words[number]) != "hooks.py" or words[number + 1:] not in (["--doctor"], ["--print"]):
+            return False
+        if number > 1 or (number == 1 and not os.path.basename(words[0]).startswith("python")):
+            return False
+    return True
 
 
 def claude_decision(data):
@@ -180,9 +284,12 @@ def claude_decision(data):
             words = shlex.split(text)
         except ValueError:
             words = text.split()
+        first = None   # the first claude program on the line: a flag after it is a flag of some claude, one pass over the words
         for number, word in enumerate(words):
-            if os.path.basename(word) == "claude" and any(flag in CLAUDE_FLAGS or flag.startswith(("--resume=", "--continue="))
-                                                          for flag in words[number + 1:]):
+            if first is None:
+                if os.path.basename(word) == "claude":
+                    first = number
+            elif word in CLAUDE_FLAGS or word.startswith(("--resume=", "--continue=")):
                 return deny(CLAUDE_DENIAL)
     return None
 
@@ -245,7 +352,12 @@ def decide(raw, scripts=HERE):
         return deny(UNREADABLE) if ASK in raw else None
     if data.get("agent_type") == ASK:
         return ask_decision(data, scripts)
-    found = (terminal_decision(data) or page_decision(data) or live_decision(data) or hook_decision(data)
+    tool_input = data.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if data.get("tool_name") in ("Bash", "bash") and isinstance(command, str) and len(command) > CAP \
+            and PROTECTED.search(QUOTES.sub("", command)):
+        return deny(TOO_LONG)
+    found = (terminal_decision(data) or page_decision(data) or live_decision(data) or keys_decision(data) or hook_decision(data)
              or claude_decision(data) or subagent_decision(data))
     if found:
         return found
@@ -270,7 +382,20 @@ def record_grants(data):
 
 def main():
     raw = sys.stdin.read(8388609)
-    out = decide(raw)
+    try:
+        import signal
+
+        def out_of_time(number, frame):
+            raise TimeoutError("the guard ran out of time")
+        signal.signal(signal.SIGALRM, out_of_time)
+        signal.alarm(ALARM_SECONDS)
+    except (ImportError, ValueError, AttributeError, OSError):
+        pass   # no alarm here (a platform without SIGALRM): the wrapper's own limit is all there is
+    try:
+        out = decide(raw)
+    except TimeoutError:
+        # Out of time: a denial only for a command that names something protected, and nothing for any other input.
+        out = deny(TOO_LONG) if PROTECTED.search(QUOTES.sub("", raw)) else None
     if out:
         sys.stdout.write(json.dumps(out))
     return 0

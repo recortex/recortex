@@ -1036,7 +1036,7 @@ class HookGuardTests(ActsBox):
         self.assertEqual("", plain.stdout)
         with open(shell) as handle:
             text = handle.read()
-        for word in ("*recortex*", "*prompt-submit*", "*hooks.py*", "*run_hook.sh*", "${input//["):
+        for word in ("*recortex*", "*prompt-submit*", "*hook*", "*claude*", "${input//["):   # every hook name, and claude in any form
             self.assertIn(word, text)
 
     def test_plausibly_a_hook(self):
