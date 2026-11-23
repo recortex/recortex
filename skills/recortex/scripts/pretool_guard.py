@@ -240,8 +240,8 @@ def publish_only_reads(command):
     """True when every command of the line that names publish.py carries --dry-run or --list itself (the two forms that read and
     send nothing), and publish.py is named as a word of a command: one hidden in a quotation, or named by a command that does not
     carry the flag, is not."""
-    if "\n" in command.strip() or "\r" in command:
-        return False
+    if "\n" in command.strip() or "\r" in command or "$" in command or "`" in command:
+        return False   # a line break, or an expansion that could make or hide the flag: no exemption
     named = [words for words in segments(command) if any(PUBLISH.search(word) for word in words)]
     if not named or not counts_agree(command, named, PUBLISH):
         return False

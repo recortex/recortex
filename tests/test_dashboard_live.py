@@ -1132,6 +1132,13 @@ class GuardTests(unittest.TestCase):
         self.assertIsNone(self.decide("python3 /x/hooks.py --doctor\n"))   # a closing line break is only the end of the line
         self.assertIsNone(self.decide(publish + "\n", agent_id="a1"))
 
+    def test_an_expansion_in_a_publish_command_leaves_no_exemption(self):
+        base = "python3 /x/publish.py --to octo-org/octo-pages --branch gh-pages"
+        for command in (base + " `echo # --dry-run`", base + " ${x:+ --dry-run}", base + " $(echo --list)"):
+            with self.subTest(command=command):
+                found = self.decide(command, agent_id="a1")
+                self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
+
     def test_the_publish_exemption_needs_the_plain_shape_of_the_hook_one(self):
         flag = " --to octo-org/octo-pages --branch gh-pages --dry-run"
         for command in ("python3 '/tmp/a b/publish.py'" + flag, 'python3 "$HOME/publish.py"' + flag, "env python3 /x/publish.py" + flag,
