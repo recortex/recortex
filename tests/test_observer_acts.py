@@ -35,6 +35,9 @@ OTHER = "octo-org/octo-pages"
 SCRIPTS = os.path.join(ROOT, "skills", "recortex", "scripts")
 
 
+REAL_CLAUDE_MARK = grants.claude_mark   # before any test patches it
+
+
 class ActsBox(unittest.TestCase):
     """A native transcript the observer's checks accept, a configured and trusted project, and the helpers: the user's answer
     to a question, the hook before a Bash call, and observer.py in this process with no terminal."""
@@ -58,6 +61,10 @@ class ActsBox(unittest.TestCase):
             "RECORTEX_TRUSTED_REPOS": "%s,%s" % (REPO, OTHER)}, clear=True)
         patch.start()
         self.addCleanup(patch.stop)
+        # the Claude Code process above every hook of these tests (observer_grants.claude_mark): one, as in a real session
+        mark = mock.patch.object(grants, "claude_mark", return_value="100:5000")
+        mark.start()
+        self.addCleanup(mark.stop)
         self.path = os.path.join(observer_sources.project_directory(self.project), "session1.jsonl")
         os.makedirs(os.path.dirname(self.path), mode=0o700)
         for folder in (os.path.join(self.base, "claude"), os.path.join(self.base, "claude", "projects"),
@@ -771,6 +778,36 @@ class TypedTrustTests(ActsBox):
         self.assertIsNotNone(self.entry_of("trust"))
         self.assertFalse(self.said("trust", self.values))   # not usable until the hook has found the words in the transcript
 
+    def test_a_prompt_that_another_claude_code_process_received_records_nothing(self):
+        """A session that starts `claude --resume ID -p` detached gets a prompt hook with the same session id, one claude above it
+        and no tool shell: only the process that asked is the process whose prompt can answer."""
+        code, printed = self.ask_typed("trust")   # asked under claude 100
+        self.assertEqual(0, code, printed)
+        self.assertEqual("100:5000", self.entry_of("asked")["claude"])
+        with mock.patch.object(grants, "claude_mark", return_value="200:7000"):
+            self.assertEqual("", self.type_in(self.label))
+            self.assertEqual("", self.type_in("Do not trust them"))
+        self.assertIsNotNone(self.entry_of("asked"))   # the note stays
+        self.assertIsNone(self.entry_of("trust"))
+        with mock.patch.object(grants, "claude_mark", return_value="100:5001"):   # the same pid, another start: a new process
+            self.assertEqual("", self.type_in(self.label))
+        with mock.patch.object(grants, "claude_mark", return_value=""):   # no claude that can be read
+            self.assertEqual("", self.type_in(self.label))
+        self.assertIsNone(self.entry_of("trust"))
+        self.assertEqual("yes", self.type_in(self.label))   # the process that asked
+        self.assertIsNotNone(self.entry_of("trust"))
+
+    def test_the_mark_is_the_nearest_claude_and_its_start_time(self):
+        rows = {10: ("bash", ["bash"], 20), 20: ("claude", ["/x/claude"], 30), 30: ("claude", ["claude"], 1)}
+        with mock.patch.object(grants, "_process", side_effect=rows.get), mock.patch.object(grants.os, "getppid", return_value=10), \
+                mock.patch.object(grants, "process_start", side_effect=lambda pid: "s%d" % pid):
+            self.assertEqual("20:s20", REAL_CLAUDE_MARK())
+            rows[20] = ("node", ["node", "/x/other"], 30)
+            self.assertEqual("30:s30", REAL_CLAUDE_MARK())
+        with mock.patch.object(grants, "_process", return_value=None), mock.patch.object(grants.os, "getppid", return_value=10):
+            self.assertEqual("", REAL_CLAUDE_MARK())
+        self.assertNotEqual("", grants.process_start(os.getpid()))
+
     def test_the_act_takes_a_typed_grant_only_after_the_hook_found_the_words(self):
         self.assertEqual("yes", self.minted())
         code, result = self.run_observer("trust-ancestor", "--failing", "--yes")
@@ -810,9 +847,12 @@ class TypedTrustTests(ActsBox):
             self.assertIsNone(self.hook(self.command_line))
         self.assertIsNone(self.entry_of("trust"))   # a code outside the unreadable set removes it too
         self.assertEqual("yes", self.minted())
-        with mock.patch.object(observer_sources, "typed_words", side_effect=observer_sources.SourceError("source-owner")):
-            self.assertIsNone(self.hook(self.command_line))
-        self.assertTrue(self.said("trust", self.values))   # unreadable for a code of the set: that is what the typed answer is for
+        for code in ("source-incomplete", "source-owner", "source-changed", "source-unavailable"):
+            self.assertEqual("yes", self.minted())   # the transcript was readable at the question, so any failure now removes it
+            with mock.patch.object(observer_sources, "typed_words", side_effect=observer_sources.SourceError(code)):
+                self.assertIsNone(self.hook(self.command_line))
+            self.assertIsNone(self.entry_of("trust"), code)
+            self.assertFalse(self.said("trust", self.values), code)
 
     def test_with_no_place_to_start_from_a_readable_transcript_refuses(self):
         self.assertEqual("yes", self.minted())
@@ -830,6 +870,12 @@ class TypedTrustTests(ActsBox):
         with mock.patch.object(observer_sources, "approved_path", side_effect=observer_sources.SourceError("source-owner")):
             self.assertIsNone(self.hook(self.command_line))
         self.assertTrue(self.said("trust", self.values))   # offset None and a transcript that does not read: left, confirmed
+        with grants._writer() as state:
+            state["folders"][self.folder]["trust"] = {"value": self.value, "answer": "typed-0123456789abcdec", "until": time_now() + 100,
+                                                     "typed": {"label": self.label, "offset": None}}
+        with mock.patch.object(observer_sources, "approved_path", side_effect=observer_sources.SourceError("source-incomplete")):
+            self.assertIsNone(self.hook(self.command_line))
+        self.assertIsNone(self.entry_of("trust"))   # offset None and a timeout is no ownership problem: removed
 
     def test_take_and_held_refuse_an_entry_that_the_hook_has_not_confirmed(self):
         with grants._writer() as state:

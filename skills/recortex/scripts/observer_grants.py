@@ -536,14 +536,16 @@ def _transcript_size(data, root):
         return None
 
 
-def note_asking(folder, session, offset, now=None):
+def note_asking(folder, session, offset, now=None, claude=None):
     """The hook's note, before a call of `acts.py ask` by the main session, of the session that asks and where its transcript
-    ends: the command itself reads it (asked_put), so that a typed answer counts only from that session. Nothing in it is text."""
+    ends, and the Claude Code process that asked (claude_mark): the command itself reads it (asked_put), so that a typed answer
+    counts only from that session and that process. Nothing in it is text."""
     if not isinstance(session, str) or not SESSION.fullmatch(session) or (offset is not None and type(offset) is not int):
         return False
     now = time.time() if now is None else now
     with _writer() as state:
-        state["folders"].setdefault(folder, {})["asking"] = {"session": session, "offset": offset, "until": now + ASKING_SECONDS}
+        state["folders"].setdefault(folder, {})["asking"] = {"session": session, "offset": offset, "until": now + ASKING_SECONDS,
+                                                           "claude": claude_mark() if claude is None else claude}
     return True
 
 
@@ -575,7 +577,7 @@ def asked_put(folder, kind, choices, nos=(), now=None):
         if isinstance(entries.get(kind), dict) and entries[kind].get("typed"):
             entries.pop(kind)
         entries["asked"] = {"kind": kind, "choices": clean, "nos": list(nos), "session": mark["session"],
-                            "offset": mark.get("offset"), "until": now + SECONDS}
+                            "offset": mark.get("offset"), "until": now + SECONDS, "claude": mark.get("claude", "")}
     return True
 
 
@@ -594,6 +596,27 @@ def forget_typed(folder, kind):
                 entries.pop("asked")
 
 
+def _process(pid):
+    """(name, words, parent pid) of a process, from /proc (Linux) or `ps`; None when it cannot be read."""
+    try:
+        with open("/proc/%d/stat" % pid) as handle:
+            stat = handle.read()
+        name = stat[stat.index("(") + 1:stat.rindex(")")]
+        parent = int(stat[stat.rindex(")") + 2:].split()[1])
+        with open("/proc/%d/cmdline" % pid, "rb") as handle:
+            words = [word.decode("utf-8", "replace") for word in handle.read(4096).split(b"\0") if word]
+    except (OSError, ValueError, IndexError):
+        import subprocess
+        try:
+            done = subprocess.run(["ps", "-o", "ppid=,args=", "-p", str(pid)], capture_output=True, text=True, timeout=2)
+            fields = done.stdout.split(None, 1)
+            parent, words = int(fields[0]), fields[1].split() if len(fields) > 1 else []
+            name = os.path.basename(words[0]) if words else ""
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            return None
+    return os.path.basename(name), words, parent
+
+
 def ancestors(limit=32):
     """[(name, words)] of this process's parents, nearest first, at most `limit`: the process's own name and the words of its
     command line, from /proc (Linux) or `ps`. Whatever cannot be read ends the walk."""
@@ -601,25 +624,48 @@ def ancestors(limit=32):
     for _ in range(limit):
         if pid <= 1:
             break
-        try:
-            with open("/proc/%d/stat" % pid) as handle:
-                stat = handle.read()
-            name = stat[stat.index("(") + 1:stat.rindex(")")]
-            parent = int(stat[stat.rindex(")") + 2:].split()[1])
-            with open("/proc/%d/cmdline" % pid, "rb") as handle:
-                words = [word.decode("utf-8", "replace") for word in handle.read(4096).split(b"\0") if word]
-        except (OSError, ValueError, IndexError):
-            import subprocess
-            try:
-                done = subprocess.run(["ps", "-o", "ppid=,args=", "-p", str(pid)], capture_output=True, text=True, timeout=2)
-                fields = done.stdout.split(None, 1)
-                parent, words = int(fields[0]), fields[1].split() if len(fields) > 1 else []
-                name = os.path.basename(words[0]) if words else ""
-            except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-                break
-        rows.append((os.path.basename(name), words))
-        pid = parent
+        found = _process(pid)
+        if found is None:
+            break
+        rows.append(found[:2])
+        pid = found[2]
     return rows
+
+
+def process_start(pid):
+    """What tells a process from a later one that has its number: field 22 of /proc/PID/stat (Linux), else the start time that
+    `ps` gives. "" when it cannot be read."""
+    try:
+        with open("/proc/%d/stat" % pid) as handle:
+            stat = handle.read()
+        return stat[stat.rindex(")") + 2:].split()[19]
+    except (OSError, ValueError, IndexError):
+        pass
+    import subprocess
+    try:
+        done = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=2)
+        return re.sub(r"[^A-Za-z0-9:]+", "_", done.stdout.strip())[:40]
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def claude_mark(limit=32):
+    """"PID:START" of the nearest ancestor that is the claude program, or "" when there is none or it cannot be read. The note of
+    a question and the prompt that answers it must carry the same one: a second Claude Code session that a session starts (a
+    detached `claude --resume ID -p`) has a process of its own, so its hook's mark is another."""
+    pid = os.getppid()
+    for _ in range(limit):
+        if pid <= 1:
+            return ""
+        found = _process(pid)
+        if found is None:
+            return ""
+        name, words, parent = found
+        if name in CLAUDE_NAMES or (words and os.path.basename(words[0]) in CLAUDE_NAMES):
+            start = process_start(pid)
+            return "%d:%s" % (pid, start) if start else ""
+        pid = parent
+    return ""
 
 
 def plausibly_a_hook(parents=None):
@@ -638,11 +684,12 @@ def plausibly_a_hook(parents=None):
     return claudes == 1
 
 
-def typed(folder, prompt, session, plausible=None, now=None):
+def typed(folder, prompt, session, plausible=None, now=None, claude=None):
     """"yes", "no" or "" for `prompt`, the user's own message as the prompt hook of `session` received it. It is the typed answer
     when it equals, whole, the label of an option of the trust question that was shown as text and noted (asked_put), the note is
-    live and was made by this same session, and `plausible()` (plausibly_a_hook) says this is Claude Code's own hook, a first one
-    and not a nested session's: "yes" removes the note and records the grant for that option's value under an answer id that is
+    live and was made by this same session and the same Claude Code process (claude_mark: a detached second session that was
+    started with the same session id has a process of its own), and `plausible()` (plausibly_a_hook) says this is Claude Code's
+    own hook, a first one and not a nested session's: "yes" removes the note and records the grant for that option's value under an answer id that is
     only this typed reply's (unconfirmed until the hook of the act has found the words in the transcript, confirm_typed); "no"
     removes the note and any live grant of that kind. The prompt is read as words_of reads it; a prompt with one more word records
     nothing, and a prompt that is no label leaves the note. Never raises."""
@@ -663,6 +710,9 @@ def typed(folder, prompt, session, plausible=None, now=None):
                 return ""
             if plausible is not None and not plausible():
                 return ""   # not a hook of Claude Code: the note stays, nothing is recorded or removed
+            here = claude_mark() if claude is None else claude
+            if not here or note.get("claude") != here:
+                return ""   # another Claude Code process (or none that can be read): the note stays, nothing is recorded
             entries.pop("asked", None)
             if said in nos:
                 entries.pop(note["kind"], None)
@@ -678,10 +728,11 @@ def typed(folder, prompt, session, plausible=None, now=None):
 def confirm_typed(data, root, folder):
     """Before every Bash call of the main session that reaches the hook: a grant that came from the user's typed words is marked
     confirmed when the transcript holds those words as a prompt the user typed after the question was asked
-    (observer_sources.typed_words), and when the transcript cannot be read now for a reason of the fixed set
-    (observer_sources.UNREADABLE_CODES), which is the case the typed answer exists for. Any other result, an error of any kind, or
-    a grant with no place in the transcript to start from, removes the grant. take() and held() use only a confirmed one. Each
-    kind is judged alone, and nothing raises."""
+    (observer_sources.typed_words), or, when the transcript could not be read at the question either (no offset), when it still
+    cannot be read for an ownership or permission code (observer_sources.TRUSTABLE), which is the case the typed answer exists
+    for. A transcript that was readable at the question (an offset) and fails now, for any code, a timeout included, removes the
+    grant, and so does any other result or error. take() and held() use only a confirmed one. Each kind is judged alone, and
+    nothing raises."""
     try:
         entries = _read().get(folder)
         pending = [kind for kind, entry in (entries or {}).items()
@@ -702,7 +753,7 @@ def confirm_typed(data, root, folder):
                     # leaves the grant standing
                     observer_sources.approved_path(data.get("transcript_path"), root, data.get("session_id"))
             except observer_sources.SourceError as error:
-                verdict = str(error) in UNREADABLE_CODES
+                verdict = offset is None and str(error) in observer_sources.TRUSTABLE
             if verdict:
                 with _writer() as state:
                     held_entry = (state["folders"].get(folder) or {}).get(kind)
