@@ -53,6 +53,10 @@ POLICY = ("default-src 'none'; style-src %s; script-src %s; img-src data:; conne
           "media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; "
           "base-uri 'none'; form-action 'none'")
 POLICY_FORM = re.compile(re.escape(POLICY).replace("%s", "'sha256-[A-Za-z0-9+/]{43}='"))
+# The live dashboard's page (dashboard_action.py serve) is the one named exception: it may ask its own server one small address
+# (connect-src 'self') and carries a second inline script, live.js, by its hash. The static page's policy never changes.
+LIVE_POLICY = POLICY.replace("connect-src 'none'", "connect-src 'self'").replace("script-src %s", "script-src %s %s")
+LIVE_POLICY_FORM = re.compile(re.escape(LIVE_POLICY).replace("%s", "'sha256-[A-Za-z0-9+/]{43}='"))
 VIEWPORT = "width=device-width, initial-scale=1"
 SCHEME = "https://"  # the one scheme of an address that leaves the page; E() gives such a link its rel
 HANDOFF_LINK = re.compile(re.escape(mind_model.mind_text.GITHUB) + r"""[^\s<>()"'`]+""")
@@ -205,7 +209,8 @@ def E(tag, attrs=None, *children):
             if not isinstance(value, Href):
                 raise ValueError("an href is made by anchor() or github_url()")
         elif name in FREE:
-            if value not in CONSTANTS and not (name == "content" and POLICY_FORM.fullmatch(value)):
+            if value not in CONSTANTS and not (name == "content" and (POLICY_FORM.fullmatch(value)
+                                                                       or LIVE_POLICY_FORM.fullmatch(value))):
                 raise ValueError("%s takes only a constant of mind.py" % name)
         else:
             if isinstance(value, bool) or not isinstance(value, (str, int)):
@@ -486,8 +491,9 @@ class Page:
         self.pictures = pictures if isinstance(pictures, dict) else {}
         self.repo = model["repo"] if recortex.valid_repo(model.get("repo")) else None
         base = model.get("interactive_base", "")
+        self.live = model.get("live") is True   # the live dashboard's page: a view of the record that follows it
         self.action_root = base + "/actions" if model.get("interactive_actions") is True and isinstance(base, str) \
-            and (base == "" or re.fullmatch(r"/[0-9a-f]{32}", base)) else None
+            and (base == "" or re.fullmatch(r"/[0-9a-f]{32}(?:/p/[0-9a-f]{16})?", base)) else None
         self.m = {integer(m.get("id")): m for m in model.get("memories", []) if integer(m.get("id"))}
         self.threads = {integer(t.get("n")): t for t in model.get("threads", [])}
         self.words = {integer(w.get("n")): w for w in model.get("words", []) if integer(w.get("n"))}
@@ -1588,7 +1594,7 @@ class Page:
         return E("p", {"class": "snapshot quiet"}, "Snapshot built ", text_of(built.get("words")) or "on an unknown day",
                  ". Record last read ", synced if index.ISO_UTC.fullmatch(synced) else "at an unknown time",
                  ". ", "Incomplete read. " if built.get("complete") is False else "",
-                 "Local interactive session." if self.action_root else "Static snapshot.")
+                 "Local interactive session." if self.action_root else "Live view." if self.live else "Static snapshot.")
 
     @staticmethod
     def history_stamp(value):
@@ -3576,7 +3582,9 @@ class Page:
 
     def page(self, style, script, icon):
         digest = lambda text: "'sha256-%s'" % base64.b64encode(hashlib.sha256(text.encode("utf-8")).digest()).decode()
-        policy = POLICY % (digest(style), digest(script))
+        live = live_script() if self.live else None
+        policy = LIVE_POLICY % (digest(style), digest(script), digest(live)) if live is not None \
+            else POLICY % (digest(style), digest(script))
         built = self.model.get("built") or {}
         head = E("head", None, E("meta", {"charset": "utf-8"}),
                  E("meta", {"http-equiv": "Content-Security-Policy", "content": policy}),
@@ -3605,6 +3613,8 @@ class Page:
                    self.explain_button("how", "How to read this page", "howbtn"),
                    E("button", {"type": "button", "id": "tourstart"}, "First visit? Take the tour"),
                    E("button", {"type": "button", "id": "theme"}, "Switch light and dark"),
+                   E("a", {"href": Href("../../")}, "Projects") if self.live else "",
+                   E("p", {"id": "live-stopped", "class": "quiet", "hidden": "hidden"}) if self.live else "",
                    E("p", {"class": "quiet"}, "Read from the record on %s. " % text_of(built.get("words")),
                      "Report completed steps from Work." if self.action_root else "This page never changes the record.")))
         output_views = E("nav", {"id": "output-views", "class": "area-links noprint", "aria-label": "Output views"},
@@ -3619,7 +3629,8 @@ class Page:
                   E("h2", {"class": "noscript-h"}, "Every memory"),
                   *[self.detail(memory) for memory in self.model.get("memories", []) if integer(memory.get("id"))])
         body = E("body", None, side, main, panel, self.tour(), self.word_store(), self.explain_store(), self.issue_store(),
-                 self.word_box(), Safe("<script>%s</script>" % script))
+                 self.word_box(), Safe("<script>%s</script>" % script),
+                 Safe("<script>%s</script>" % live) if live is not None else "")
         return "<!doctype html>\n%s\n<html lang=\"en\">%s%s</html>\n" % (NOTICE, head, body)
 
 
@@ -3642,6 +3653,15 @@ def fixed_files():
     if len(icon) != 3 or icon[2] != "" or not all(ICON_LINE.fullmatch(line) for line in icon[:2]):
         raise ValueError("the fixed icon is not two lines of path data")
     return style, script, icon[:2]
+
+
+def live_script():
+    """The fixed script of the live dashboard's page, read from ../page; refused when it could end its element or open a comment."""
+    with open(os.path.join(PAGE, "live.js"), encoding="utf-8") as handle:
+        script = handle.read()
+    if "</" in script or "<!--" in script:
+        raise ValueError("the fixed live script holds </ or <!--")
+    return script
 
 
 def paper_script():

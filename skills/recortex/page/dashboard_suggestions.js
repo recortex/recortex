@@ -3,7 +3,7 @@
   const list = document.getElementById('suggestions');
   const status = document.getElementById('status');
   const fragment = window.location.hash.slice(1);
-  let token = /^[A-Za-z0-9_-]{43}$/.test(fragment) ? fragment : '';
+  let token = /^[0-9a-f]{32}$/.test(fragment) ? fragment : '';
   if (token) window.history.replaceState(null, '', window.location.pathname);
   const errors = {
     unauthorized: 'This session has expired. Open observer suggestions again from your project.',

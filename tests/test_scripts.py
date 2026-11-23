@@ -2257,7 +2257,7 @@ class HookTests(RecordSandbox):
         self.assertLess(len(say), 180)  # about 40 tokens
         self.assertEqual(1, payloads["session-start"].count(say))
         self.assertLess(payloads["session-start"].index(say), payloads["session-start"].index("===== BEGIN PROJECT STATUS"))
-        self.assertLess(payloads["session-start"].index(brief_module.ALIAS), payloads["session-start"].index(say))
+        self.assertFalse(hasattr(brief_module, "ALIAS"))   # the line about an earlier plugin name is gone (1.8.0)
         for name in ("subagent-start", "prompt-submit", "pre-compact"):
             self.assertNotIn("From the record", payloads[name], name)
         self.assertLess(len(payloads["session-start"]), brief_module.CAPS["session-start"])
@@ -2293,10 +2293,11 @@ class HookTests(RecordSandbox):
         import brief as brief_module
         # 0.6.0's, with the one sentence at start, the In short of the example's resume block (402 characters) in the session
         # brief and the sentence that tells the summary to be kept (187) in the compaction payload; and 1.5.0's report line,
-        # since the example's two active tasks have had no memory for more than 14 days
+        # since the example's two active tasks have had no memory for more than 14 days. 1.8.0 took out the 139 characters of
+        # the line about the plugin's earlier name, from the session brief (2773 became 2634) and the subagent brief (1099, 960).
         idle = "2 tasks had no memory in %d days: #3, #7." % brief_module.IDLE_DAYS
-        self.assertEqual({"session-start": str(2773 + len(brief_module.SAY) + 1 + 402 + len(idle) + 1),
-                          "subagent-start": "1099",
+        self.assertEqual({"session-start": str(2634 + len(brief_module.SAY) + 1 + 402 + len(idle) + 1),
+                          "subagent-start": "960",
                           "prompt-submit": "151", "pre-compact": str(635 + 187)}, sizes)
         built = self.tool("mind.py", gh="false")
         self.assertEqual(0, built.returncode, built.stdout + built.stderr)

@@ -34,7 +34,7 @@ TASK_REMINDERS = "task-reminders.json"
 # LINK_PAUSE is the seconds create_issues.py waits after each sub-issue link it writes (default 1, at most 10);
 # the tests set it to 0. SETUP_QUESTIONS set to 0, off, no or false switches the hook's line about the setup questions off.
 VARIABLES = ("GH", "CONFIG", "TRUSTED_FILE", "TRUSTED_REPOS", "HOOK_TIMEOUT", "DISCOVERY", "SYNC_PAGE",
-             "DATA_HOME", "TESTING", "TEST_KEEP", "LINK_PAUSE", "NOTICE", "SETUP_QUESTIONS")
+             "DATA_HOME", "TESTING", "TEST_KEEP", "LINK_PAUSE", "NOTICE", "SETUP_QUESTIONS", "DASHBOARD")
 
 
 def env(name, default=None):

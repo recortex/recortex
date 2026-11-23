@@ -8,7 +8,7 @@
   let rows = [], repo = '', chosen, operation, busy = false, token = '';
   const fragment = location.hash.slice(1);
   const fromOverview = fragment.endsWith('-overview');
-  if (/^[A-Za-z0-9_-]{43}$/.test(fragment)) {
+  if (/^[0-9a-f]{32}$/.test(fragment)) {
     token = fragment;
     history.replaceState(null, '', location.pathname + location.search);
   }

@@ -3,7 +3,7 @@
   'use strict';
   var fragment = window.location.hash.slice(1);
   var selected = /^step-([1-9][0-9]*-[1-9][0-9]*-[1-9][0-9]*)$/.exec(fragment);
-  var token = /^[A-Za-z0-9_-]{43}$/.test(fragment) ? fragment : '';
+  var token = /^[0-9a-f]{32}$/.test(fragment) ? fragment : '';
   window.history.replaceState(null, '', window.location.pathname);
   if (selected) document.getElementById('back').href = 'snapshot#work-step-' + selected[1];
   var busy = false, preview = null;

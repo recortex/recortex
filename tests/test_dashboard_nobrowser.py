@@ -18,7 +18,6 @@ import test_scripts as ts  # noqa: E402
 
 sys.path.insert(0, ts.SCRIPTS)
 import acts  # noqa: E402
-import dashboard_action as action  # noqa: E402
 import publish  # noqa: E402
 import recortex  # noqa: E402
 
@@ -181,61 +180,6 @@ class PageGuardTests(unittest.TestCase):
     def test_the_wrapper_starts_python_for_the_name_of_the_page(self):
         with open(os.path.join(ts.SCRIPTS, "run_pretool_guard.sh")) as handle:
             self.assertIn("*mind.html*", handle.read())
-
-
-class ServiceTests(tj.TaskBox):
-    def setUp(self):
-        super().setUp()
-        self.in_process(extra={"CLAUDE_PROJECT_DIR": self.project})
-
-    def run_main(self, terminal, opens, argv):
-        class Out(io.StringIO):
-            def isatty(self):
-                return terminal
-        out, err, held = Out(), io.StringIO(), {}
-        real = action.Actions
-
-        def make():
-            made = real()
-            held["folder"] = made.folder
-            return made
-
-        def serving(server):
-            held["served"] = True
-            return "stopped"
-
-        with mock.patch.object(sys, "stdout", out), mock.patch.object(sys, "stderr", err), \
-                mock.patch.object(action, "Actions", side_effect=make), mock.patch.object(action, "serve", side_effect=serving), \
-                mock.patch.object(recortex, "open_page", return_value=opens) as opened:
-            code = action.main(argv)
-        return code, out.getvalue(), held, opened
-
-    def test_open_from_a_pipe_with_no_browser_starts_no_service_and_leaves_no_launch_file(self):
-        code, out, held, opened = self.run_main(False, False, ["--open"])
-        self.assertEqual(0, code)
-        self.assertEqual(action.NO_BROWSER + "\n", out)
-        self.assertEqual("The interactive dashboard needs a browser on this machine, and it has none; it was not started.\n"
-                         "Its actions also work in the chat: /recortex:todo, /recortex:impact and /recortex:map.\n", out)
-        self.assertNotIn("served", held)
-        self.assertEqual([], [name for name in os.listdir(held["folder"]) if name.startswith("launch-")])
-        opened.assert_called_once()
-
-    def test_with_a_browser_it_starts_as_before_and_a_pipe_without_open_is_as_before(self):
-        code, out, held, opened = self.run_main(False, True, ["--open"])
-        self.assertEqual(0, code)
-        self.assertIn("Opened the private dashboard in your browser.", out)
-        self.assertTrue(held["served"])
-        code, out, held, opened = self.run_main(False, False, [])   # no --open: the file's path, as it was
-        self.assertIn("To open the private dashboard, open this file in your browser: ", out)
-        self.assertTrue(held["served"])
-        opened.assert_not_called()
-
-    def test_on_a_terminal_with_no_browser_it_still_prints_the_address(self):
-        code, out, held, opened = self.run_main(True, False, ["--open"])
-        self.assertEqual(0, code)
-        self.assertIn("http://127.0.0.1:", out)
-        self.assertNotIn(action.NO_BROWSER, out)
-        self.assertTrue(held["served"])
 
 
 if __name__ == "__main__":

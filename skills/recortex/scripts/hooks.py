@@ -92,6 +92,12 @@ NOTICE_FORM = re.compile(
     % (NOTICE_REPO, NOTICE_READ, NOTICE_READ, re.escape(DASHBOARD_HINT), NOTICE_REPO,
        "|".join(re.escape(words) for words in STATUS_REASONS.values())))
 START_SOURCES = ("startup", "resume", "clear")   # a start after a compaction or a fork repeats inside one sitting
+STARTED = time.monotonic()
+LIVE_FAILED = "recortex: the live dashboard could not be started. Run hooks.py --doctor."
+LIVE_LINE = "recortex dashboard: %s"
+DASHBOARD_COMMAND = re.compile(r"\s*/recortex:dashboard(?:\s.*)?", re.S)   # the user's own command, as typed
+LIVE_NEEDS = 0.5         # seconds of the budget that must be left before the hook looks at the live dashboard
+LIVE_WAIT = 1.0          # the one bounded wait: for a server that was just started to write its state
 HOOK_NAMES = {"session-start": "SessionStart", "subagent-start": "SubagentStart",
               "prompt-submit": "UserPromptSubmit", "pre-compact": "PreCompact"}
 
@@ -284,6 +290,57 @@ def typed_answer(data):
 
 class Unavailable(Exception):
     """The project is set up and trusted, but there is no brief to show."""
+
+
+def live_dashboard(budget):
+    """For a session start, or the user's dashboard command, in a configured and trusted project: make sure this machine's live
+    dashboard server runs and knows this project (dashboard_server.ensure: one local connect within 0.3 seconds and, when none
+    answers, one detached start that is never waited for), and return (the line with the user's private link, the one fixed
+    failure line). The link goes only into the hook's systemMessage, never into the context the model reads. Skipped when less
+    than half a second of the budget is left, when the user switched it off and where no browser can reach the port. Never
+    raises."""
+    try:
+        left = budget - (time.monotonic() - STARTED)
+        if left < LIVE_NEEDS:
+            return "", ""
+        import dashboard_server
+        root = os.path.realpath(recortex.project_root())
+        answer = dashboard_server.ensure(root)
+        if answer == "unreachable":
+            return "", ""
+        if answer == "failed":
+            return "", LIVE_FAILED
+        if answer == "started":
+            state = dashboard_server.after_start(root, LIVE_WAIT if left >= LIVE_NEEDS + LIVE_WAIT + 1.0 else 0.0)
+            if state is None:
+                return "", LIVE_FAILED if dashboard_server.read_failure() else ""
+        else:
+            state = dashboard_server.read_state()
+        if state is None:
+            return "", ""
+        return LIVE_LINE % dashboard_server.link(state, root, state["change"]), ""
+    except Exception:  # noqa: BLE001 - a hook never fails a session over the dashboard
+        return "", ""
+
+
+def prompt_live(data, budget):
+    """The prompt hook's part: for the user's own dashboard command, the line with the private link (as at session start); for
+    any other prompt, a ping that keeps the server's day running and tells it this project, at most once in 30 minutes. Only the
+    main session's own prompts count. Returns the line for systemMessage, or "". Never raises."""
+    try:
+        if not isinstance(data, dict) or data.get("agent_id") or data.get("agent_type"):
+            return ""
+        prompt = data.get("prompt")
+        if isinstance(prompt, str) and DASHBOARD_COMMAND.fullmatch(prompt):
+            return live_dashboard(budget)[0]
+        import dashboard_server
+        if dashboard_server.enabled() and dashboard_server.reach() != "none" \
+                and dashboard_server.ping_due(os.path.realpath(recortex.project_root())) \
+                and budget - (time.monotonic() - STARTED) >= LIVE_NEEDS:
+            dashboard_server.ensure(os.path.realpath(recortex.project_root()))
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
 
 
 def run(event, data, budget):
@@ -1138,10 +1195,23 @@ def machine_summary(repo, config, problems):
             return "holds here (%s)" % runtime.BINDING_NOTES[runtime.stored_binding(entry)]
         return "does not hold: %s" % runtime.approval_note(reason, entry)
 
+    def live_state():
+        import dashboard_server
+        if not dashboard_server.enabled():
+            return "switched off (settings.json or RECORTEX_DASHBOARD)"
+        if dashboard_server.reach() == "none":
+            return "not started here: this machine's browser cannot reach it"
+        state = dashboard_server.read_state()
+        if state is not None and dashboard_server.alive(state):
+            return "running on this machine"
+        reason = dashboard_server.read_failure()
+        return "could not be started: %s" % reason if reason else "not running (starts with the next session)"
+
     lines = ["on this machine:",
              "  record brief (session start, prompts, subagents): %s" % (
                  "works" if not problems else "does not work: %d problem(s) below" % len(problems)),
              _row("task reminder", reminder), _row("line about the dashboard on prompts", dashboard),
+             _row("live dashboard", live_state),
              _row("observer notes (capture)", lambda: capture()[0]),
              _row("answers given in a session (grants)", grants),
              _row("usage of the plugin's subagents", measured), _row("observer approval", approval),
@@ -1341,9 +1411,22 @@ def main(argv=None):
             line += "\n" + guidance.SKIPPED   # fixed words, a line of its own beside the status line
     except Exception:  # noqa: BLE001 - hooks are silent on any failure
         return 0
-    if line and data.get("source") in START_SOURCES and not notice_off():
-        # one JSON object: the line for the user, and exactly the text a plain start prints for the model
-        print(json.dumps({"systemMessage": line, "hookSpecificOutput": {"hookEventName": "SessionStart",
+    starting = args.event == "session-start" and data.get("source") in START_SOURCES
+    live = ""
+    if LAST.get("state") in ("on", "building"):
+        if starting:
+            live, failed = live_dashboard(budget)
+            text = text + "\n" + failed if text and failed else text or failed
+        elif args.event == "prompt-submit":
+            live = prompt_live(data, budget)
+    shown = "\n".join(part for part in ((line if line and not notice_off() else ""), live) if part)
+    if shown and starting:
+        # one JSON object: the lines for the user, and exactly the text a plain start prints for the model
+        print(json.dumps({"systemMessage": shown, "hookSpecificOutput": {"hookEventName": "SessionStart",
+                                                                          "additionalContext": text}}))
+    elif live and args.event == "prompt-submit":
+        # the user's private link goes in the one field the model does not read
+        print(json.dumps({"systemMessage": live, "hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                                                          "additionalContext": text}}))
     elif text:
         print(text)

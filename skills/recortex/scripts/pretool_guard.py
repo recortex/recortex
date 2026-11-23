@@ -88,6 +88,26 @@ PAGE_DENIAL = ("recortex: a built dashboard page is never committed, copied to a
                "file, tell them its path.")
 
 
+LIVE_NAMES = re.compile(r"dashboard-server-|launch-[0-9a-f]{8}\.html")
+LIVE_PORT = re.compile(r"(?:127\.0\.0\.1|localhost):")
+LIVE_TOOLS = re.compile(r"(?<![A-Za-z0-9_-])(?:curl|wget|nc|ncat|netcat)(?![A-Za-z0-9_-])")
+LIVE_DENIAL = "recortex: the live dashboard's key and its service are the user's. Use dashboard_action.py link or open."
+
+
+def live_decision(data):
+    """The denial for a Bash call, of the main session or of a subagent, that names the live dashboard's state file
+    (dashboard-server-...) or a launch file (launch-<8 hex>.html), or that talks to a loopback port with curl, wget or nc; else
+    None. dashboard_action.py link, open and status pass. A guard against a mistake: the keys are the user's, and the user's own
+    confirmation in the page is what makes a change."""
+    command, texts = _spoken(data)
+    if command is None:
+        return None
+    for text in texts:
+        if LIVE_NAMES.search(text) or (LIVE_PORT.search(text) and LIVE_TOOLS.search(text)):
+            return deny(LIVE_DENIAL)
+    return None
+
+
 def terminal_decision(data):
     """The denial for a Bash call that runs observer.py or setup.py through a pseudo-terminal helper, or None."""
     tool_input = data.get("tool_input")
@@ -220,8 +240,8 @@ def decide(raw, scripts=HERE):
         return deny(UNREADABLE) if ASK in raw else None
     if data.get("agent_type") == ASK:
         return ask_decision(data, scripts)
-    found = (terminal_decision(data) or page_decision(data) or hook_decision(data) or claude_decision(data)
-             or subagent_decision(data))
+    found = (terminal_decision(data) or page_decision(data) or live_decision(data) or hook_decision(data)
+             or claude_decision(data) or subagent_decision(data))
     if found:
         return found
     record_grants(data)
