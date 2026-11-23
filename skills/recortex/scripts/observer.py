@@ -720,7 +720,7 @@ def trust_ancestor(args):
     else:
         path = args.path
         if not (os.path.isabs(path) and os.path.normpath(path) == path and os.path.isdir(path) and not os.path.islink(path)
-                and observer_sources.project_directory(root).startswith(path + os.sep)):
+                and observer_sources._above(path, observer_sources.project_directory(root))):
             emit({"code": "not-an-ancestor"}); return 1
         rows = [row for row in failing if row["path"] == path and row["trustable"]]
     chosen_rows = [row for row in rows if row["trustable"]]

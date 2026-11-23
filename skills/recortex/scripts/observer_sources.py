@@ -171,6 +171,11 @@ def _canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def _above(path, folder):
+    """True when `path` is a folder strictly above `folder`, the root folder included (for "/" the prefix is "/", never "//")."""
+    return path != folder and folder.startswith(path if path.endswith(os.sep) else path + os.sep)
+
+
 def _trusted_path_ok(path):
     return (isinstance(path, str) and 0 < len(path) <= 4096 and os.path.isabs(path) and os.path.normpath(path) == path
             and not CONTROL.search(path))
@@ -242,7 +247,7 @@ class Trust:
     def accepts(self, path, info, folder, source_file=None):
         """True when `path` is a folder above the project folder that the user trusted exactly as it is now: a directory
         and no link, an entry for the exact path, its owner, group and mode as recorded, and the HMAC of the entry."""
-        if path == source_file or path == folder or path.startswith(folder + os.sep) or not folder.startswith(path + os.sep):
+        if path == source_file or path == folder or path.startswith(folder + os.sep) or not _above(path, folder):
             return False
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             return False
@@ -274,7 +279,7 @@ def _problem(path, info, folder, source_file=None, trust=None):
 def _trustable(path, info, folder, code):
     """A directory (no link) strictly above the project folder that fails only for its owner or its permissions."""
     return (code in TRUSTABLE and stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode)
-            and folder.startswith(path + os.sep))
+            and _above(path, folder))
 
 
 def _world(info):
@@ -321,7 +326,7 @@ def trust_add(rows, project_root):
     storage.user_key(create=True)   # the HMAC of an entry needs the user key
     stored = {}
     for path in paths:
-        if not _trusted_path_ok(path) or not folder.startswith(path + os.sep):
+        if not _trusted_path_ok(path) or not _above(path, folder):
             raise TrustError("not-an-ancestor")
         info = os.lstat(path)
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):

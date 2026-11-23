@@ -33,6 +33,7 @@ from tests.observer_source_fixture import fixture_trusted_ancestors  # noqa: E40
 import test_jobs_usage as tu  # noqa: E402
 
 FOREIGN = 4000011
+REAL_COMPONENT_PROBLEM = sources._component_problem   # before any test replaces it with a model of the system folders
 
 
 def seen_as(path, uid=None, gid=None, mode=None, kind=None):
@@ -480,6 +481,70 @@ class CommandTests(CommandBox):
         self.assertEqual("terminal", observer_hooks.COMMANDS["trust-ancestor"])
         self.assertIn("trust-ancestor", observer_hooks.TERMINAL_ONLY)
         self.assertTrue(observer_hooks._undo({"tool_name": "Bash", "tool_input": {"command": "python3 x/observer.py trust-ancestor"}}))
+
+
+class RootFolderTests(CommandBox):
+    """The root folder is an ancestor like the others (the 1.7.0 review, S4). In a container with a user namespace the files of
+    the host's root show as the overflow user, so `/` fails with source-owner there, and it must be possible to trust it."""
+
+    OVERFLOW = 65534
+
+    def root_owned_by(self, uid):
+        """The walk sees `/` owned by `uid`: the fixture's model of the system folders (root's) is not applied to it."""
+        stack = contextlib.ExitStack()
+        current = sources._component_problem
+
+        def modeled(path, metadata, folder, source_file=None):
+            if path == "/":
+                return REAL_COMPONENT_PROBLEM(path, metadata, folder, source_file)
+            return current(path, metadata, folder, source_file)
+        stack.enter_context(mock.patch.object(sources, "_component_problem", side_effect=modeled))
+        stack.enter_context(seen_as("/", uid=uid, mode=0o755))
+        return stack
+
+    def test_the_root_folder_is_listed_as_one_that_can_be_trusted(self):
+        with self.root_owned_by(self.OVERFLOW):
+            self.assertEqual("source-owner", self.preflight()["code"])
+            rows = {row["path"]: row for row in sources.failing(str(self.project))}
+            self.assertEqual(("source-owner", True), (rows["/"]["code"], rows["/"]["trustable"]))
+
+    def test_the_root_folder_is_trusted_exactly_as_it_is_and_then_capture_is_ready(self):
+        with self.root_owned_by(self.OVERFLOW):
+            self.assertEqual({"/"}, set(self.trust("/")))
+            result = self.preflight()
+            self.assertTrue(result["ready"], result)
+            self.assertEqual((1, "ok"), (result["trusted"], result["code"]))
+            self.assertEqual(str(self.path), self.approved())
+
+    def test_a_changed_owner_of_the_root_folder_refuses_it_again(self):
+        with self.root_owned_by(self.OVERFLOW):
+            self.trust("/")
+        with self.root_owned_by(self.OVERFLOW + 1):
+            result = self.preflight()
+            self.assertFalse(result["ready"])
+            self.assertEqual("changed", result["trust"])
+            with self.assertRaisesRegex(sources.SourceError, "source-owner"):
+                self.approved()
+
+    def test_the_command_trusts_the_root_folder_by_name_and_among_the_failing(self):
+        with self.root_owned_by(self.OVERFLOW):
+            code, value = self.run_cli("trust-ancestor", "/", "--yes", terminal=True)
+            self.assertEqual((0, True), (code, value["approved"]))
+            self.assertEqual({"/"}, set(sources.read_trusted()[1]))
+            self.assertTrue(self.preflight()["ready"])
+        sources.trust_forget("/")
+        with self.root_owned_by(self.OVERFLOW):
+            code, value = self.run_cli("trust-ancestor", "--failing", "--yes", terminal=True)
+            self.assertEqual((0, True), (code, value["approved"]))
+            self.assertIn("/", sources.read_trusted()[1])
+
+    def test_the_folders_that_are_not_above_the_project_folder_are_still_refused(self):
+        with self.root_owned_by(self.OVERFLOW):
+            for path in ("//", "/nowhere", str(self.folder), str(self.path), str(self.folder) + "/.."):
+                code, value = self.run_cli("trust-ancestor", path)
+                self.assertEqual((1, "not-an-ancestor"), (code, value["code"]), path)
+            with self.assertRaises(sources.TrustError):
+                sources.trust_add([str(self.folder)], str(self.project))
 
 
 class GuardTests(unittest.TestCase):
