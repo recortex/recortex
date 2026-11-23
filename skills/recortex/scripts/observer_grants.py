@@ -62,15 +62,19 @@ BARE_TOO = ("level", "strong")
 
 # ---------------------------------------------------------------- what a command needs
 
-def needs(stored, level, strong, mode):
+def needs(stored, level, strong, mode, holds=True):
     """The grants a command that sets `level`, `strong` (a model, or None) and `mode` needs, given this folder's stored
     settings: [("level", level)] when the folder has no level yet (a new folder, or an approval of 1.4.0), or the level
     is raised, or posting goes from shadow to automatic; [("strong", model)] when the stronger model is new or
-    changes. Lowering anything needs none."""
+    changes. Lowering anything needs none. `holds` is False when the stored approval is bound to another host (its binding
+    does not hold here, as in a copy of the state folder or on a host that sees another inode of the key file): it gives
+    this host no authority, so a command that sets the stored level again is a new approval and needs the level grant, as
+    a new folder does (the user's own terminal needs none: the caller does not ask)."""
     stored = stored if isinstance(stored, dict) else {}
-    old = stored.get("level") if stored.get("level") in runtime.LEVELS else ""
+    kept = stored.get("level") if stored.get("level") in runtime.LEVELS else ""
+    old = kept if holds else ""
     out = []
-    new = level or old
+    new = level or kept
     if new in runtime.LEVELS and (not old or RANK[new] > RANK[old]
                                   or (mode == "automatic" and not (stored.get("enabled") and stored.get("mode") == "automatic"))):
         out.append(("level", new))

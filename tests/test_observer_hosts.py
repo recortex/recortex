@@ -133,8 +133,9 @@ class BindingTests(Box):
             self.assertEqual("host", self.reason())
             self.assertEqual(runtime.APPROVAL_NOTES["host-old"], runtime.approval_note("host", self.entry()))
             self.assertIn("setup.py observer", runtime.APPROVAL_NOTES["host-old"])
-            self.assertIn("--yes once", runtime.APPROVAL_NOTES["host-old"])
-        with host(NODE):   # one enable there, from any place, rewrites it with the key file
+            self.assertIn("--yes once in your own terminal, or answer the level question in a session",
+                          runtime.APPROVAL_NOTES["host-old"])   # a session needs the answer (RebindTests)
+        with host(NODE):   # one enable there (on the user's answer: RebindTests) rewrites it with the key file
             self.enable()
             self.assertEqual("", self.reason())
         with host(LOGIN):
@@ -333,6 +334,104 @@ class StatusTests(Box):
         with host(NODE):
             value = self.status()
             self.assertEqual(runtime.APPROVAL_NOTES["host-old"], value["approval_note"])
+
+
+class RebindTests(Box):
+    """On a host where this folder's approval does not hold (a copy of the state folder, another inode of the key file), a
+    session does not make it hold with the stored level: that is a new approval, and it needs the user's answer, as on a
+    new folder (the 1.7.0 review, S3). `needs` is not replaced here."""
+
+    def cli(self, *args, terminal=False):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(observer, "on_terminal", return_value=terminal):
+            code = observer.main(list(args))
+        return code, json.loads(out.getvalue())
+
+    def session_enable(self, *extra, terminal=False):
+        return self.cli("enable", "--model", "sonnet", "--yes", *extra, terminal=terminal)
+
+    def made_on_the_login_host(self):
+        with host(LOGIN):
+            self.assertEqual(0, self.session_enable("--level", "everything", terminal=True)[0])
+            return self.entry()
+
+    def copy(self):
+        """The copy's host: another name and another inode of the key file."""
+        inode = storage.key_identity()[1] + 1
+        stack = contextlib.ExitStack()
+        stack.enter_context(host(NODE))
+        stack.enter_context(key_file(inode=inode))
+        return stack
+
+    def folder_key(self):
+        return runtime.folder_key(self.folder)
+
+    def test_a_session_on_a_copy_does_not_make_the_approval_hold_without_the_users_answer(self):
+        before = self.made_on_the_login_host()
+        with self.copy():
+            self.assertEqual("host", self.reason())
+            for extra in (("--level", "everything"), ()):   # with the stored level named, and with it left to the folder
+                code, result = self.session_enable(*extra)
+                self.assertEqual((1, "enable_unanswered", False), (code, result["code"], result["approved"]), extra)
+                self.assertEqual(before, self.entry())
+                self.assertEqual("host", self.reason())
+        with host(LOGIN):
+            self.assertEqual("", self.reason())   # and the host that made it still holds
+
+    def test_a_lower_level_on_a_copy_is_a_new_approval_too(self):
+        self.made_on_the_login_host()
+        with self.copy():
+            code, result = self.session_enable("--level", "notes")
+            self.assertEqual((1, "enable_unanswered"), (code, result["code"]))
+
+    def test_with_the_users_recorded_answer_the_session_makes_it_hold_there_once(self):
+        self.made_on_the_login_host()
+        with self.copy():
+            self.assertTrue(observer_grants.put(self.folder_key(), "level", "everything", "toolu_rebind"))
+            code, result = self.session_enable("--level", "everything")
+            self.assertEqual((0, True), (code, result["approved"]))
+            self.assertEqual("", self.reason())   # it holds here now
+            self.assertFalse(observer_grants.held(self.folder_key(), [("level", "everything")]))   # the answer was used once
+            self.assertEqual("session", self.entry()["given"])
+
+    def test_the_users_own_terminal_needs_no_answer_to_make_it_hold(self):
+        self.made_on_the_login_host()
+        with self.copy():
+            code, result = self.session_enable("--level", "everything", terminal=True)
+            self.assertEqual((0, True), (code, result["approved"]))
+            self.assertEqual("", self.reason())
+            self.assertEqual("terminal", self.entry()["given"])
+
+    def test_where_the_approval_holds_a_session_enables_the_same_level_as_before(self):
+        self.made_on_the_login_host()
+        with host(NODE):   # the same key file: the approval follows it
+            self.assertEqual("", self.reason())
+            code, result = self.session_enable("--level", "everything")
+            self.assertEqual((0, True), (code, result["approved"]))
+
+    def test_the_setup_chain_stops_before_its_steps_on_a_copy_without_the_answer(self):
+        import setup
+        self.made_on_the_login_host()
+        before = self.entry()
+        answers = {"repo": REPO, "observer": {"mode": "shadow", "model": "sonnet", "level": "everything", "sort_model": "haiku",
+                                              "strong": ""}}
+        out = io.StringIO()
+        with self.copy(), mock.patch.object(observer, "on_terminal", return_value=False), \
+                mock.patch.object(setup, "run_observer_steps") as steps, contextlib.redirect_stdout(out):
+            setup.observer_step(answers, self.folder, sys.executable, False)
+        self.assertIn("observer: not turned on. " + observer_grants.UNANSWERED, out.getvalue())
+        steps.assert_not_called()
+        self.assertEqual(before, self.entry())
+
+    def test_binding_holds_says_whether_the_stored_approval_follows_this_host(self):
+        self.assertTrue(runtime.binding_holds(REPO, self.folder))   # no approval at all: nothing to carry over
+        self.made_on_the_login_host()
+        self.assertTrue(runtime.binding_holds(REPO, self.folder))
+        self.assertTrue(runtime.binding_holds("octo-org/other", self.folder))   # another repository's: not this one's
+        with self.copy():
+            self.assertFalse(runtime.binding_holds(REPO, self.folder))
+        with mock.patch.object(runtime, "stored_approval", side_effect=OSError("no")):
+            self.assertTrue(runtime.binding_holds(REPO, self.folder))   # nothing can be read: no stored settings either
 
 
 class LabelAndPassTests(Box):

@@ -1376,8 +1376,9 @@ def observer_step(answers, root, python, dry):
     # is taken once here, and the commands of this chain go through on a pass that ends with it.
     import observer_grants
     folder = observer_runtime.folder_key(root)
-    word = chain_pass(folder, level, strong or None, observer_grants.needs(stored_observer(repo, root), level,
-                                                                          strong or None, mode), hosts=hosts)
+    word = chain_pass(folder, level, strong or None,
+                      observer_grants.needs(stored_observer(repo, root), level, strong or None, mode,
+                                            holds=observer_runtime.binding_holds(repo, root)), hosts=hosts)
     if word is None:
         reason = observer_grants.unread_reason(folder, root)
         print("observer: not turned on. " + (observer_grants.UNREADABLE % reason if reason else observer_grants.UNANSWERED))

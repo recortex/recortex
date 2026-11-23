@@ -874,7 +874,8 @@ def main(argv=None):
                 return 1
             wanted = []
             if args.yes and not here:
-                wanted = observer_grants.needs(_stored_settings(repo), args.level, args.strong_model, args.mode)
+                wanted = observer_grants.needs(_stored_settings(repo), args.level, args.strong_model, args.mode,
+                                               holds=runtime.binding_holds(repo))
             if wanted:   # asked last, with the hold check, once every setting has been checked: the answer is for this level
                 holds_confirm = confirm
                 confirm = lambda: ("enable_unanswered" if not (observer_grants.in_pass(folder, wanted, args.enable_pass)

@@ -933,7 +933,8 @@ APPROVAL_NOTES = {
     "host": "The key file looks different from this host (another inode or path), so the approval does not follow it here. "
             "In your own terminal, run observer.py enable with your settings and --hosts any --yes.",
     "host-old": "This approval was made on another host by a version that bound it to that host. Run setup.py observer with "
-                "its level and --yes once; after that it holds on every host that sees the same key file.",
+                "its level and --yes once in your own terminal, or answer the level question in a session; after that it "
+                "holds on every host that sees the same key file.",
 }
 
 
@@ -966,6 +967,21 @@ def approval_reason(repo, config, approval=None, root=None):
         return "" if _binding(approval) else "host"
     except (ValueError, OSError, storage.StorageError):
         return "unreadable"
+
+
+def binding_holds(repo, root=None):
+    """False when this folder's stored approval for `repo` is bound to another host: its binding does not hold on this host (a
+    copy of the state folder, a key file with another inode, or an approval of an earlier version made elsewhere), or the
+    key cannot be read to tell. True when it holds, and when there is no approval of this repository to carry over (a command
+    then has no stored settings to reuse). `approval_reason` says the same thing as "host" in its order; this one does not
+    wait for the checks before it, so that a disabled entry made elsewhere is not an authority either."""
+    try:
+        entry = stored_approval(root)
+    except (ValueError, OSError, storage.StorageError):
+        return True   # nothing can be read: the caller reads no stored settings either
+    if not isinstance(entry, dict) or entry.get("repo") != str(repo).lower():
+        return True
+    return binding(entry) != ""
 
 
 def approval_note(code, approval=None):

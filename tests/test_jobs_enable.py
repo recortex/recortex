@@ -48,6 +48,21 @@ class NeedsTests(unittest.TestCase):
         )
         for stored, level, strong, mode, wanted in table:
             self.assertEqual(wanted, grants.needs(stored, level, strong, mode), (stored, level, strong, mode))
+            self.assertEqual(wanted, grants.needs(stored, level, strong, mode, holds=True), (stored, level, strong, mode))
+
+    def test_an_approval_that_does_not_hold_here_is_no_authority_for_its_level(self):
+        # A stored approval bound to another host (holds=False): the same level, a lower one, or none named is a new approval.
+        table = (
+            (STORED, "assistant", None, "automatic", [("level", "assistant")]),   # the same level
+            (STORED, "notes", None, "automatic", [("level", "notes")]),           # lowered
+            (STORED, None, None, "automatic", [("level", "assistant")]),          # none named: the folder's own is used
+            (STORED, "everything", None, "automatic", [("level", "everything")]),
+            (dict(STORED, mode="shadow"), None, None, "shadow", [("level", "assistant")]),
+            (dict(STORED, strong_model="opus"), "assistant", "opus", "automatic", [("level", "assistant")]),
+            ({}, None, None, "shadow", []),                                        # nothing stored and no level: nothing to grant
+        )
+        for stored, level, strong, mode, wanted in table:
+            self.assertEqual(wanted, grants.needs(stored, level, strong, mode, holds=False), (stored, level, strong, mode))
 
 
 class FileTests(tj.Programs, tj.tq.Box):
