@@ -1,6 +1,7 @@
-"""Publishing the static dashboard page (1.7.0): an opt-in, terminal-only, public publish that builds its own page, checks it, shows
-what will be public, asks for a typed confirmation and reads the file back. The fake GitHub holds the target; no model runs and
-nothing reaches a real GitHub."""
+"""Publishing the static dashboard page (1.7.0, 1.8.0): an opt-in, public publish that builds its own page, checks it, shows what
+will be public and reads the file back. On the user's own terminal it asks for a typed word; in a session it goes on the user's
+answer to the question of acts.py (a one-time grant), may make the branch and switch Pages on when that question said so, and
+prints the page's link. The fake GitHub holds the target; no model runs and nothing reaches a real GitHub."""
 
 import base64
 import contextlib
@@ -18,8 +19,11 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 import test_scripts as ts  # noqa: E402
 
 sys.path.insert(0, ts.SCRIPTS)
+import acts  # noqa: E402
 import mind  # noqa: E402
 import observer  # noqa: E402
+import observer_grants as grants  # noqa: E402
+import observer_runtime  # noqa: E402
 import observer_store  # noqa: E402
 import publish  # noqa: E402
 import recortex  # noqa: E402
@@ -90,15 +94,20 @@ class Box(ts.MindSandbox):
 
 
 class OffATerminalTests(Box):
-    def test_every_form_stops_with_one_line_and_touches_nothing(self):
-        before = len(self.repo()["log"])
-        for argv in (["--list"], ["--to", TARGET, "--branch", "gh-pages"], ["--to", TARGET, "--branch", "gh-pages", "--dry-run"],
-                     ["--to", TARGET, "--branch", "gh-pages", "--private-record"], []):
-            code, text = self.run_publish(*argv, terminal=False)
-            self.assertEqual((1, publish.NOT_TERMINAL + "\n"), (code, text), argv)
-        self.assertEqual(before, len(self.repo()["log"]))
+    def test_the_reads_need_no_answer_and_a_publish_without_one_names_its_question_and_sends_nothing(self):
+        code, text = self.run_publish("--list", terminal=False)
+        self.assertEqual((0, publish.NOTHING + "\n"), (code, text))
+        code, text = self.run_publish("--to", TARGET, "--branch", "gh-pages", "--dry-run", terminal=False, tty=None)
+        self.assertEqual(0, code, text)
+        self.assertIn("dry run: nothing was sent", text)
+        code, text = self.run_publish("--to", TARGET, "--branch", "gh-pages", terminal=False)
+        self.assertEqual(1, code)
+        self.assertIn("acts.py ask publish --to octo-org/octo-pages --branch gh-pages --path index.html", text)
+        self.assertNotIn("terminal", text)
         self.assertEqual([], self.puts())
         self.assertEqual([], self.tty.asked)
+        code, text = self.run_publish(terminal=False)
+        self.assertEqual((1, "publish: say where with --to OWNER/NAME and --branch BRANCH (or --list).\n"), (code, text))
 
     def test_help_needs_no_terminal(self):
         code, text = self.run_publish("--help", terminal=False)
@@ -115,8 +124,7 @@ class PublishTests(Box):
         self.assertEqual(1, len(self.sends()))
         self.assertEqual(["Type the word publish to confirm: "], self.tty.asked)
         self.assertIn("published and read back: https://github.com/octo-org/octo-pages/blob/gh-pages/index.html", text)
-        self.assertIn("If octo-org/octo-pages serves this branch with GitHub Pages, the page is at its Pages address; publish.py "
-                      "does not switch Pages on.", text)
+        self.assertIn(publish.NO_SITE, text)   # no site is on for the branch, and the question did not say it would be
 
     def test_the_warning_is_printed_whole_before_the_question(self):
         code, text = self.go()
@@ -204,6 +212,7 @@ class DryRunTests(Box):
         self.assertIn("would run: gh api repos/octo-org/octo-pages", text)
         self.assertIn("would run: gh api repos/octo-org/octo-pages/branches/gh-pages", text)
         self.assertIn("would run: gh api repos/octo-org/octo-pages/contents/index.html?ref=gh-pages", text)
+        self.assertIn("would run: gh api repos/octo-org/octo-pages/pages", text)
         self.assertIn("would run: gh api repos/octo-org/octo-repo", text)
         self.assertIn("would run: gh api -X PUT repos/octo-org/octo-pages/contents/index.html --input -", text)
         self.assertIn("<%d bytes, sha256 %s>" % (len(PAGE.encode("utf-8")), digest), text)
@@ -229,9 +238,7 @@ class StopTests(Box):
         data = self.repo()
         data["branches"] = ["main"]
         self.save(data)
-        self.stops("publish: the branch gh-pages does not exist in octo-org/octo-pages. publish.py never creates a branch, a "
-                   "repository or a site. Create it yourself, for example: git switch --orphan gh-pages; git commit "
-                   "--allow-empty -m 'Start the page'; git push origin gh-pages. Then run this again.")
+        self.stops(publish.BRANCH_NOT_SAID % ("gh-pages", TARGET))
 
     def test_an_account_that_may_not_write_stops_it(self):
         data = self.repo()
@@ -458,7 +465,7 @@ class PrivateRecordTests(Box):
         code, text = self.go()
         self.assertEqual(1, code)
         self.assertIn("The record's repository octo-org/octo-repo is PRIVATE. Publishing makes its contents public.", text)
-        self.assertIn(publish.PRIVATE_RECORD, text)
+        self.assertIn(publish.PRIVATE_NOT_SAID, text)
         self.assertEqual([], self.tty.asked)
         self.assertEqual([], self.sends())
 
@@ -488,7 +495,7 @@ class PrivateRecordTests(Box):
             code, text = self.go()
             self.assertEqual(1, code)
             self.assertIn("is PRIVATE", text)
-            self.assertIn(publish.PRIVATE_RECORD, text)
+            self.assertIn(publish.PRIVATE_NOT_SAID, text)
             code, text = self.go("--private-record", tty=Tty(RECORD))
         self.assertEqual(0, code, text)
 
@@ -540,6 +547,300 @@ class PageTests(Box):
         self.assertIn("Static snapshot.", sent)
         self.assertEqual("", publish.public_problem(sent))
         self.assertIn("octo-org/octo-repo", sent)
+
+
+class SessionTests(Box):
+    """A session's publish goes on the user's answer: a one-time grant for exactly this target and these flags. GitHub's own
+    answers are held against the flags, and the privacy checks, the static guard and the hold check still stop it."""
+
+    def folder(self):
+        return observer_runtime.folder_key()
+
+    def values(self, **flags):
+        base = {"record": RECORD.lower(), "to": TARGET, "branch": "gh-pages", "path": "index.html", "create": False, "pages": False,
+                "private": False, "nosite": False}
+        base.update(flags)
+        return base
+
+    def grant(self, **flags):
+        values = self.values(**flags)
+        self.assertTrue(grants.put(self.folder(), "publish", acts.ACTS["publish"].value(values), "toolu_01p%d" % len(self.repo()["log"])))
+        return values
+
+    def session(self, *extra, **kwargs):
+        return self.go(*extra, terminal=False, tty=None, **kwargs)
+
+    def test_the_answer_is_used_once_and_the_page_is_sent_with_no_question_on_a_terminal(self):
+        self.grant()
+        code, text = self.session()
+        self.assertEqual(0, code, text)
+        self.assertEqual(PAGE.encode("utf-8"), self.stored())
+        self.assertEqual(1, len(self.puts()))
+        code, text = self.session(page=PAGE.replace("strict", "relaxed"))   # the grant was spent
+        self.assertEqual(1, code)
+        self.assertIn("acts.py ask publish", text)
+        self.assertEqual(1, len(self.puts()))
+
+    def test_a_grant_for_the_public_question_does_not_publish_a_private_record(self):
+        data = self.repo()
+        data["repos"][RECORD]["private"] = True
+        self.save(data)
+        self.grant()
+        code, text = self.session()
+        self.assertEqual((1, True), (code, publish.PRIVATE_NOT_SAID in text))   # GitHub says private; the question did not
+        self.assertEqual([], self.puts())
+        code, text = self.session("--private-record")   # the flag, but a grant for another question
+        self.assertEqual(1, code)
+        self.assertIn("acts.py ask publish", text)
+        self.assertEqual([], self.puts())
+        self.grant(private=True)
+        code, text = self.session("--private-record")
+        self.assertEqual(0, code, text)
+        self.assertEqual(1, len(self.puts()))
+        self.assertTrue(publish.read_receipts(RECORD)[-1]["private"])
+
+    def test_a_grant_without_create_branch_does_not_create_a_branch(self):
+        data = self.repo()
+        data["branches"] = ["main"]
+        self.save(data)
+        self.grant()
+        code, text = self.session()
+        self.assertEqual((1, True), (code, publish.BRANCH_NOT_SAID % ("gh-pages", TARGET) in text))
+        self.assertEqual(["main"], self.repo()["branches"])
+        self.assertNotIn("created_branches", self.repo())
+        code, text = self.session("--create-branch")   # the flag, but a grant that did not say it
+        self.assertEqual(1, code)
+        self.assertNotIn("created_branches", self.repo())
+
+    def test_create_branch_makes_one_commit_with_no_parent_that_holds_the_page_and_nojekyll(self):
+        data = self.repo()
+        data["branches"] = ["main"]
+        self.save(data)
+        self.grant(create=True)
+        code, text = self.session("--create-branch")
+        self.assertEqual(0, code, text)
+        made = self.repo()["created_branches"]
+        self.assertEqual(1, len(made))
+        self.assertEqual({"branch": "gh-pages", "parents": [], "message": publish.MESSAGE, "paths": [".nojekyll", "index.html"]},
+                         made[0])
+        for word in ("Co-Authored-By", "Generated", "claude", "Claude", "session"):
+            self.assertNotIn(word, made[0]["message"])
+        self.assertEqual(PAGE.encode("utf-8"), self.stored())
+        self.assertEqual("", self.repo()["files"]["gh-pages:.nojekyll"])   # an empty file
+        self.assertIn("gh-pages", self.repo()["branches"])
+        self.assertEqual([], self.puts())   # no contents write: the page went up with the commit
+        self.assertIn("It makes the branch gh-pages there, holding only this page.", text)
+        self.assertEqual(1, len(publish.read_receipts(RECORD)))
+
+    def test_a_repository_with_no_commit_gives_one_line_and_makes_nothing(self):
+        data = self.repo()
+        data.update(branches=["main"], empty_repo=True)
+        self.save(data)
+        self.grant(create=True)
+        code, text = self.session("--create-branch")
+        self.assertEqual((1, True), (code, publish.EMPTY_REPOSITORY % TARGET in text))
+        self.assertNotIn("created_branches", self.repo())
+        self.assertEqual([], publish.read_receipts(RECORD))
+
+    def test_pages_is_switched_on_only_with_the_flag_and_a_refusal_is_one_line_and_the_publish_stands(self):
+        self.grant(pages=True)
+        code, text = self.session("--pages")
+        self.assertEqual(0, code, text)
+        self.assertEqual({"branch": "gh-pages", "path": "/", "html_url": "https://octo-org.github.io/octo-pages/"},
+                         self.repo()["pages"])
+        self.assertIn("the page: https://octo-org.github.io/octo-pages/", text.splitlines())
+        self.assertIn(publish.MINUTE, text)
+        self.assertNotIn("github.com/octo-org/octo-pages/blob", text)
+        self.assertIn("It switches GitHub Pages on for that branch, which makes the branch a public website.", text)
+        data = self.repo()
+        data.pop("pages")
+        data["pages_refused"] = True
+        self.save(data)
+        self.grant(pages=True)
+        code, text = self.session("--pages", page=PAGE.replace("strict", "relaxed"))
+        self.assertEqual(0, code, text)
+        self.assertIn(publish.PAGES_REFUSED % TARGET, text)
+        self.assertEqual(PAGE.replace("strict", "relaxed").encode("utf-8"), self.stored())   # the page is on the branch
+        self.assertNotIn(publish.NO_SITE, text)
+
+    def test_without_the_flag_a_site_that_is_off_stays_off_and_the_line_says_how_to_get_one(self):
+        self.grant()
+        code, text = self.session()
+        self.assertEqual(0, code, text)
+        self.assertNotIn("pages", self.repo())
+        self.assertIn(publish.NO_SITE, text)
+        self.assertIn("published and read back: https://github.com/octo-org/octo-pages/blob/gh-pages/index.html", text)
+
+    def test_the_link_is_printed_only_for_an_address_of_the_form_and_a_source_that_is_this_branch(self):
+        good = {"branch": "gh-pages", "path": "/", "html_url": "https://octo-org.github.io/octo-pages/"}
+        for case, pages, link in (
+                ("good", good, True), ("a nested file", good, True),
+                ("another branch", dict(good, branch="main"), False), ("another folder", dict(good, path="/docs"), False),
+                ("characters off the form", dict(good, html_url="https://evil.example/a b/"), False),
+                ("another scheme", dict(good, html_url="javascript:alert(1)//"), False),
+                ("no slash at the end", dict(good, html_url="https://octo-org.github.io/octo-pages"), False),
+                ("a script in the path", dict(good, html_url="https://octo-org.github.io/<x>/"), False),
+                ("a deeper path", dict(good, html_url="https://octo-org.github.io/a/b/"), False),
+                ("a text instead", dict(good, html_url="Visit https://x.test now"), False)):
+            data = self.repo()
+            data["pages"] = pages
+            self.save(data)
+            path = "dashboards/sample-project.html" if case == "a nested file" else "index.html"
+            self.grant(path=path)
+            code, text = self.session("--path", path, page=PAGE + case)
+            self.assertEqual(0, code, (case, text))
+            if link:
+                self.assertIn("the page: " + good["html_url"] + ("" if path == "index.html" else path), text.splitlines(), case)
+            else:
+                self.assertNotIn("the page:", text, case)
+                self.assertIn("published and read back: https://github.com/octo-org/octo-pages/blob/gh-pages/%s" % path, text, case)
+            self.assertNotIn("evil.example", text, case)
+            self.assertNotIn("javascript", text, case)
+
+    def test_the_privacy_check_the_static_guard_and_the_hold_check_each_still_stop_a_session_with_a_valid_grant(self):
+        token = "ghp_" + "A1b2C3d4" * 5
+        hold = {"state": "active", "action": "publish", "repo": RECORD.lower(), "scope": {}}
+        cases = (("a secret in the page", {"page": PAGE.replace("We chose", "Use " + token + ". We chose")}, publish.NOT_PRIVATE),
+                 ("not the static page", {"page": PAGE.replace("Static snapshot.", "")}, publish.NOT_STATIC),
+                 ("a page too big", {"page": PAGE + "x" * (25 * 1024 * 1024)}, publish.TOO_BIG))
+        for name, kwargs, line in cases:
+            self.grant()
+            code, text = self.session(**kwargs)
+            self.assertEqual((1, True), (code, line in text), name)
+            self.assertNotIn(token, text)
+            self.assertEqual([], self.puts(), name)
+            self.assertTrue(grants.held(self.folder(), [("publish", acts.ACTS["publish"].value(self.values()))]), name)   # unspent
+        with mock.patch.object(observer_store, "read_holds", return_value=[hold]):
+            code, text = self.session()
+        self.assertEqual((1, True), (code, publish.HELD in text))
+        self.assertEqual([], self.puts())
+        with mock.patch.dict(os.environ, {"FAKE_GH_PUT_CORRUPT": "1"}):
+            code, text = self.session()
+        self.assertEqual((1, True), (code, publish.MISMATCH in text))   # the read-back
+        self.assertEqual([], publish.read_receipts(RECORD))
+
+    def test_a_subagent_cannot_publish_and_dry_run_and_list_are_not_denied_to_it(self):
+        import pretool_guard
+        for command in ("python3 /x/publish.py --to octo-org/octo-pages --branch gh-pages",
+                        "python3 /x/publish.py --to octo-org/octo-pages --branch gh-pages --create-branch --pages"):
+            out = pretool_guard.decide(json.dumps({"tool_name": "Bash", "agent_id": "a1", "tool_input": {"command": command}}))
+            self.assertEqual(pretool_guard.SUBAGENT_DENIAL, out["hookSpecificOutput"]["permissionDecisionReason"], command)
+        for command in ("python3 /x/publish.py --list", "python3 /x/publish.py --to octo-org/octo-pages --branch gh-pages --dry-run"):
+            self.assertIsNone(pretool_guard.decide(json.dumps({"tool_name": "Bash", "agent_id": "a1",
+                                                               "tool_input": {"command": command}})), command)
+
+    def test_a_receipt_with_and_without_the_private_key_is_read(self):
+        path = publish.receipts_path(RECORD)
+        rows = [{"at": 1763900000, "to": TARGET, "branch": "gh-pages", "path": "index.html", "sha": "a" * 40},
+                {"at": 1763900001, "to": TARGET, "branch": "gh-pages", "path": "index.html", "sha": "b" * 40, "private": True},
+                {"at": 1763900002, "to": TARGET, "branch": "gh-pages", "path": "index.html", "sha": "c" * 40, "private": None},
+                {"at": 1763900003, "to": TARGET, "branch": "gh-pages", "path": "index.html", "sha": "d" * 40, "private": "yes"},
+                {"at": 1763900004, "to": TARGET, "branch": "gh-pages", "path": "index.html", "sha": "e" * 40, "private": False,
+                 "extra": 1}]
+        with open(path, "w") as handle:
+            json.dump({"form": 1, "receipts": rows}, handle)
+        os.chmod(path, 0o600)
+        self.assertEqual(["a" * 40, "b" * 40, "c" * 40], [row["sha"] for row in publish.read_receipts(RECORD)])
+        publish.keep_receipt(RECORD, TARGET, "gh-pages", "index.html", "f" * 40, False)
+        self.assertIs(False, publish.read_receipts(RECORD)[-1]["private"])
+
+
+class AskPublishTests(Box):
+    """`acts.py ask publish` reads GitHub and sets the flags; the hook rebuilds the same question from the command alone."""
+
+    def ask(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = acts.main(["ask", "publish", "--json"] + list(argv))
+        return code, out.getvalue()
+
+    def body(self, *argv):
+        code, printed = self.ask(*argv)
+        self.assertEqual(0, code, printed)
+        return json.loads(printed)
+
+    def roundtrip(self, body):
+        yes = [o for o in body["options"] if o["answer"] == "yes"][0]
+        found = [i for i in acts.asks(yes["run"][0], self.project) if i["kind"] == "publish"]
+        self.assertEqual(1, len(found), yes["run"])
+        self.assertEqual(body["question"], found[0]["text"])
+        self.assertEqual([o["label"] for o in body["options"]], found[0]["labels"])
+        self.assertEqual(yes["label"], found[0]["label"])
+
+    def test_a_target_that_exists_is_the_plain_update(self):
+        data = self.repo()
+        data["pages"] = {"branch": "gh-pages", "path": "/", "html_url": "https://octo-org.github.io/octo-pages/"}
+        self.save(data)
+        body = self.body("--to", TARGET)
+        self.assertEqual(["Update the public page", "Show the file's path"], [o["label"] for o in body["options"]])
+        self.assertTrue(body["question"].startswith(
+            "Update the public page of the recortex dashboard for octo-org/octo-repo? It goes to octo-org/octo-pages, branch gh-pages, "
+            "file index.html. Anyone who has its address can read it, and search engines may list it. It holds what the dashboard "
+            "tells: the memories, the topic texts, the tasks and the project map. Your usage numbers, the observer's log and the "
+            "interactive dashboard are not sent."))
+        self.assertEqual(["python3 %s --to octo-org/octo-pages --branch gh-pages --path index.html"
+                          % os.path.join(ts.SCRIPTS, "publish.py")], body["options"][0]["run"])
+        self.roundtrip(body)
+
+    def test_each_thing_that_is_missing_adds_its_flag_its_sentence_and_the_label(self):
+        data = self.repo()
+        data["branches"] = ["main"]
+        self.save(data)
+        body = self.body("--to", TARGET)
+        self.assertEqual("Set up the public page", body["options"][0]["label"])
+        self.assertIn("recortex creates the branch gh-pages there, holding only this page. recortex switches GitHub Pages on for "
+                      "that branch, which makes the branch a public website. Anyone", body["question"])
+        self.assertTrue(body["options"][0]["run"][0].endswith("--path index.html --create-branch --pages"))
+        self.roundtrip(body)
+        data = self.repo()
+        data["repos"][RECORD]["private"] = True
+        self.save(data)
+        body = self.body("--to", TARGET)
+        self.assertEqual("Publish the private record", body["options"][0]["label"])
+        self.assertIn("octo-org/octo-repo is a PRIVATE repository: this makes what its dashboard tells public.", body["question"])
+        self.assertTrue(body["options"][0]["run"][0].endswith("--create-branch --pages --private-record"))
+        self.roundtrip(body)
+
+    def test_pages_that_serves_another_branch_is_said_and_gets_no_pages_flag(self):
+        data = self.repo()
+        data["pages"] = {"branch": "main", "path": "/", "html_url": "https://octo-org.github.io/octo-pages/"}
+        self.save(data)
+        body = self.body("--to", TARGET)
+        self.assertIn("GitHub Pages serves another branch of octo-org/octo-pages, so you get the file's address on GitHub, not a "
+                      "site.", body["question"])
+        self.assertTrue(body["options"][0]["run"][0].endswith("--path index.html --no-site"))
+        self.assertNotIn("--pages", body["options"][0]["run"][0])
+        self.roundtrip(body)
+
+    def test_where_the_target_cannot_be_used_one_fixed_line_and_no_question(self):
+        data = self.repo()
+        data["repos"][TARGET]["push"] = False
+        self.save(data)
+        code, printed = self.ask("--to", TARGET)
+        self.assertEqual((1, publish.NO_PUSH % TARGET + "\n"), (code, printed))
+        data["repos"][TARGET]["push"] = True
+        self.save(data)
+        with mock.patch.dict(os.environ, {"FAKE_GH_FAIL_ON": "api repos/octo-org/octo-pages"}):
+            code, printed = self.ask("--to", TARGET)
+        self.assertEqual(1, code)
+        self.assertNotIn("question", printed)
+        self.assertEqual(1, self.ask("--to", "bad")[0])
+        self.assertEqual(1, self.ask("--to", TARGET, "--branch", "../x")[0])
+
+    def test_the_default_is_the_newest_receipt_else_the_record_itself(self):
+        body = self.body("--branch", "gh-pages", "--to", RECORD)
+        self.assertIn("It goes to octo-org/octo-repo, branch gh-pages", body["question"])
+        data = self.repo()
+        data["branches"] = ["main", "gh-pages"]
+        self.save(data)
+        publish.keep_receipt(RECORD, TARGET, "gh-pages", "dashboards/sample-project.html", "a" * 40, False)
+        body = self.body()
+        self.assertIn("It goes to octo-org/octo-pages, branch gh-pages, file dashboards/sample-project.html.", body["question"])
+
+    def test_the_command_of_a_dry_run_or_a_list_has_no_question(self):
+        for command in ("python3 /x/publish.py --to octo-org/octo-pages --branch gh-pages --dry-run", "python3 /x/publish.py --list",
+                        "python3 /x/publish.py --to octo-org/octo-pages"):
+            self.assertEqual([], [i for i in acts.asks(command, self.project) if i["kind"] == "publish"], command)
 
 
 if __name__ == "__main__":

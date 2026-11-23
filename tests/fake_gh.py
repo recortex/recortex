@@ -259,10 +259,11 @@ def publish_calls(args, path, state):
     kind = made.group(1)
     raw = sys.stdin.read()
     sent = json.loads(raw or "{}")
-    mine = {"blobs": True,
-            "trees": isinstance(sent.get("tree"), list) and sent["tree"] and all(isinstance(e.get("sha"), str) for e in sent["tree"]),
-            "commits": sent.get("tree") in state.get("publish_trees", {}),
-            "refs": sent.get("sha") in state.get("publish_commits", {})}[kind]
+    tree = sent.get("tree")
+    mine = {"blobs": lambda: True,
+            "trees": lambda: isinstance(tree, list) and bool(tree) and all(isinstance(e.get("sha"), str) for e in tree),
+            "commits": lambda: isinstance(tree, str) and tree in state.get("publish_trees", {}),
+            "refs": lambda: isinstance(sent.get("sha"), str) and sent["sha"] in state.get("publish_commits", {})}[kind]()
     if not mine:
         sys.stdin = io.StringIO(raw)   # not a publish call: fake_git reads the same body
         return False
