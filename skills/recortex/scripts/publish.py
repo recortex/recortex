@@ -59,6 +59,8 @@ PRIVATE_RECORD = ("publish: the record is private. Run again with --private-reco
 NOT_CONFIRMED = "publish: not confirmed; nothing was sent."
 MISMATCH = "publish: the file on the branch is not the page that was sent; look at the branch."
 NOT_SENT = "publish: GitHub did not take the page; nothing was published."
+UNCONFIRMED = ("publish: GitHub did not confirm the page in time, so it may be on the branch; look at the branch before you run "
+               "this again.")
 NOTHING = "publish: nothing has been published from this machine."
 STATIC = "Static snapshot."
 INTERACTIVE = "Local interactive session."
@@ -339,6 +341,9 @@ def run(args):
         return 1
     try:
         recortex.gh(command, stdin=json.dumps(body), timeout=120)
+    except recortex.GhTimeout:   # the write may have landed after gh gave up waiting
+        print(UNCONFIRMED)
+        return 1
     except recortex.GhError:
         print(NOT_SENT)
         return 1

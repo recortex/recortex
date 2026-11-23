@@ -1333,7 +1333,7 @@ def capture_line(root):
         return "capture: ready" if result.get("ready") else "capture: ready once a session has run in this folder"
     issue = result.get("issues", [result])[0]
     run = ("%s ; then the same with --yes" % observer_sources.trust_commands()[0] if result.get("fix") else
-           "python3 %s status --source-details" % os.path.join(HERE, "observer.py"))
+           "python3 %s status --source-details" % shlex.quote(os.path.join(HERE, "observer.py")))
     return ("capture: not ready (%s at %s); notes cannot be taken, and a session cannot read your answer here. Run in your "
             "own terminal: %s" % (code, issue.get("boundary", "ancestor"), run))
 
@@ -1381,7 +1381,7 @@ def observer_step(answers, root, python, dry):
                                             holds=observer_runtime.binding_holds(repo, root)), hosts=hosts)
     if word is None:
         reason = observer_grants.unread_reason(folder, root)
-        print("observer: not turned on. " + (observer_grants.UNREADABLE % reason if reason else observer_grants.UNANSWERED))
+        print("observer: not turned on. " + (observer_grants.unreadable_note(reason) if reason else observer_grants.UNANSWERED))
         return
     try:
         run_observer_steps(steps, options, level, mode, model, strong, root, environment, word)
@@ -1835,7 +1835,7 @@ def blocked_text(blocked):
     how = ("To turn the observer on, run in your own terminal, outside Claude Code: %s ; then the same with --yes."
            % commands[0] if commands else
            "To see why, run in your own terminal, outside Claude Code: python3 %s status --source-details."
-           % os.path.join(HERE, "observer.py"))
+           % shlex.quote(os.path.join(HERE, "observer.py")))
     return ("not asked here: %s. Notes cannot be taken on this machine yet: a folder above Claude Code's transcripts belongs "
             "to another account or can be written by a shared group (%s). The record brief and the task reminder work "
             "without it. %s The question is asked again after that."

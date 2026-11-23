@@ -622,6 +622,28 @@ class CaptureLineTests(Box):
         self.assertIn("observer.py status --source-details", other)
         self.assertNotIn("trust-ancestor", other)
 
+    def test_a_scripts_folder_with_a_space_is_quoted_in_every_command_that_is_printed(self):
+        # The 1.7.0 review, N9: the user pastes these, and a space must not split the path.
+        import hooks
+        import observer_sources
+        import setup
+        spaced = "/home/octo cat/.claude/plugins/recortex/skills/recortex/scripts"
+        quoted = "'%s/observer.py'" % spaced
+        commands = observer_sources.trust_commands(spaced)
+        self.assertEqual(["python3 %s trust-ancestor --failing" % quoted, "python3 %s trust-ancestor --failing --yes" % quoted],
+                         commands)
+        self.assertEqual(spaced + "/observer.py", __import__("shlex").split(commands[0])[1])
+        failing = {"ready": False, "code": "source-symlink", "boundary": "source-directory",
+                   "issues": [{"code": "source-symlink", "boundary": "source-directory"}]}
+        with mock.patch.object(setup, "HERE", spaced):
+            self.assertIn("python3 %s status --source-details" % quoted, self.line(failing))
+            self.assertIn("python3 %s status --source-details." % quoted,
+                          setup.blocked_text([{"id": "observer-level", "code": "source-symlink", "commands": []}]))
+        with mock.patch.object(hooks, "__file__", spaced + "/hooks.py"), \
+                mock.patch.object(observer_sources, "preflight", return_value=failing):
+            rows = hooks.machine_summary(REPO, {"repo": REPO, "hub": 4}, [])
+        self.assertTrue(any("python3 %s status --source-details" % quoted in row for row in rows), rows)
+
     def test_the_capture_line_comes_before_the_binding_line_and_the_steps(self):
         import setup
         out = io.StringIO()

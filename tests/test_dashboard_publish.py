@@ -324,6 +324,22 @@ class StopTests(Box):
         self.assertEqual([], self.puts())   # nothing was stored
         self.assertEqual([], publish.read_receipts(RECORD))
 
+    def test_a_write_that_timed_out_is_not_said_to_have_published_nothing(self):
+        # The 1.7.0 review, N6: gh gave up waiting, and the write may have landed.
+        real = publish.recortex.gh
+
+        def slow(args, *more, **kwargs):
+            if args[:3] == ["api", "-X", "PUT"]:
+                raise publish.recortex.GhTimeout("gh timed out after 120s: api -X PUT")
+            return real(args, *more, **kwargs)
+        with mock.patch.object(publish.recortex, "gh", side_effect=slow):
+            code, text = self.go()
+        self.assertEqual(1, code)
+        self.assertIn(publish.UNCONFIRMED, text)
+        self.assertNotIn("nothing was published", text)
+        self.assertIn("look at the branch", publish.UNCONFIRMED)
+        self.assertEqual([], publish.read_receipts(RECORD))   # nothing is claimed that was not read back
+
     def test_a_file_that_is_not_what_was_sent_is_said_and_no_receipt_is_kept(self):
         with mock.patch.dict(os.environ, {"FAKE_GH_PUT_CORRUPT": "1"}):
             code, text = self.go()

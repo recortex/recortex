@@ -55,6 +55,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import signal
 import sys
 import time
@@ -1091,7 +1092,8 @@ def machine_summary(repo, config, problems):
             return "ready once a session has run here", "", ""
         issue = result.get("issues", [result])[0]
         run = ("%s ; then the same with --yes" % observer_sources.trust_commands()[0] if result.get("fix") else
-               "python3 %s status --source-details" % os.path.join(os.path.dirname(os.path.abspath(__file__)), "observer.py"))
+               "python3 %s status --source-details" % shlex.quote(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                                                "observer.py")))
         return ("not ready: %s at %s. Run in your own terminal: %s" % (result.get("code"), issue.get("boundary", "ancestor"), run),
                 result.get("code"), "x")
 

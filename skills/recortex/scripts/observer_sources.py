@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import stat
 import time
 
@@ -35,7 +36,7 @@ TRUST_RUN = "Run them in your own terminal, outside Claude Code."
 
 def trust_commands(scripts=None):
     """The two commands that trust the folders now refused, as the user runs them: look first, then the same with --yes."""
-    base = "python3 %s" % os.path.join(scripts or os.path.dirname(os.path.abspath(__file__)), "observer.py")
+    base = "python3 %s" % shlex.quote(os.path.join(scripts or os.path.dirname(os.path.abspath(__file__)), "observer.py"))
     return [base + " trust-ancestor --failing", base + " trust-ancestor --failing --yes"]
 
 

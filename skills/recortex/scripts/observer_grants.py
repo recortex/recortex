@@ -51,6 +51,13 @@ UNREADABLE = ("recortex observer: your answer could not be read on this machine,
               "Code's transcript did not pass the ownership checks (%s). In your own terminal, outside Claude Code, run "
               "observer.py status --source-details to see why and observer.py trust-ancestor --failing to trust the "
               "folders above it, or run this command there.")
+# The other codes (a link, a path that is no folder, a transcript that changed, a missing or unavailable one): trust-ancestor cannot
+# cover them, so the note does not send the user there.
+UNREADABLE_OTHER = ("recortex observer: your answer could not be read on this machine, so asking again will not help: Claude "
+                    "Code's transcript did not pass the checks (%s), and observer.py trust-ancestor cannot mend that. In your "
+                    "own terminal, outside Claude Code, run observer.py status --source-details to see why (a home reached "
+                    "through a link, for example, can be avoided by pointing CLAUDE_CONFIG_DIR at a private folder of your "
+                    "own), or run this command there.")
 PASS = re.compile(r"[0-9a-f]{32}")
 ANSWER = re.compile(r"[A-Za-z0-9_-]{1,80}")
 # What the file's list of used answers holds: the grant's kind and the answer's tool id ("map-toolu_01..."), since several
@@ -219,6 +226,12 @@ def unread_reason(folder, root=None, now=None):
     return ""
 
 
+def unreadable_note(reason):
+    """The fixed note for the code of a transcript that cannot be read: UNREADABLE for the two that trust-ancestor covers
+    (observer_sources.TRUSTABLE), UNREADABLE_OTHER for the rest. `reason` is one of UNREADABLE_CODES."""
+    return (UNREADABLE if reason in observer_sources.TRUSTABLE else UNREADABLE_OTHER) % reason
+
+
 def refused(result, root=None, note=UNANSWERED):
     """`result`, a refusal whose code ends in `_unanswered`, as it is emitted: unchanged but for `note` when the user's answer
     was simply not given, and with the code `..._answer_unreadable` (`answer_unreadable` for `answer_unanswered`), the fixed
@@ -228,7 +241,7 @@ def refused(result, root=None, note=UNANSWERED):
     if not reason:
         return dict(result, note=note)
     new = "answer_unreadable" if code == "answer_unanswered" else code.replace("_unanswered", "_answer_unreadable")
-    return dict(result, code=new, reason=reason, note=UNREADABLE % reason)
+    return dict(result, code=new, reason=reason, note=unreadable_note(reason))
 
 
 def start_pass(folder, level, strong, now=None, given="session", hosts=""):

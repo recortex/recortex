@@ -724,6 +724,30 @@ class UnreadableAnswerTests(CommandBox):
             self.assertIn("observer.py trust-ancestor --failing", value["note"])
             self.assertFalse(value["approved"])
 
+    def test_the_note_sends_to_trust_ancestor_only_for_the_codes_it_can_mend(self):
+        # The 1.7.0 review, N8: a link, a path that is no folder or a transcript that changed is not covered by trust-ancestor.
+        import observer_grants
+        for code in observer_grants.UNREADABLE_CODES:
+            note = observer_grants.unreadable_note(code)
+            self.assertIn("(%s)" % code, note)
+            if code in sources.TRUSTABLE:
+                self.assertEqual(observer_grants.UNREADABLE % code, note)
+                self.assertIn("observer.py trust-ancestor --failing", note)
+            else:
+                self.assertEqual(observer_grants.UNREADABLE_OTHER % code, note, code)
+                self.assertNotIn("trust-ancestor --failing", note)
+                self.assertIn("observer.py status --source-details", note)
+                self.assertIn("CLAUDE_CONFIG_DIR", note)
+        self.assertEqual(("source-owner", "source-permissions"), sources.TRUSTABLE)
+
+    def test_a_refusal_for_a_link_says_so_with_the_note_that_does_not_mention_trust_ancestor(self):
+        import observer_grants
+        with mock.patch.object(observer_grants, "unread_reason", return_value="source-symlink"):
+            code, value = self.enable()
+        self.assertEqual((1, "enable_answer_unreadable", "source-symlink"), (code, value["code"], value["reason"]))
+        self.assertEqual(observer_grants.unreadable_note("source-symlink"), value["note"])
+        self.assertNotIn("trust-ancestor --failing", value["note"])
+
     def test_enable_says_the_answer_cannot_be_read_from_the_capture_check_alone(self):
         with self.foreign():   # no hook ran, the transcript folder fails the check now
             code, value = self.enable()
@@ -783,6 +807,14 @@ class UnreadableAnswerTests(CommandBox):
                                 False)
         self.assertIn("observer: not turned on. " + observer_grants.UNREADABLE % "source-owner", out.getvalue())
         self.assertNotIn(observer_grants.UNANSWERED, out.getvalue())
+        out = io.StringIO()   # a code that trust-ancestor cannot mend gets the note that says what to look at instead
+        with mock.patch.object(observer_grants, "unread_reason", return_value="source-symlink"), \
+                contextlib.redirect_stdout(out), mock.patch.object(observer, "on_terminal", return_value=False):
+            setup.observer_step({"repo": "octo-org/octo-repo", "observer": {"mode": "automatic", "model": "sonnet",
+                                                                           "level": "everything", "sort_model": "haiku",
+                                                                           "strong": ""}}, str(self.project), sys.executable,
+                                False)
+        self.assertIn("observer: not turned on. " + observer_grants.UNREADABLE_OTHER % "source-symlink", out.getvalue())
 
 
 if __name__ == "__main__":
