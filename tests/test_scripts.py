@@ -12859,7 +12859,6 @@ class PackagingTests(unittest.TestCase):
             "tests/test_scripts.py": everywhere,  # the tests of the earlier names
             "skills/recortex/scripts/run_hook.sh": where(lambda line: "GHIM_HOOK_TIMEOUT" in line),
             ".claude-plugin/marketplace.json": where(lambda line: line.strip() == '"gh-issues-manager": "recortex"'),
-            "skills/recortex/SKILL.md": where(lambda line: line.startswith("description: ")),
             "docs/install.md": upgrade_section,
             "CONTRIBUTING.md": where(lambda line: "names.py" in line),
             "skills/recortex/references/templates.md": where(lambda line: "The marker prefix `ghim:` predates" in line),
