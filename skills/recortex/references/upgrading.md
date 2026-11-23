@@ -17,6 +17,10 @@ Then start a new session. If `claude plugin list` shows `gh-issues-manager@mr-ey
 
 A copy of the plugin installed another way (a folder under `~/.claude/skills/` with hooks from `templates/settings-hook-snippet.json`, or a second plugin entry) stays as it is. Copy the new `skills/recortex` folder in, remove the old folder, and change the four hook commands to `$HOME/.claude/skills/recortex/scripts/`. Two copies enabled at once print two briefs, so disable or uninstall the other one.
 
+## Version 1.7.1: a plainer skill description
+
+The skill's description, the line shown in the slash-command menu, says what recortex does. Nothing else changes.
+
 ## Version 1.7.0: shared home folders, changing hosts, and the questions asked again
 
 For a home folder on a network mount and a session that starts on whatever host is free (a batch job, a container, a cloud workspace). An observer approval now follows the key file: an approval made on one host holds on every host that sees the same key file (the same inode at the same real path). An approval from an earlier version still holds on its own host; run `setup.py observer --level L --yes` once, in your own terminal or in a session on your answer to the level question (on a host where the approval does not hold, the command is a new approval there, so a session cannot run it unasked), and it holds on every host. Where inode numbers differ between clients (sshfs and other FUSE mounts, a container that mounts the home at another path), `observer.py enable ... --hosts any --yes` in your own terminal makes it hold on any host that can read the state folder, a copy included. `observer.py status` says why an approval does not hold (`approval_reason`) and what it is bound to (`binding`). One host's observer worker at a time works on a queue (a host lease). Where the mount keeps file locks on the host (Lustre `localflock`, NFS `local_lock`), run sessions for one project on one host at a time; `hooks.py --doctor` says so.

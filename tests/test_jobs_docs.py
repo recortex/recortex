@@ -141,7 +141,7 @@ class ContributingTests(unittest.TestCase):
     def test_the_plugin_version_has_a_matching_upgrade_entry(self):
         import json
         version = json.loads(read(".claude-plugin", "plugin.json"))["version"]
-        self.assertEqual("1.7.0", version)
+        self.assertEqual("1.7.1", version)
         text = read("skills", "recortex", "references", "upgrading.md")
         self.assertLess(text.index("## Version " + version), text.index("## Version 1.5.1"))
         self.assertLess(text.index("## Version 1.6.0"), text.index("## Version 1.5.1"))
