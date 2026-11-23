@@ -413,20 +413,25 @@ def record_grants(data):
 
 def main():
     raw = sys.stdin.read(8388609)
+    signal, before = None, None
     try:
         import signal
 
         def out_of_time(number, frame):
             raise TimeoutError("the guard ran out of time")
-        signal.signal(signal.SIGALRM, out_of_time)
+        before = signal.signal(signal.SIGALRM, out_of_time)
         signal.alarm(ALARM_SECONDS)
     except (ImportError, ValueError, AttributeError, OSError):
-        pass   # no alarm here (a platform without SIGALRM): the wrapper's own limit is all there is
+        signal = None   # no alarm here (a platform without SIGALRM): the wrapper's own limit is all there is
     try:
         out = decide(raw)
     except TimeoutError:
         # Out of time: a denial only for a command that names something protected, and nothing for any other input.
         out = deny(TOO_LONG) if PROTECTED.search(QUOTES.sub("", raw)) else None
+    finally:
+        if signal is not None:   # the alarm ends with the check (a test that calls main() in its own process must not keep it)
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, before)
     if out:
         sys.stdout.write(json.dumps(out))
     return 0
