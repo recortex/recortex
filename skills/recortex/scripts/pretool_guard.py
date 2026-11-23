@@ -49,6 +49,7 @@ PTY_HELPERS = ("script", "unbuffer", "expect", "socat", "faketty", "pty", "openp
                "ssh", "setsid", "nohup")
 PTY_HELPER = re.compile(r"(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(PTY_HELPERS), re.I)
 USERS_COMMAND = re.compile(r"(?:observer|setup|publish|acts)\.py")
+LIVE_LINK = re.compile(r"dashboard_action\.py\b.*?(?<![A-Za-z0-9_-])link(?![A-Za-z0-9_-])", re.S)
 OBSERVER_UNDER_CLAUDE = re.compile(r"CLAUDECODE")   # a command that names this variable and observer.py or setup.py is working round the check
 # The commands that perform an act the user answers a question for: a Bash call of a subagent that names one of these (or
 # `--hosts any`, or publish.py) is stopped in every project, observer on or off, because what they do is the user's own decision,
@@ -76,7 +77,7 @@ QUOTES = re.compile(r"[\\'\"]")   # taken out of the command before it is read: 
 PUBLISH_READS = re.compile(r"(?<![A-Za-z0-9_-])--(?:dry-run|list)(?![A-Za-z0-9_-])")   # these two read and send nothing
 SUBAGENT_DENIAL = ("recortex: this act is asked and run by the main session only, on the user's answer. Tell the main "
                    "session what is needed.")
-TERMINAL_DENIAL = ("recortex: observer.py, setup.py, publish.py and acts.py are not run through a program that makes a "
+TERMINAL_DENIAL = ("recortex: observer.py, setup.py, publish.py, acts.py and dashboard_action.py link are not run through a program that makes a "
                    "terminal or hides where they run (script, unbuffer, expect, socat, faketty, pty, tmux, screen, ssh, setsid, "
                    "nohup): what they do is the user's own answer. Ask the user the question the command names.")
 # A built dashboard page (mind.py's output) is never committed, copied to a branch or sent by hand: that skips the privacy check
@@ -109,12 +110,16 @@ def live_decision(data):
 
 
 def terminal_decision(data):
-    """The denial for a Bash call that runs observer.py or setup.py through a pseudo-terminal helper, or None."""
+    """The denial for a Bash call that runs observer.py, setup.py, publish.py, acts.py or `dashboard_action.py link` through a
+    pseudo-terminal helper, a program that hides where it runs, or a command that names CLAUDECODE; else None. `link` prints the
+    link with changes on when it sees the user's own terminal, so it is held to the same rule as the acts."""
     tool_input = data.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
-    if data.get("tool_name") in ("Bash", "bash") and isinstance(command, str) and USERS_COMMAND.search(command):
-        if PTY_HELPER.search(command) or OBSERVER_UNDER_CLAUDE.search(command):   # observer.py or setup.py is named: USERS_COMMAND
-            return deny(TERMINAL_DENIAL)
+    if data.get("tool_name") in ("Bash", "bash") and isinstance(command, str):
+        for text in (command, QUOTES.sub("", command)):   # a quote or a backslash inside a name changes nothing
+            if USERS_COMMAND.search(text) or LIVE_LINK.search(text):
+                if PTY_HELPER.search(text) or OBSERVER_UNDER_CLAUDE.search(text):
+                    return deny(TERMINAL_DENIAL)
     return None
 
 

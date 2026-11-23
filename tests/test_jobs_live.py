@@ -801,7 +801,9 @@ class UndoNoteTests(tjj.JobsBox):
         return first, second
 
     def undo_cli(self, act):
-        with mock.patch.object(observer, "confirmed", return_value=None):
+        import acts
+        # the user's recorded answer is held by test_observer_acts; here the grant is given, and the undo's own checks are looked at
+        with mock.patch.object(acts, "allowed", return_value=True):
             return self.cli("undo", str(act))
 
     def test_a_render_a_later_act_replaced_is_told_as_changed_since_with_a_reason(self):

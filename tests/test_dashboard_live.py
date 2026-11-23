@@ -568,12 +568,16 @@ class StateBox(LiveBox):
 
 
 class HookTests(StateBox):
-    def run_hook(self, event, data, source="startup"):
+    AS_CLAUDE_STARTS_IT = [("bash", ["bash"]), ("claude", ["claude"])]   # the one claude above a hook, and no tool shell
+
+    def run_hook(self, event, data, source="startup", parents=None):
         out = io.StringIO()
         stdin = io.StringIO(json.dumps(dict({"source": source, "session_id": "s" * 8}, **data)))
-        # the hook's budget counts from the process start; this process has run other tests, so the count starts now
+        # the hook's budget counts from the process start; this process has run other tests, so the count starts now. The
+        # ancestry is the one Claude Code gives a hook unless the test names another.
         with mock.patch.object(sys, "stdin", stdin), mock.patch.object(sys, "stdout", out), \
-                mock.patch.object(hooks, "STARTED", time.monotonic()):
+                mock.patch.object(hooks, "STARTED", time.monotonic()), \
+                mock.patch("observer_grants.ancestors", return_value=self.AS_CLAUDE_STARTS_IT if parents is None else parents):
             hooks.main([event])
         return out.getvalue()
 
@@ -602,6 +606,22 @@ class HookTests(StateBox):
                 self.assertNotIn(CHANGE, payload["hookSpecificOutput"].get("additionalContext", ""))
         out = self.run_hook("prompt-submit", {"prompt": "/recortex:dashboard", "agent_id": "a1"})
         self.assertNotIn(CHANGE, out)
+
+    def test_unless_claude_code_started_it_the_hook_gives_no_change_link_and_starts_nothing(self):
+        self.make_state()
+        by_hand = [("python3", ["python3", "hooks.py", "session-start"]), ("zsh", ["zsh"])]
+        two_claudes = [("bash", ["bash"]), ("claude", ["claude"]), ("claude", ["claude", "-p"])]
+        tool_shell = [("bash", ["bash", "-c", "source /home/u/.claude/shell-snapshots/s.sh && eval 'python3 hooks.py'"]),
+                      ("claude", ["claude"])]
+        for parents in (by_hand, two_claudes, tool_shell, []):
+            with self.subTest(parents=parents), mock.patch.object(dashboard_server, "start") as start:
+                for event, data in (("session-start", {}), ("prompt-submit", {"prompt": "/recortex:dashboard"})):
+                    out = self.run_hook(event, data, parents=parents)
+                    for secret in (CHANGE, VIEW, MOUNT, "recortex dashboard:", "127.0.0.1:%d" % self.server.server_port):
+                        self.assertNotIn(secret, out, (event, secret))
+                start.assert_not_called()
+        self.assertIn(CHANGE, self.run_hook("session-start", {}))   # started the way Claude Code starts it: the link is shown
+        self.assertIn(CHANGE, self.run_hook("prompt-submit", {"prompt": "/recortex:dashboard"}))
 
     def test_a_start_that_fails_gives_one_fixed_line_in_the_context_and_the_doctor_says_why(self):
         with mock.patch.object(dashboard_server, "start", side_effect=OSError("no python")):
@@ -871,6 +891,22 @@ class GuardTests(unittest.TestCase):
                     found = self.decide(command, **extra)
                     self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
                     self.assertIn("dashboard_action.py link or open", found["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_link_is_refused_under_a_terminal_maker_a_hiding_program_or_a_claudecode_trick(self):
+        script = os.path.join(ts.SCRIPTS, "dashboard_action.py")
+        for command in ("script -qc 'python3 %s link' /dev/null" % script, "setsid python3 %s link" % script,
+                        "env -u CLAUDECODE python3 %s link" % script, "CLAUDECODE= python3 %s link" % script,
+                        "unbuffer python3 %s link" % script, "tmux new -d 'python3 %s link'" % script,
+                        "nohup python3 %s link" % script, "ssh localhost python3 %s link" % script,
+                        "script -qc \"python3 %s link\" /dev/null" % script.replace("dashboard_action", "dash'board_action'"),
+                        "python3 %s link && setsid true" % script):
+            for extra in ({}, {"agent_id": "a1"}):
+                with self.subTest(command=command, extra=extra):
+                    found = self.decide(command, **extra)
+                    self.assertEqual("deny", found["hookSpecificOutput"]["permissionDecision"])
+        shell = os.path.join(ts.SCRIPTS, "run_pretool_guard.sh")
+        data = json.dumps({"tool_name": "Bash", "tool_input": {"command": "/x/copy/dashboard_action.py link | script -qc cat /dev/null"}})
+        self.assertIn("deny", subprocess.run(["bash", shell], input=data, capture_output=True, text=True, timeout=30).stdout)
 
     def test_link_open_status_and_a_port_without_a_network_tool_pass(self):
         script = os.path.join(ts.SCRIPTS, "dashboard_action.py")

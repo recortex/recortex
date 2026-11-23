@@ -8,7 +8,7 @@ input="$(cat)" || exit 0
 # own expansion does it, so that nothing but cat and dirname is needed.
 plain=${input//[\\\'\"]/}
 case "$plain" in
-  *recortex* | *observer* | *setup.py* | *publish.py* | *acts.py* | *mind.html* | *hooks.py* | *run_hook.sh* | *prompt-submit* | *dashboard-server-* | *launch-* | *127.0.0.1:* | *localhost:* | *claude\ -*) ;;
+  *recortex* | *observer* | *setup.py* | *publish.py* | *acts.py* | *mind.html* | *hooks.py* | *run_hook.sh* | *prompt-submit* | *dashboard_action* | *dashboard-server-* | *launch-* | *127.0.0.1:* | *localhost:* | *claude\ -*) ;;
   *) exit 0 ;;
 esac
 src="${BASH_SOURCE[0]}"

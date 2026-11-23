@@ -298,10 +298,14 @@ def live_dashboard(budget):
     answers, one detached start that is never waited for), and return (the line with the user's private link, the one fixed
     failure line). The link goes only into the hook's systemMessage, never into the context the model reads. Skipped when less
     than half a second of the budget is left, when the user switched it off and where no browser can reach the port. Never
-    raises."""
+    raises. Nothing is started or shown unless this process was started the way Claude Code starts a hook (observer_grants.
+    plausibly_a_hook): the link with changes on is for the user's screen, and a session that ran this hook by hand must not get it."""
     try:
         left = budget - (time.monotonic() - STARTED)
         if left < LIVE_NEEDS:
+            return "", ""
+        import observer_grants
+        if not observer_grants.plausibly_a_hook():
             return "", ""
         import dashboard_server
         root = os.path.realpath(recortex.project_root())
