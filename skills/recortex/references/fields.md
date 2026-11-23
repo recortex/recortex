@@ -110,7 +110,7 @@ The answers file's `fields`:
 
 ## The approval
 
-The approval is the user's record, on one machine, of the exact sheet they accepted: the sheet's fingerprint (a SHA-256 value over the whole entry and the repository's name), the day, the marks and a copy of the sheet, in `private/field-approvals.json` of the plugin's folder in the user's configuration folder (`~/.config/recortex/`, or `$XDG_CONFIG_HOME/recortex/`), beside the trusted list, written by one process at a time (under `private/field-approvals.lock`; a writer waits about ten seconds for another one, then stops with one line and writes nothing). The project tree cannot write it. Where the folder of the plugin's earlier name is also there, approvals are read from both, as the trusted list is, and a new approval is written into the folder the plugin uses; a removal forgets the approval in both ([upgrading.md](upgrading.md)). Approve only on the user's own answer in this conversation, after showing them all of the sheet word for word.
+The approval is the user's record, on one machine, of the exact sheet they accepted: the sheet's fingerprint (a SHA-256 value over the whole entry and the repository's name), the day, the marks and a copy of the sheet, in `private/field-approvals.json` of the plugin's folder in the user's configuration folder (`~/.config/recortex/`, or `$XDG_CONFIG_HOME/recortex/`), beside the trusted list, written by one process at a time (under `private/field-approvals.lock`; a writer waits about ten seconds for another one, then stops with one line and writes nothing). The project tree cannot write it. Approve only on the user's own answer in this conversation, after showing them all of the sheet word for word.
 
 What each state shows:
 

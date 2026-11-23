@@ -1,6 +1,6 @@
 # Install and upgrade
 
-How to install the plugin, which repositories it may print from, how to use it as a plain skill and how to move from the plugin's earlier name.
+How to install the plugin, which repositories it may print from, how to use it as a plain skill and how to move to a newer version.
 
 ## Requirements
 
@@ -62,7 +62,7 @@ Scripts that call `post_verified.py body` must now pass `--expected-body-file` w
 
 ## Upgrading from an earlier version
 
-From 1.4.0 the repository is `recortex/recortex` and its marketplace is `recortex`. Until 1.3.0 the plugin came from `mr-eyes/recortex` as `recortex@mr-eyes-skills`, and before 0.5.0 it was named gh-issues-manager. Move an installed copy of any earlier version with these four commands, then start a new session:
+From 1.4.0 the repository is `recortex/recortex` and its marketplace is `recortex`. Until 1.3.0 the plugin came from `mr-eyes/recortex` as `recortex@mr-eyes-skills`. Move an installed copy of any earlier version with these four commands, then start a new session:
 
 ```bash
 claude plugin marketplace add recortex/recortex
@@ -71,8 +71,4 @@ claude plugin uninstall recortex@mr-eyes-skills
 claude plugin marketplace remove mr-eyes-skills
 ```
 
-If `claude plugin list` shows `gh-issues-manager@mr-eyes-skills`, uninstall that name in the third command. Add `--scope project` or `--scope local` if that is how you installed it. Until the old copy is removed, every session gets two briefs; the same holds for any other copy of the plugin, such as a folder install.
-
-## Upgrading from gh-issues-manager
-
-The plugin was named gh-issues-manager before version 0.5.0. After the move above, nothing else is needed. The configuration file `.gh-issues-manager.json`, the folders `~/.cache/gh-issues-manager` and `~/.local/state/gh-issues-manager`, the trusted list `~/.config/gh-issues-manager/trusted-repos`, the `GHIM_*` variables, an installed `ghim-triage.yml` workflow and everything on GitHub keep working as they are. Edit by hand what names the plugin's parts: the agent prefix (`recortex:record-auditor`) and the skill name in permission rules, your own agents and a project's CLAUDE.md snippet, and the folder and hook paths of a folder install. Rename the configuration file to `.recortex.json` only once everyone on the project has 0.5.0 or later. Optionally, with no session running and no copy of 0.4.x left on the machine, delete `~/.cache/gh-issues-manager` and move `~/.local/state/gh-issues-manager` to `~/.local/state/recortex`. The earlier names are read for at least twelve months, and `hooks.py --doctor` lists the ones in use. Details: [references/upgrading.md](../skills/recortex/references/upgrading.md).
+Add `--scope project` or `--scope local` if that is how you installed it. Until the old copy is removed, every session gets two briefs; the same holds for any other copy of the plugin, such as a folder install.

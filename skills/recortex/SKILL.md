@@ -11,7 +11,7 @@ Scripts live in `${CLAUDE_SKILL_DIR}/scripts`, templates in `${CLAUDE_SKILL_DIR}
 
 ## Configuration
 
-A project opts in with a `.recortex.json` file at its root (example: [templates/recortex.example.json](templates/recortex.example.json)). A project or machine set up under the plugin's earlier name keeps working as it is: [references/upgrading.md](references/upgrading.md).
+A project opts in with a `.recortex.json` file at its root (example: [templates/recortex.example.json](templates/recortex.example.json)).
 
 | Key | Meaning |
 |---|---|

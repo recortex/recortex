@@ -81,11 +81,11 @@ The field questions:
 ## What `apply` does
 
 - Checks first that none of the files it may write (the setup file, the hub drafts, the workflow, `CLAUDE.md`) or the folders on the way to them is a symlink, and stops before any change if one is. Each file is written through a fresh temporary file in its folder, then moved into place.
-- Writes `.recortex.json`, or adds to the configuration file under the plugin's earlier name when only that one is there: the repository, the profiles (a profile with edited sections is stored with its section labels and headings), topics, decision makers, time zone and options.
+- Writes `.recortex.json`: the repository, the profiles (a profile with edited sections is stored with its section labels and headings), topics, decision makers, time zone and options.
 - Creates the labels: role labels, the core `type:` labels, the chosen profiles' section and type labels, and topic labels.
 - Creates the hub with its deliverable tables in the chosen order and posts its first resume comment, for a project that has no hub yet.
 - Adds the repository to the user's trusted list when `trust` is true; with `false`, the list is not touched.
-- Writes `.github/workflows/recortex-triage.yml` when asked for and the record is this repository's issues. A workflow acts only on the repository it is committed to, so for a record in another repository (`record`: `other` or `new`) `apply` writes nothing and says to commit `templates/recortex-triage.yml` in the record repository. Where the labeler of the plugin's earlier name is installed, it is kept and no second one is written ([upgrading.md](upgrading.md)).
+- Writes `.github/workflows/recortex-triage.yml` when asked for and the record is this repository's issues. A workflow acts only on the repository it is committed to, so for a record in another repository (`record`: `other` or `new`) `apply` writes nothing and says to commit `templates/recortex-triage.yml` in the record repository.
 - Writes the CLAUDE.md snippet when asked for.
 - Runs the first `index.py sync` in the foreground, so the first session already has a brief.
 - With a `board` answer other than `"no"`: runs `board.py setup` and then `board.py apply`. When the `project` scope is missing the rest of the setup is done and one fixed line says to run `gh auth refresh -s project` in a terminal and then `board.py setup` again; the plugin never runs that command. Any other board failure also leaves the setup done.
