@@ -11,6 +11,7 @@ import re
 import shlex
 import subprocess
 import sys
+import webbrowser
 
 import names
 import zones
@@ -41,6 +42,18 @@ class GhTimeout(GhError):
 
 def gh_command():
     return shlex.split(names.env("GH", "gh"))
+
+
+def open_page(uri):
+    """Ask a browser to open `uri`: True when one was asked. False, without a call, on Linux when none of DISPLAY, WAYLAND_DISPLAY
+    and BROWSER is set to a value (a machine with no screen: webbrowser would answer true for a text browser that opens nothing
+    there), and False when webbrowser raises or says no."""
+    if sys.platform.startswith("linux") and not any(os.environ.get(name) for name in ("DISPLAY", "WAYLAND_DISPLAY", "BROWSER")):
+        return False
+    try:
+        return bool(webbrowser.open(uri))
+    except Exception:  # noqa: BLE001 - no browser is no error
+        return False
 
 
 def gh(args, stdin=None, timeout=60, errors=None, binary=False):

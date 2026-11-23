@@ -447,7 +447,7 @@ class LaunchTests(tj.TaskBox):
         with mock.patch.object(sys, "stdout", out), mock.patch.object(sys, "stderr", err), \
                 mock.patch.object(action, "Actions", side_effect=make), \
                 mock.patch.object(action, "serve", side_effect=serving), \
-                mock.patch.object(action.webbrowser, "open", side_effect=lambda url: opened.append(url) or True):
+                mock.patch.object(action.recortex, "open_page", side_effect=lambda url: opened.append(url) or True):
             code = action.main(argv)
         self.assertEqual(0, code, err.getvalue())
         return out.getvalue(), err.getvalue(), held, opened

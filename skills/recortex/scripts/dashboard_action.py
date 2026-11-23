@@ -23,7 +23,6 @@ import re
 import secrets
 import sys
 import time
-import webbrowser
 
 import dashboard_notes
 import decision_review_io
@@ -53,6 +52,8 @@ STOPPED = {"stopped": "The private dashboard service was stopped.",
            "idle": "The private dashboard service stopped after 30 idle minutes.",
            "limit": "The private dashboard service stopped at its 8 hour limit.",
            "interrupted": "The private dashboard service was interrupted."}
+NO_BROWSER = ("The interactive dashboard needs a browser on this machine, and it has none; it was not started.\n"
+              "Its actions also work in the chat: /recortex:todo, /recortex:impact and /recortex:map.")
 POLICY = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
           "base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'")
 HTML = """<!doctype html><html lang="en"><meta charset="utf-8">
@@ -796,9 +797,17 @@ def main(argv=None):
               "its pages (Ctrl-C also stops it here). Do not share this address." % actions.repo)
         print(address, flush=True)
         if args.open and launch:
-            webbrowser.open(pathlib.Path(launch).as_uri())
+            recortex.open_page(pathlib.Path(launch).as_uri())
     else:
-        opened = webbrowser.open(pathlib.Path(launch).as_uri()) if args.open else False
+        opened = recortex.open_page(pathlib.Path(launch).as_uri()) if args.open else False
+        if args.open and not opened:   # nobody can reach this machine's 127.0.0.1: no service is started, no file is left
+            server.server_close()
+            try:
+                storage.remove_file(actions.folder, os.path.basename(launch))
+            except (OSError, storage.StorageError):
+                pass
+            print(NO_BROWSER)
+            return 0
         print("Private dashboard actions for %s are running. The private address is not printed here." % actions.repo)
         print("Opened the private dashboard in your browser." if opened else
               "To open the private dashboard, open this file in your browser: %s" % launch, flush=True)

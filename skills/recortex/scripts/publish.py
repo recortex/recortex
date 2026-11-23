@@ -299,7 +299,7 @@ def offer(config, record, path):
     for item in body["options"]:
         if item["answer"] == "no":
             item["description"] = shown
-    return acts.question_lines(body)
+    return acts.question_lines(body, bare_no=True)
 
 
 def run(args):

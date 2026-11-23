@@ -903,12 +903,15 @@ def describe(act, values, form):
     return {"id": act.kind, "header": act.header, "question": act.text(values), "options": out, "form": form}
 
 
-def question_lines(body):
+def question_lines(body, bare_no=False):
     """The text form of a question: its id, the question, one line for each option with the command it runs, and for the typed
-    form the line that says how to answer."""
+    form the line that says how to answer. With `bare_no` an option that runs nothing is its label and description alone."""
     lines = ["question %s" % body["id"], "  " + body["question"]]
     for item in body["options"]:
-        lines.append("  - %s: %s Run: %s" % (item["label"], item["description"], " ; then ".join(item["run"]) or "nothing"))
+        if bare_no and not item["run"]:
+            lines.append("  - %s: %s" % (item["label"], item["description"]))
+        else:
+            lines.append("  - %s: %s Run: %s" % (item["label"], item["description"], " ; then ".join(item["run"]) or "nothing"))
     if body.get("form") == "typed":
         lines.append("  " + TYPED_LINE % next(item["label"] for item in body["options"] if item["answer"] == "yes"))
     return lines

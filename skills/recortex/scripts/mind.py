@@ -32,7 +32,6 @@ import os
 import pathlib
 import re
 import sys
-import webbrowser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import index  # noqa: E402
@@ -63,6 +62,7 @@ UNTRUSTED = ("mind: this repository is not in your trusted list, so no page is b
 NO_INDEX = "mind: there is no local index of this repository; run index.py sync"
 REFUSED = "mind: the local index cannot be read; run hooks.py --doctor"
 NOT_WRITTEN = "mind: the page cannot be written beside the index (%s); nothing was written"
+NO_BROWSER = "%s is ready; this machine has no browser."
 
 
 class Safe(str):
@@ -3734,15 +3734,21 @@ def write_paper(db, config, repo, args):
     except storage.StorageError as error:
         print(NOT_WRITTEN % error.kind)
         return 1
-    print("wrote %s (%d KB): %s" % (path, (len(text.encode("utf-8")) + 1023) // 1024,
-                                    plural(len(paper["sections"]), "1 section", "%d sections")))
+    address = pathlib.Path(path).as_uri()
+    opened = recortex.open_page(address) if args.open else False   # right after the file is written
+    quiet = bool(args.open and not opened)   # no browser: the session says that one line and the path, and nothing else
+    if not quiet:
+        print("wrote %s (%d KB): %s" % (path, (len(text.encode("utf-8")) + 1023) // 1024,
+                                        plural(len(paper["sections"]), "1 section", "%d sections")))
     for line in mind_figures.lines(reasons):
         print(line)
-    address = pathlib.Path(path).as_uri()
+    if quiet:
+        print(NO_BROWSER % "The paper")
+        print("the file: %s" % path)
+        return 0
     print("open it in a browser: %s" % address)
-    if args.open:
-        print("asked the browser to open it" if webbrowser.open(address) else
-              "no browser could be started; open the address above yourself")
+    if opened:
+        print("asked the browser to open it")
     return 0
 
 
@@ -3885,25 +3891,35 @@ def main(argv=None):
         print(NOT_WRITTEN % error.kind)
         return 1
     counts, missing = model["counts"], model["not_told"]
-    print("wrote %s (%d KB): %s in %s" % (path, (len(text.encode("utf-8")) + 1023) // 1024,
-                                          plural(counts["memories"], "1 memory", "%d memories"),
-                                          plural(counts["threads"], "1 thread", "%d threads")))
+    address = pathlib.Path(path).as_uri()
+    opened = recortex.open_page(address) if args.open else False   # right after the file is written
+    quiet = bool(args.open and not opened)   # no browser: the session says that one line and asks one question
+    if not quiet:
+        print("wrote %s (%d KB): %s in %s" % (path, (len(text.encode("utf-8")) + 1023) // 1024,
+                                              plural(counts["memories"], "1 memory", "%d memories"),
+                                              plural(counts["threads"], "1 thread", "%d threads")))
     untold = missing["others"] + missing["edited"] + missing["older"]
     if untold:
         print("%s not told; the page's last lines say why" % plural(untold, "1 memory is", "%d memories are"))
     for line in mind_figures.lines(reasons):
         print(line)
-    address = pathlib.Path(path).as_uri()
-    print("open it in a browser: %s" % address)
+    if not quiet:
+        print("open it in a browser: %s" % address)
     sheet = model.get("sheet")
     if isinstance(sheet, dict):
         if integer(sheet.get("unfetched")):
             print("%s of the manuscript show no marks because the text of an earlier version is not kept here; run mind.py "
                   "--versions" % plural(integer(sheet["unfetched"]), "1 part", "%d parts"))
-        print("the manuscript: %s#paper" % address)
-    if args.open:
-        print("asked the browser to open it" if webbrowser.open(address) else
-              "no browser could be started; open the address above yourself")
+        if not quiet:
+            print("the manuscript: %s#paper" % address)
+    if opened:
+        print("asked the browser to open it")
+    if quiet:
+        import publish
+        print(NO_BROWSER % "The dashboard")
+        for line in publish.offer(config, repo, path):
+            print(line)
+        return 0
     print("the project map: %s#project-map" % address)
     return 0
 
