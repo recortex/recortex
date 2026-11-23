@@ -4,16 +4,14 @@ How to move an installed copy to the current version, and what each version chan
 
 ## The one step Claude Code needs
 
-From 1.4.0 the repository is `recortex/recortex` and its marketplace is `recortex`; until 1.3.0 it was `mr-eyes/recortex`, installed as `recortex@mr-eyes-skills`. Move an installed copy of any earlier version with these four commands, one after the other:
+Update the marketplace, then the plugin, and start a new session:
 
 ```bash
-claude plugin marketplace add recortex/recortex
-claude plugin install recortex@recortex
-claude plugin uninstall recortex@mr-eyes-skills
-claude plugin marketplace remove mr-eyes-skills
+claude plugin marketplace update recortex
+claude plugin update recortex@recortex
 ```
 
-Then start a new session. Add `--scope project` or `--scope local` if that is how you installed it. Run `claude plugin list` afterwards: it shows `recortex@recortex`, version 1.4.0 or later. Do not run `claude plugin marketplace update mr-eyes-skills` instead: GitHub forwards the old address to the new repository, whose marketplace now has another name. The old plugin folders under `~/.claude/plugins/cache/mr-eyes-skills/` are left behind and can be deleted.
+Add `--scope project` or `--scope local` if that is how you installed it. `claude plugin list` shows the version afterwards.
 
 A copy of the plugin installed another way (a folder under `~/.claude/skills/` with hooks from `templates/settings-hook-snippet.json`, or a second plugin entry) stays as it is. Copy the new `skills/recortex` folder in, remove the old folder, and change the four hook commands to `$HOME/.claude/skills/recortex/scripts/`. Two copies enabled at once print two briefs, so disable or uninstall the other one.
 

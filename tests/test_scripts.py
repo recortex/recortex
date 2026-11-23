@@ -2967,6 +2967,12 @@ class GuardTests(RecordSandbox):
         self.assertIn("(read from GitHub just now)", session.stdout)
         self.assertFalse(os.path.exists(planted))
         self.assertIn("(read from GitHub just now)", self.hook("session-start", env={"RECORTEX_HOOK_TIMEOUT": "1e9"}).stdout)
+        # three characters pass the length check, and an arithmetic expansion would then evaluate the name `x` as a variable that
+        # holds a subscript with a command in it: only the digit check keeps it from running
+        for text in ("1+x", "x", "-x"):
+            session = self.hook("session-start", env={"RECORTEX_HOOK_TIMEOUT": text, "x": "a[$(touch %s)]" % planted})
+            self.assertIn("(read from GitHub just now)", session.stdout, text)
+            self.assertFalse(os.path.exists(planted), text)
 
     def test_the_brief_keeps_its_end_line_under_the_cap(self):
         data = self.repo()
@@ -12576,7 +12582,7 @@ class PackagingTests(unittest.TestCase):
         observer = recortex.read_text(os.path.join(SCRIPTS, "run_observer_hook.sh"))
         self.assertIn('timeout 4 python3 "$here/observer.py"', observer)
         # Without this folder's entry in this machine's observer approvals, no Python starts (about 3 ms a hook).
-        self.assertIn('grep -qsF -e "\\"$PWD\\"" -- "$state"/*/private/observer-approvals.json || exit 0', observer)
+        self.assertIn('grep -qsF -e "\\"$PWD\\"" -- "$state"/recortex/private/observer-approvals.json || exit 0', observer)
         runner = recortex.read_text(os.path.join(SCRIPTS, "run_hook.sh"))
         self.assertIn("session-start) hard=$((limit + 3))", runner)  # limit is at most 15, so at most 18
         self.assertIn("prompt-submit) hard=4", runner)

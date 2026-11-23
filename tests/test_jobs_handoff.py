@@ -10,7 +10,8 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILL = os.path.join(ROOT, "skills", "recortex")
-PHRASES = re.compile(r"own terminal|separate terminal|outside Claude Code|in a terminal|your terminal|their terminal", re.I)
+PHRASES = re.compile(r"own terminal|separate terminal|outside Claude Code|in a terminal|your terminal|their terminal|ssh -L|"
+                     r"forward the port", re.I)
 
 
 def read(path):

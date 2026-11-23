@@ -10,14 +10,14 @@ state="${XDG_STATE_HOME:-}"
 case "$state" in /*) ;; *) case "${HOME:-}" in /*) state="$HOME/.local/state" ;; *) state="" ;; esac ;; esac
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -n "$state" ] && command -v grep >/dev/null 2>&1; then
   cd -P "$CLAUDE_PROJECT_DIR" 2>/dev/null || exit 0
-  grep -qsF -e "\"$PWD\"" -- "$state"/*/private/observer-approvals.json || exit 0
+  grep -qsF -e "\"$PWD\"" -- "$state"/recortex/private/observer-approvals.json || exit 0
   # The project file switches the observer off ("observer": false): then only the check before a Bash call starts
-  # Python, since holds stay in force while this folder has an entry. A file named by the plugin's variable (current
-  # or earlier prefix), another spelling or the earlier file name is left to Python. The match is plain text, so no
-  # other entry of the project file may be named "observer".
+  # Python, since holds stay in force while this folder has an entry. A file named by the plugin's variable or
+  # another spelling is left to Python. The match is plain text, so no other entry of the project file may be named
+  # "observer".
   if [ "${1:-}" != "pre-tool" ] && [ -f .recortex.json ]; then
     named=no
-    for name in $(compgen -e); do case "$name" in RECORTEX_CONFIG|????_CONFIG) named=yes ;; esac; done
+    [ -n "${RECORTEX_CONFIG:-}" ] && named=yes
     if [ "$named" = no ] && grep -qsE '"observer"[[:space:]]*:[[:space:]]*false' -- .recortex.json; then exit 0; fi
   fi
 fi

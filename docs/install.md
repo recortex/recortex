@@ -54,21 +54,8 @@ Use `<project>/.claude/skills/` in place of `~/.claude/skills/` to install it fo
 
 ## A home folder on shared storage
 
-If your home folder is on a network mount that many hosts see, and a session may start on any of them, the observer's approval follows the key file from host to host (see [the observer](../skills/recortex/references/observer.md)). Where the folders above Claude Code's transcripts belong to another account, the session asks the question that `acts.py ask trust` prints and, on your yes, runs `observer.py trust-ancestor --failing --yes`. Run sessions for one project on one host at a time where `hooks.py --doctor` says the mount keeps its file locks on the host. For the interactive dashboard on a machine with no browser, forward the port with `ssh -L`, with the same port number on both ends and `127.0.0.1` in the address ([the dashboard](../skills/recortex/references/mind.md)).
+If your home folder is on a network mount that many hosts see, and a session may start on any of them, the observer's approval follows the key file from host to host (see [the observer](../skills/recortex/references/observer.md)). Where the folders above Claude Code's transcripts belong to another account, the session asks the question that `acts.py ask trust` prints and, on your yes, runs `observer.py trust-ancestor --failing --yes`. Run sessions for one project on one host at a time where `hooks.py --doctor` says the mount keeps its file locks on the host.
 
-## Body updates from 1.1.0
+## Updating
 
-Scripts that call `post_verified.py body` must now pass `--expected-body-file` with the unchanged body saved before drafting. Keep the draft in a separate file. A changed live body stops the replacement; merge the latest text before retrying. Comments, existing records and the index format are unchanged. See [the posting example](../skills/recortex/references/posting-and-verification.md#4-post).
-
-## Upgrading from an earlier version
-
-From 1.4.0 the repository is `recortex/recortex` and its marketplace is `recortex`. Until 1.3.0 the plugin came from `mr-eyes/recortex` as `recortex@mr-eyes-skills`. Move an installed copy of any earlier version with these four commands, then start a new session:
-
-```bash
-claude plugin marketplace add recortex/recortex
-claude plugin install recortex@recortex
-claude plugin uninstall recortex@mr-eyes-skills
-claude plugin marketplace remove mr-eyes-skills
-```
-
-Add `--scope project` or `--scope local` if that is how you installed it. Until the old copy is removed, every session gets two briefs; the same holds for any other copy of the plugin, such as a folder install.
+To update, see [Upgrading](../skills/recortex/references/upgrading.md).
