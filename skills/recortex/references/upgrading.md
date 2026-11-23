@@ -25,6 +25,8 @@ The dashboard on a machine with no browser says one line, "The dashboard is read
 
 The names the plugin had before version 0.5.0 are no longer read: a project file, local folders, variables and a triage workflow under those names are ignored, earlier than this page once promised. Rename them to `.recortex.json`, `recortex` and `RECORTEX_`. The markers in posted comments keep their prefix: it is the record format. The session-start brief no longer carries the sentence about the earlier name.
 
+The dashboard is live. A server that the session start starts (one for the machine and host, every project, 24 hours after the last session) follows the record and reloads the page when it changes; `dashboard_action.py open` (`/recortex:dashboard`) opens it. The link with changes on is shown to you above the session's reply, and the session is given a view-only link. It starts only where your browser can reach it, and `"live_dashboard": false` in the plugin's `settings.json`, or `RECORTEX_DASHBOARD=off`, switches it off. Going back to 1.7.1 leaves a server running for at most a day; `dashboard_action.py stop` of 1.8.0 ends it before the downgrade.
+
 Going back to 1.7.1: it does not know the act grants, so its session is refused where 1.8.0 asked, and it does not read a receipt that 1.8.0 wrote with the new `private` key (it prints "nothing has been published"). Nothing in the record or the index changes.
 
 ## Version 1.7.1: a plainer skill description

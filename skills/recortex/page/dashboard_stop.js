@@ -25,7 +25,7 @@
         note.textContent = 'The local service has stopped. You can close this page.';
         return;
       }
-      note.textContent = 'The service did not stop. It stops by itself after 30 idle minutes.';
+      note.textContent = 'The service did not stop. It stops by itself 24 hours after the last session.';
     } catch (error) {
       note.textContent = 'The service did not answer. It may already have stopped.';
     }
