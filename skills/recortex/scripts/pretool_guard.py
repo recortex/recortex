@@ -51,8 +51,11 @@ OBSERVER_UNDER_CLAUDE = re.compile(r"CLAUDECODE")   # a command that names this 
 # is written out here, since this file does not import observer_hooks; a test holds it equal to the terminal rows of
 # observer_hooks.COMMANDS (TERMINAL_ONLY).
 USERS_ONLY = ("advisory", "disable", "release", "resume", "trust-ancestor", "undo")
-USERS_COMMAND_WORDS = re.compile(r"observer\.py\b.*?(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(USERS_ONLY))
-HOSTS_ANY = re.compile(r"(?:observer|setup)\.py\b.*--hosts(?:\s+|=)[\"']?any\b")
+# re.S: a command may run over several lines (a backslash and a line break, or a quote that is never closed). The option is
+# matched with its prefixes too (--ho, --hos, --host), which argparse would read as --hosts; the parsers of observer.py and
+# setup.py no longer accept an abbreviation (allow_abbrev=False), and this holds for a command written for an older version.
+USERS_COMMAND_WORDS = re.compile(r"observer\.py\b.*?(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(USERS_ONLY), re.S)
+HOSTS_ANY = re.compile(r"(?:observer|setup)\.py\b.*--ho(?:s(?:ts?)?)?(?:\s+|=)[\"']?any\b", re.S)
 PUBLISH = re.compile(r"(?<![A-Za-z0-9_-])publish\.py\b")
 USERS_DENIAL = ("recortex: this command is the user's own. Ask the user to run it in their own terminal, outside Claude Code; "
                 "a session never runs it.")

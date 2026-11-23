@@ -2021,8 +2021,17 @@ def map_files_command(args):
     return 0
 
 
+class Parser(argparse.ArgumentParser):
+    """No abbreviated options: --ho would otherwise be read as --hosts, which the guard that keeps a session from choosing it by
+    name would not see. The sub-commands are of this class too."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = Parser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("questions", help="the setup questions an update added that are still open (reads GitHub once at "
                        "most, for the labels)")

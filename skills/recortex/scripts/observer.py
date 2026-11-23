@@ -22,7 +22,15 @@ def emit(value):
 
 def parser():
     import argparse  # the modules only some commands need are imported where they are used: a hook starts this
-    root = argparse.ArgumentParser(description=__doc__)
+
+    class Parser(argparse.ArgumentParser):
+        """No abbreviated options: --ho would otherwise be read as --hosts, which the guard that keeps a session from choosing
+        it by name would not see. The sub-commands are of this class too."""
+
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("allow_abbrev", False)
+            super().__init__(*args, **kwargs)
+    root = Parser(description=__doc__)
     root.add_argument("--repo")
     sub = root.add_subparsers(dest="command", required=True)
     # How a session's own call to each subcommand is kept in check (observer_hooks.COMMANDS holds the same table, and a test

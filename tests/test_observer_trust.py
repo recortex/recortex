@@ -565,6 +565,52 @@ class GuardTests(unittest.TestCase):
                 self.assertEqual("deny", out["hookSpecificOutput"]["permissionDecision"])
                 self.assertEqual(pretool_guard.USERS_DENIAL, out["hookSpecificOutput"]["permissionDecisionReason"])
 
+    def test_a_command_over_several_lines_or_with_a_shortened_option_is_stopped_too(self):
+        # The 1.7.0 review, N1: a line break (with a quote that is never closed, so that the shell's words cannot be told) and a
+        # shortened option (argparse read --ho as --hosts before the parsers refused abbreviations).
+        for command in ("python3 /x/observer.py \\\n  trust-ancestor --failing --yes",
+                        "python3 /x/observer.py 'a\ntrust-ancestor --failing --yes",
+                        "python3 /x/setup.py observer --level everything \\\n  --hosts any --yes",
+                        "python3 /x/setup.py observer 'a\n --hosts any",
+                        "python3 /x/observer.py enable --model sonnet --level everything --host any --yes",
+                        "python3 /x/observer.py enable --ho any --yes", "python3 /x/observer.py enable --hos=any --yes",
+                        "python3 /x/setup.py observer --level everything --ho 'any' --yes"):
+            out = self.decide(command)
+            self.assertIsNotNone(out, command)
+            self.assertEqual(pretool_guard.USERS_DENIAL, out["hookSpecificOutput"]["permissionDecisionReason"], command)
+
+    def test_the_parsers_of_observer_and_setup_take_no_shortened_option(self):
+        import argparse
+        import setup
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            for argv in (["enable", "--model", "sonnet", "--ho", "any"], ["enable", "--model", "sonnet", "--host=any"],
+                         ["status", "--source"], ["trust-ancestor", "--fail"]):
+                with self.assertRaises(SystemExit, msg=argv):
+                    observer.parser().parse_args(argv)
+        self.assertIn("unrecognized arguments", stderr.getvalue())
+        args = observer.parser().parse_args(["enable", "--model", "sonnet", "--hosts", "any", "--yes"])   # the whole option
+        self.assertEqual("any", args.hosts)
+        # setup.py builds its parser inside main: take it as it is parsed, and look at it and at every sub-command
+        seen = {}
+
+        def take(parser, *args, **kwargs):
+            seen["parser"] = parser
+            raise SystemExit(0)
+        with mock.patch.object(setup.Parser, "parse_args", take):
+            with self.assertRaises(SystemExit):
+                setup.main(["preflight"])
+
+        def every(parser):
+            yield parser
+            for action in parser._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    for child in action.choices.values():
+                        yield from every(child)
+        parsers = list(every(seen["parser"]))
+        self.assertGreater(len(parsers), 15)
+        self.assertEqual([], [parser.prog for parser in parsers if parser.allow_abbrev])
+
     def test_the_reads_and_the_grants_go_through(self):
         for command in ("python3 /x/observer.py status", "python3 /x/observer.py pending --waiting",
                         "python3 /x/observer.py enable --model sonnet --level everything --hosts shared --yes",
