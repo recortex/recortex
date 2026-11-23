@@ -289,12 +289,11 @@ def start():
 
 
 def ensure(root, seconds=PING_SECONDS):
-    """For the session-start hook: "unreachable" (this machine's browser cannot reach a port, or the user switched it off),
-    "running" (a server of ours answered and knows the project now), "started" (none answered, one is starting) or "failed" (it
+    """For the session-start hook: "off" (the user switched it off), "running" (a server of ours answered and knows the project now), "started" (none answered, one is starting) or "failed" (it
     could not be started). A server of another version is stopped and replaced. Never raises, never waits for the child."""
     try:
-        if not enabled() or reach() == "none":
-            return "unreachable"
+        if not enabled():
+            return "off"   # reach() decides only whether the question of Part B follows the link, never whether the server starts
         state = read_state()
         if state is not None:
             answer, found = ping(state, root, seconds)

@@ -642,8 +642,8 @@ class HookTests(StateBox):
         self.assertEqual("  live dashboard: not running (starts with the next session)", line())
         self.make_state()
         self.assertEqual("  live dashboard: running on this machine", line())
-        with mock.patch.dict(os.environ, {"SSH_CONNECTION": "1 2 3 4"}):
-            self.assertIn("not started here: this machine's browser cannot reach it", line())
+        with mock.patch.dict(os.environ, {"SSH_CONNECTION": "1 2 3 4"}):   # reach() changes no state: it starts everywhere
+            self.assertEqual("  live dashboard: running on this machine", line())
         with mock.patch.dict(os.environ, {"RECORTEX_DASHBOARD": "off"}):
             self.assertIn("switched off", line())
 
@@ -656,21 +656,33 @@ class HookTests(StateBox):
         self.assertEqual("none", dashboard_server.reach({"SSH_CONNECTION": "x", "TERM_PROGRAM": "iTerm.app"}))
         self.assertEqual("local", dashboard_server.reach({"TERM_PROGRAM": "vscode"}))
 
-    def test_on_none_no_process_is_started_and_nothing_is_shown(self):
-        with mock.patch.dict(os.environ, {"SSH_CONNECTION": "1 2 3 4"}), \
-                mock.patch.object(dashboard_server, "start") as start:
-            self.assertEqual("unreachable", dashboard_server.ensure(self.project))
+    def test_where_the_browser_may_not_reach_the_port_the_server_still_starts_and_the_link_is_shown(self):
+        """The owner's answer (QD3): the link is offered everywhere. On a machine reached over SSH the session-start hook starts
+        the server and puts the link in systemMessage only; reach() decides nothing but whether a question follows `open`."""
+        environment = {"SSH_CONNECTION": "1 2 3 4", "TERM_PROGRAM": "iTerm.app"}
+        with mock.patch.dict(os.environ, environment), \
+                mock.patch.object(dashboard_server, "start", side_effect=lambda: self.make_state()) as start:
+            self.assertEqual("none", dashboard_server.reach())
             out = self.run_hook("session-start", {})
-        start.assert_not_called()
-        self.assertNotIn("recortex dashboard:", out)
+            prompt = self.run_hook("prompt-submit", {"prompt": "/recortex:dashboard"})
+        start.assert_called()
+        payload = json.loads(out)
+        self.assertIn("recortex dashboard: http://127.0.0.1:%d/%s/p/%s/#%s" % (self.server.server_port, MOUNT, self.ident, CHANGE),
+                      payload["systemMessage"])
+        self.assertNotIn(CHANGE, payload["hookSpecificOutput"]["additionalContext"])
         self.assertNotIn(hooks.LIVE_FAILED, out)
+        self.assertIn(CHANGE, json.loads(prompt)["systemMessage"])
+        with mock.patch.dict(os.environ, environment), mock.patch.object(dashboard_server, "start") as start:
+            dashboard_server.write_state(dict(self.make_state(), pid=2 ** 22 + 12345, port=1))   # no server answers: one is started
+            self.assertEqual("started", dashboard_server.ensure(self.project))
+        start.assert_called_once()
 
     def test_switched_off_by_the_variable_or_the_setting(self):
         for value in ("0", "off", "no", "false", "OFF"):
             with mock.patch.dict(os.environ, {"RECORTEX_DASHBOARD": value}):
                 self.assertFalse(dashboard_server.enabled(), value)
                 with mock.patch.object(dashboard_server, "start") as start:
-                    self.assertEqual("unreachable", dashboard_server.ensure(self.project))
+                    self.assertEqual("off", dashboard_server.ensure(self.project))
                 start.assert_not_called()
         with mock.patch.dict(os.environ, {"RECORTEX_DASHBOARD": "1"}):
             self.assertTrue(dashboard_server.enabled())
@@ -774,6 +786,7 @@ class CommandTests(StateBox):
         self.assertIn("live dashboard, view only: " + self.address(VIEW), out)
         self.assertIn("Your private link with changes on is in the line recortex showed above this reply.", out)
         self.assertNotIn(CHANGE, out)
+        self.assertIn("Show the file's path", out)   # no browser here: the link first, then Part B's one question
 
     def test_in_an_editor_no_browser_is_tried(self):
         with mock.patch.dict(os.environ, {"SSH_CONNECTION": "1 2 3 4", "TERM_PROGRAM": "vscode"}):
@@ -781,12 +794,26 @@ class CommandTests(StateBox):
         self.assertEqual((0, []), (code, opened))
         self.assertIn("view only", out)
         self.assertNotIn(CHANGE, out)
+        self.assertNotIn("Show the file's path", out)   # an editor forwards the port it sees: no question
 
-    def test_where_no_browser_can_reach_the_port_open_says_so_and_exits_three(self):
-        with mock.patch.dict(os.environ, {"SSH_CONNECTION": "1 2 3 4"}):
+    def test_where_nothing_shows_the_browser_reaches_the_port_open_gives_the_link_then_the_question(self):
+        with mock.patch.dict(os.environ, {"SSH_CONNECTION": "1 2 3 4", "TERM_PROGRAM": "iTerm.app"}):
+            code, out, opened = self.run_command("open")
+        self.assertEqual((0, []), (code, opened))
+        lines = out.splitlines()
+        self.assertEqual("live dashboard, view only: " + self.address(VIEW), lines[0])
+        self.assertEqual("Your private link with changes on is in the line recortex showed above this reply.", lines[1])
+        self.assertEqual(action.MAYBE_NOT_REACHED, lines[2])
+        self.assertIn("Show the file's path", out)   # Part B's one question follows the link
+        self.assertNotIn(CHANGE, out)
+        self.assertNotIn("ssh -L", out)
+        self.assertNotIn("forward", out)
+
+    def test_open_says_so_when_the_user_switched_the_dashboard_off(self):
+        with mock.patch.dict(os.environ, {"RECORTEX_DASHBOARD": "off"}):
             code, out, opened = self.run_command("open")
         self.assertEqual((3, []), (code, opened))
-        self.assertEqual("The live dashboard cannot be reached from your browser on this machine.\n", out)
+        self.assertEqual(action.SWITCHED_OFF + "\n", out)
 
     def test_status_says_running_and_stop_ends_the_server_and_says_so(self):
         code, out, _ = self.run_command("status")

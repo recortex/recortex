@@ -310,7 +310,7 @@ def live_dashboard(budget):
         import dashboard_server
         root = os.path.realpath(recortex.project_root())
         answer = dashboard_server.ensure(root)
-        if answer == "unreachable":
+        if answer == "off":
             return "", ""
         if answer == "failed":
             return "", LIVE_FAILED
@@ -338,7 +338,7 @@ def prompt_live(data, budget):
         if isinstance(prompt, str) and DASHBOARD_COMMAND.fullmatch(prompt):
             return live_dashboard(budget)[0]
         import dashboard_server
-        if dashboard_server.enabled() and dashboard_server.reach() != "none" \
+        if dashboard_server.enabled() \
                 and dashboard_server.ping_due(os.path.realpath(recortex.project_root())) \
                 and budget - (time.monotonic() - STARTED) >= LIVE_NEEDS:
             dashboard_server.ensure(os.path.realpath(recortex.project_root()))
@@ -1203,8 +1203,6 @@ def machine_summary(repo, config, problems):
         import dashboard_server
         if not dashboard_server.enabled():
             return "switched off (settings.json or RECORTEX_DASHBOARD)"
-        if dashboard_server.reach() == "none":
-            return "not started here: this machine's browser cannot reach it"
         state = dashboard_server.read_state()
         if state is not None and dashboard_server.alive(state):
             return "running on this machine"

@@ -63,7 +63,8 @@ PROJECT_PATH = re.compile(r"/p/([0-9a-f]{16})(/.*)?")
 STOPPED = {"stopped": "The live dashboard was stopped.",
            "idle": "The live dashboard stopped 24 hours after the last session.",
            "interrupted": "The live dashboard was interrupted."}
-CANNOT_REACH = "The live dashboard cannot be reached from your browser on this machine."
+SWITCHED_OFF = "The live dashboard is switched off here (RECORTEX_DASHBOARD or the plugin's settings.json)."
+MAYBE_NOT_REACHED = "If the link does not open on your machine, the page can also go on the web."
 VIEW_LINE = "live dashboard, view only: %s"
 CHANGE_LINE = "recortex dashboard: %s"
 ABOVE = "Your private link with changes on is in the line recortex showed above this reply."
@@ -1048,7 +1049,7 @@ def serve(server, life=None, tick=None):
 def running_state(root):
     """The state of a server of ours that knows this project: one is started when none answers, and waited for up to 3 seconds."""
     first = dashboard_server.ensure(root, 1.0)
-    if first == "unreachable":
+    if first == "off":
         return None
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
@@ -1090,8 +1091,8 @@ def open_command(args):
         print("dashboard_action.py: " + problem, file=sys.stderr)
         return 1
     mode = dashboard_server.reach()
-    if mode == "none" or not dashboard_server.enabled():
-        print(CANNOT_REACH)
+    if not dashboard_server.enabled():
+        print(SWITCHED_OFF)
         return 3
     root = os.path.realpath(recortex.project_root())
     state = running_state(root)
@@ -1113,8 +1114,31 @@ def open_command(args):
         else:
             print(ABOVE)
     else:
+        opened = False
         print(VIEW_LINE % view)
         print(ABOVE)
+    if mode == "none" or (mode == "local" and not opened):
+        # Where nothing shows that the browser reaches the port, the link comes first and Part B's one question after it.
+        return offer_after_link()
+    return 0
+
+
+def offer_after_link():
+    """The one question of Part B (update or set up the public page, or show the file's path) for a freshly built page, printed
+    after the link. The page is built the way `mind.py` builds it; a build that fails prints its own fixed line, and the link
+    above stands. Returns the exit code of `open`."""
+    import subprocess
+    import publish
+    done = subprocess.run([sys.executable, os.path.join(HERE, "mind.py")], capture_output=True, text=True, timeout=240)
+    if done.returncode != 0:
+        for line in (done.stdout + done.stderr).splitlines()[:3]:
+            print(line[:300])
+        return 0
+    config = recortex.load_config()
+    repo = recortex.resolve_repo(None, config)
+    print(MAYBE_NOT_REACHED)
+    for line in publish.offer(config, repo, os.path.join(index.index_dir(repo.lower()), "mind.html")):
+        print(line)
     return 0
 
 
