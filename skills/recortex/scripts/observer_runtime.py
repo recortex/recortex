@@ -1028,6 +1028,20 @@ def _approvals_writer():
                            json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
 
 
+def keeps_any(repo, root=None):
+    """True when this folder's stored entry holds `hosts: any` validly for `repo`: the mark verifies for the same repository and
+    the same folder (a hand-written "any" does not). `approve` keeps such a choice when it is given no `hosts`, and the preview
+    of `observer.py enable` says so on the same condition. Never raises: what cannot be read does not keep it."""
+    try:
+        present = stored_approval(root)
+        return bool(isinstance(present, dict) and present.get("hosts") == "any" and present.get("repo") == str(repo).lower()
+                    and present.get("root") == folder_key(root)
+                    and _same(present.get("any_host"), any_host_id(present["repo"], present["root"],
+                                                                   present.get("publisher_id"))))
+    except (ValueError, OSError, storage.StorageError, TypeError, KeyError):
+        return False
+
+
 def approve(repo, config, root=None, given="terminal", approved_at=None, hosts=None):
     """Record this machine's approval of `config`'s observer settings for this folder; other folders are kept.
     `given` says where: "terminal", the user's own, or "session", a Claude Code session such as the setup wizard's,
@@ -1044,12 +1058,8 @@ def approve(repo, config, root=None, given="terminal", approved_at=None, hosts=N
     if folder_problem(record["root"]):
         raise ValueError("folder_name")
     record["key_file"] = key_file_id(create=True)
-    if hosts is None:
-        present = stored_approval(root)
-        if (isinstance(present, dict) and present.get("hosts") == "any" and present.get("repo") == record["repo"]
-                and present.get("root") == record["root"] and _same(present.get("any_host"), any_host_id(
-                    present["repo"], present["root"], present.get("publisher_id")))):
-            hosts = "any"
+    if hosts is None and keeps_any(repo, root):
+        hosts = "any"
     if hosts == "any":
         record["hosts"] = "any"
         record["any_host"] = any_host_id(record["repo"], record["root"], record["publisher_id"], create=True)

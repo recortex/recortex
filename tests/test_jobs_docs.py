@@ -69,6 +69,14 @@ class CommandTests(unittest.TestCase):
         self.assertNotIn("**", re.sub(r"```.*?```", "", text, flags=re.S))
 
 
+class SkillSentenceTests(unittest.TestCase):
+    def test_the_list_of_what_waits_for_the_user_is_a_list(self):
+        # The 1.7.0 review, N11: a comma before each item of the list that the map change joined.
+        skill = read("skills", "recortex", "SKILL.md")
+        self.assertIn("options Close it, Not now), a map change (`Project Map <short>: <line>. Apply this change?`", skill)
+        self.assertNotIn("Not now) a map change", skill)
+
+
 class NumbersTests(unittest.TestCase):
     def test_the_caps_in_the_observer_page_are_the_defaults_of_the_code(self):
         text = read("skills", "recortex", "references", "observer.md")

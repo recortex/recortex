@@ -270,6 +270,34 @@ class WriteTests(Box):
         self.assertNotIn("hosts", self.entry())
         self.assertNotIn("any_host", self.entry())
 
+    def test_the_preview_names_an_any_binding_only_when_the_mark_verifies(self):
+        # The 1.7.0 review, N11: the preview said "any" for a hand-written entry that approve would not keep.
+        def preview(*extra):
+            code, value = self.run_cli("enable", "--model", "sonnet", "--level", "everything", *extra)
+            self.assertEqual((0, False), (code, value["approved"]))
+            return value["binding"]
+        self.assertEqual(runtime.BINDING_NOTES["shared"], preview())   # no entry
+        self.enable("--hosts", "any", terminal=True)
+        self.assertEqual(runtime.BINDING_NOTES["any"], preview())     # a valid mark is kept
+        self.assertEqual(runtime.BINDING_NOTES["shared"], preview("--hosts", "shared"))
+        entry = self.entry()
+        self.assertTrue(runtime.keeps_any(REPO, self.folder))
+        for case, changed in (("no mark", {k: v for k, v in entry.items() if k != "any_host"}),
+                              ("another repository's mark", dict(entry, any_host=runtime.any_host_id(
+                                  "octo-org/other", entry["root"], entry["publisher_id"]))),
+                              ("a wrong mark", dict(entry, any_host="0" * 32)),
+                              ("another folder", dict(entry, root=str(self.base / "elsewhere")))):
+            with self.subTest(case):
+                self.save(changed)
+                self.assertEqual(runtime.BINDING_NOTES["shared"], preview(), case)
+                self.assertFalse(runtime.keeps_any(REPO, self.folder), case)
+        other = dict(entry, repo="octo-org/other",   # a valid mark, but for another repository: not this one's to keep
+                     any_host=runtime.any_host_id("octo-org/other", entry["root"], entry["publisher_id"]))
+        self.save(other)
+        self.assertTrue(runtime.keeps_any("octo-org/other", self.folder))
+        self.assertFalse(runtime.keeps_any(REPO, self.folder))
+        self.assertEqual(runtime.BINDING_NOTES["shared"], preview())
+
     def test_limits_and_advisory_keep_the_key_file_and_a_valid_any_mark(self):
         self.enable("--hosts", "any", terminal=True)
         before = self.entry()

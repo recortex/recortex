@@ -229,13 +229,7 @@ def enable(repo, config, mode, yes=False, model=None, root=None, confirm=None, g
     except (storage.StorageError, OSError):
         identity = None
     options["publisher_id"] = identity or "allocated_on_explicit_approval"
-    kept = False
-    if hosts is None:
-        try:
-            present = runtime.stored_approval(root)
-        except (ValueError, storage.StorageError, OSError):
-            present = None
-        kept = isinstance(present, dict) and present.get("repo") == repo.lower() and present.get("hosts") == "any"
+    kept = hosts is None and runtime.keeps_any(repo, root)   # as approve keeps it: the mark must verify
     preview = {"action": "enable", "repo": repo, "folder": root, "settings": options, "approved": False,
                "binding": runtime.BINDING_NOTES["any" if hosts == "any" or kept else "shared"],
                "level": level, "level_label": runtime.LEVEL_LABELS[level], "usage": runtime.usage_note(options),
