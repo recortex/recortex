@@ -121,23 +121,8 @@ def gh_account(timeout=GH_CHECK_SECONDS):
     login. Nothing else that gh prints is returned: its output is untrusted, and the login is returned only when it
     fits LOGIN.
     """
-    try:
-        gh(["auth", "status", "--hostname", "github.com"], timeout=timeout, errors="replace")
-    except (GhMissing, ValueError):  # ValueError: a RECORTEX_GH that does not split into a command
-        return "missing", None
-    except GhTimeout:
-        return "slow", None
-    except GhError:
-        return "signed-out", None
-    try:
-        # the host named, so that GH_HOST cannot give the login of another host
-        login = gh(["api", "user", "--hostname", "github.com", "--jq", ".login"], timeout=timeout,
-                   errors="replace").strip()
-    except GhTimeout:
-        return "slow", None
-    except GhError:
-        return "unnamed", None
-    return ("ready", login) if LOGIN.fullmatch(login) else ("unnamed", None)
+    import record_store
+    return record_store.github_account_state(timeout)
 
 
 def show_command(args, note=""):
@@ -314,34 +299,8 @@ def read_hub_comments(repo, number, timeout=60):
     with url, created, body, author, last_edited, editor, edit_total and
     edit_editors (a list of logins; None stands for an unknown account).
     """
-    owner, name = repo.split("/")
-    raw = gh(["api", "graphql", "-f", "query=" + RESUME_QUERY, "-f", "owner=" + owner,
-              "-f", "name=" + name, "-F", "number=%d" % number], timeout=timeout)
-    issue = (((json.loads(raw).get("data") or {}).get("repository") or {}).get("issue"))
-    if not issue:
-        raise GhError("hub %s#%d not found" % (repo, number))
-
-    def login(node):
-        return (node or {}).get("login")
-
-    comments = []
-    for node in ((issue.get("comments") or {}).get("nodes") or []):
-        if not node:
-            continue
-        edits = node.get("userContentEdits") or {}
-        comments.append({
-            "url": str(node.get("url") or ""),
-            "created": str(node.get("createdAt") or ""),
-            "body": node.get("body") or "",
-            "author": login(node.get("author")),
-            "last_edited": node.get("lastEditedAt"),
-            "editor": login(node.get("editor")),
-            "edit_total": edits.get("totalCount") or 0,
-            "edit_editors": [login(e.get("editor")) for e in (edits.get("nodes") or []) if e],
-        })
-    # newest first; of two comments created in the same second, the one the API lists later wins
-    order = sorted(range(len(comments)), key=lambda i: (comments[i]["created"], i), reverse=True)
-    return [comments[i] for i in order]
+    import record_store
+    return record_store.for_repo(repo).hub_entries(number, timeout)
 
 
 def resume_comment_problem(comment, allowed):
@@ -451,7 +410,8 @@ def parse_json_stream(text):
 
 def read_issue(repo, number, timeout=60):
     """The issue's body and label names, read from the REST API."""
-    data = json.loads(gh(["api", "repos/%s/issues/%d" % (repo, number)], timeout=timeout))
+    import record_store
+    data = record_store.for_repo(repo).read_issue(number, timeout=timeout)
     return {"body": data.get("body") or "",
             "labels": [label.get("name", "") for label in data.get("labels") or []]}
 
@@ -842,7 +802,8 @@ def label_command(repo, number, add, remove):
 
 
 def read_comment_body(repo, comment_id):
-    data = json.loads(gh(["api", "repos/%s/issues/comments/%s" % (repo, comment_id)]))
+    import record_store
+    data = record_store.for_repo(repo).read_entry(comment_id)
     return data.get("body") or ""
 
 
@@ -854,11 +815,13 @@ def not_found(error):
 
 def number_exists(repo, number):
     """True when issue or pull request `number` exists in `repo`."""
+    import record_store
+    store = record_store.for_repo(repo)
     try:
-        gh(["api", "repos/%s/issues/%d" % (repo, number), "--jq", ".number"])
+        store.read_issue(number, jq=".number")
         return True
     except GhError as error:
-        if not_found(error):
+        if store.is_missing(error):
             return False
         raise
 
@@ -866,10 +829,12 @@ def number_exists(repo, number):
 def issue_kind(repo, number):
     """What `number` is in `repo`, from one REST read: ("issue" or "pull", the issue's data), or (None, None) when
     GitHub answers Not Found. Any other failure raises GhError."""
+    import record_store
+    store = record_store.for_repo(repo)
     try:
-        data = json.loads(gh(["api", "repos/%s/issues/%d" % (repo, number)]))
+        data = store.read_issue(number)
     except GhError as error:
-        if not_found(error):
+        if store.is_missing(error):
             return None, None
         raise
     except ValueError:
