@@ -1713,6 +1713,8 @@ class ResumeBlockTests(Sandbox):
         os.makedirs(inner)
         shutil.copy(os.path.join(self.project, recortex.CONFIG_NAME), outer)
         subprocess.run(["git", "init", "-q", os.path.join(outer, "repo")], check=True, capture_output=True)
+        subprocess.run(["git", "-C", os.path.join(outer, "repo"), "remote", "add", "origin", "https://example.org/octo-repo.git"],
+                       check=True, capture_output=True)   # not GitHub's: the hook's discovery line stays silent in a checkout like this
         trusted = {"RECORTEX_TRUSTED_FILE": self.trusted}
         hook = self.run_hook(cwd=inner, env={"CLAUDE_PROJECT_DIR": os.path.join(outer, "repo")})
         self.assertEqual((0, ""), (hook.returncode, hook.stdout))
