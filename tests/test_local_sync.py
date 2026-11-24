@@ -430,5 +430,140 @@ class FolderTests(Box):
         self.assertEqual("permissions", caught.exception.kind)
 
 
+class GoneRowsTests(Box):
+    """A file that stops being readable takes everything derived from it out of the index (a HIGH finding of the automatic check
+    on the first sync: a changed entry that became unreadable left its event behind, and the text was told as the user's own)."""
+
+    DERIVED = ("events", "event_fields", "links", "evidence", "explanations", "steps", "refs")
+
+    def rich(self):
+        """An entry with a link, evidence, an explanation and, on the task, a list of steps; their ids."""
+        store = self.store
+        cid = self.entries["reader"][0]
+        body = ("<!-- ghim:event type=result at=2026-11-23T16:00:00Z because=%d -->\n### Result: 2026-11-23 16:00 UTC - a rich entry\n\n"
+                "**In plain words, we found that:** the rich entry carries every kind of derived row\n\n"
+                "**What ran:** `python check/wide.py` at commit 4f2a9c1.\n\n**Configuration:** one laptop.\n\n"
+                "**Numbers:**\n\n| Measure | Value | Denominator | Source path |\n|---|---|---|---|\n"
+                "| Files read | 12 | 12 | `check/out/wide.tsv` |\n\n**Exclusions and failures:** None.\n\n"
+                "**Not established:** Larger files.\n\n**Next step:** Read larger files, owner the maintainer\n\n"
+                "**Evidence:**\n- table wide-files\n\n<details>\n<summary>We use \"wide\" to mean a file with more than 100 columns"
+                "</summary>\n\n**Why it matters here:** The check reads only such files.\n\n</details>\n" % cid)
+        rich = int(store.posted_id(store.post_entry(2, body=body)))
+        steps = ("<!-- ghim:event type=steps at=2026-11-23T16:10:00Z -->\n### Steps: 2026-11-23 16:10 UTC - read the file\n\n"
+                 "**In plain words, we agreed to:** read the file in blocks\n\n**Agreed:** By the maintainer in the chat, 2026-11-23 "
+                 "16:10 UTC.\n\n**Steps:**\n1. Read the first block\n2. Read the rest\n\n**Done when:** The file is read\n")
+        listed = int(store.posted_id(store.post_entry(4, body=steps)))
+        return rich, listed
+
+    def derived_rows(self, cid):
+        found = {}
+        for table in self.DERIVED:
+            column = {"events": "comment", "event_fields": "comment", "links": "source", "evidence": "comment",
+                      "explanations": "comment", "steps": "comment", "refs": None}[table]
+            if column is None:
+                found[table] = self.rows("SELECT * FROM refs WHERE origin = ?", "event:%d" % cid)
+            else:
+                found[table] = self.rows("SELECT * FROM %s WHERE %s = ?" % (table, column), cid)
+        found["comment_edits"] = self.rows("SELECT * FROM comment_edits WHERE comment = ?", cid)
+        found["comment_edit_reads"] = self.rows("SELECT * FROM comment_edit_reads WHERE comment = ?", cid)
+        found["comments"] = self.rows("SELECT id FROM comments WHERE id = ?", cid)
+        return found
+
+    def told(self, cid):
+        db = self.db()
+        try:
+            return cid in self.index.memories(db, {"local--record"})["items"]
+        finally:
+            db.close()
+
+    def make_unread(self, path, how):
+        if how == "unread":
+            self.write(path, b"garbage with no front matter and no seal\n")
+            os.utime(path, (1, 1))   # old, so that it is no file that is still being written
+        elif how == "young":
+            self.write(path, b"garbage with no front matter and no seal\n")   # a file that may still be written: not yet there
+        elif how == "kind":
+            os.remove(path)
+            os.mkfifo(path)
+
+    def test_an_entry_that_stops_being_readable_leaves_no_row_behind(self):
+        rich, listed = self.rich()
+        self.sync()
+        for cid, tables in ((rich, ("events", "event_fields", "links", "evidence", "explanations", "refs")),
+                            (listed, ("events", "event_fields", "steps"))):
+            before = self.derived_rows(cid)
+            for table in tables:
+                self.assertTrue(before[table], "%s of %d" % (table, cid))   # the entry really has a row of this kind
+            self.assertTrue(self.told(cid))
+            for how in ("unread", "young", "kind"):
+                with self.subTest(cid=cid, how=how):
+                    path = self.find_entry_file(cid)
+                    saved = self.read(path)
+                    self.make_unread(path, how)
+                    self.sync()
+                    for table, rows in self.derived_rows(cid).items():
+                        self.assertEqual([], rows, "%s after %s" % (table, how))
+                    self.assertFalse(self.told(cid))
+                    if how == "kind":
+                        os.remove(path)
+                    self.write(path, saved)   # and it comes back when the file does
+                    self.sync()
+                    self.assertTrue(self.told(cid), how)
+                    self.assertTrue(self.derived_rows(cid)["events"])
+
+    def find_entry_file(self, cid):
+        for place, _, names_ in os.walk(self.folder):
+            for name in names_:
+                match = self.local_store.ENTRY_NAME.fullmatch(name)
+                if match and self.local_store.entry_number(match.group(2)) == cid:
+                    return os.path.join(place, name)
+        raise AssertionError("no such entry file")
+
+    def test_a_changed_entry_that_becomes_unreadable_is_not_told_as_the_users_words(self):
+        cid = self.entries["reader"][0]
+        path = self.damage("changed-entry")
+        self.sync()
+        self.assertFalse(self.told(cid))   # changed: not told, because its edit rows exist
+        self.assertTrue(self.derived_rows(cid)["comment_edits"])
+        self.write(path, b"not a record file now\n")
+        os.utime(path, (1, 1))
+        self.sync()
+        rows = self.derived_rows(cid)
+        self.assertEqual({name: [] for name in rows}, rows)   # no event left, with or without its edit rows
+        self.assertFalse(self.told(cid))
+        self.assertEqual(0, self.rows("SELECT COUNT(*) FROM events WHERE comment = ?", cid)[0][0])
+
+    def test_a_topic_that_stops_being_readable_leaves_no_derived_row_behind(self):
+        self.sync()
+        number = 2
+        self.assertTrue(self.rows("SELECT * FROM sections WHERE issue = ?", number))
+        self.assertTrue(self.rows("SELECT * FROM labels WHERE issue = ?", number))
+        path = self.topic_path("reader")
+        self.make_unread(path, "unread")
+        self.sync()
+        for table in ("issues", "sections", "labels", "blocks", "sources", "numbers", "mentions", "timeline"):
+            column = "number" if table == "issues" else "issue"
+            self.assertEqual([], self.rows("SELECT * FROM %s WHERE %s = ?" % (table, column), number), table)
+        self.assertFalse(self.index.body_told(self.db(), number, {"local--record"}))
+
+    def test_a_topic_that_is_renumbered_by_hand_takes_the_rows_of_its_old_number_with_it(self):
+        self.sync()
+        path = self.topic_path("speed")
+        self.write(path, self.read(path).replace(b"number: 3", b"number: 8", 1))
+        self.sync()
+        self.assertEqual([], self.rows("SELECT * FROM sections WHERE issue = 3"))
+        self.assertTrue(self.rows("SELECT * FROM sections WHERE issue = 8"))
+
+    def test_a_reader_of_events_takes_only_rows_whose_comment_still_exists(self):
+        self.sync()
+        cid = self.entries["reader"][0]
+        db = self.db()
+        db.execute("DELETE FROM comments WHERE id = ?", (cid,))   # the raw row gone, the derived rows left behind
+        db.commit()
+        self.assertTrue(db.execute("SELECT 1 FROM events WHERE comment = ?", (cid,)).fetchone())
+        self.assertNotIn(cid, self.index.memories(db, {"local--record"})["items"])
+        db.close()
+
+
 if __name__ == "__main__":
     unittest.main()

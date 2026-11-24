@@ -162,24 +162,32 @@ def run(db, repo, hub, rebuild, clock, timeline_cap=None):
         if complete:
             for relpath, mark in marks.items():
                 if relpath not in scanned:
-                    removed = True
-                    if forget(db, mark) == "version":
+                    removed = True   # a deletion: everything is derived again, which takes its derived rows out
+                    if forget(db, mark) == ("version", None):
                         touched_versions.update(row["number"] for row in db.execute("SELECT number FROM issues"))
         for relpath, size, mtime, found in reads:
             old = marks.get(relpath)
-            if old is not None and forget(db, old) == "version" and old["number"] is not None:
+            gone = forget(db, old) if old is not None else None
+            if gone == ("version", None):
                 touched_versions.update(row["number"] for row in db.execute("SELECT number FROM issues"))
             kind, parsed, why = found
             if kind == "skip":
+                removed = removed or bool(gone and gone[0] in ("issue", "comment"))
                 continue    # a file that is still being written: read again at the next sync
             if parsed is None:
+                removed = removed or bool(gone and gone[0] in ("issue", "comment"))   # its rows are gone, nothing replaces them
                 db.execute("INSERT OR REPLACE INTO local_files VALUES (?,?,?,?,NULL)", (relpath, mtime, size, "unread:" + why))
                 continue
             number = store_file(db, store, relpath, parsed, mtime, changed_issues, changed_comments, touched_versions)
+            now_row = (("issue" if parsed.kind in ("hub", "topic") else "comment" if parsed.kind == "entry" else "version"),
+                       number if parsed.kind in ("hub", "topic", "entry") else None)
+            if gone and gone[0] in ("issue", "comment") and gone != now_row:
+                removed = True   # the file now holds another row (a renumbered topic) or none of its old kind
             db.execute("INSERT OR REPLACE INTO local_files VALUES (?,?,?,?,?)", (relpath, mtime, size, parsed.state, number))
             summary[{"hub": "issues", "topic": "issues", "entry": "comments", "body": "timelines"}[parsed.kind]] += 1
         for number in sorted(touched_versions):
             rebuild_versions(db, store, number)
+        db.execute("DELETE FROM timeline WHERE issue NOT IN (SELECT number FROM issues)")   # a topic that is gone keeps none
         db.commit()
     except BaseException:
         db.rollback()
@@ -290,7 +298,9 @@ def check_numbers(marks, scanned, reads):
 
 
 def forget(db, mark):
-    """Take the rows of a file out of the tables: an issue with its timeline rows, or a comment with its edit rows."""
+    """Take the rows of a file out of the tables: an issue with its timeline rows, or a comment with its edit rows. Returns what
+    it took out, so that the caller can see whether the same row comes back: ("issue", number), ("comment", id), ("version", None)
+    for a version of a text, or None when the mark held no rows (a file that was not read)."""
     path, number = mark["path"], mark["number"]
     db.execute("DELETE FROM local_files WHERE path = ?", (path,))
     if number is None or mark["state"].startswith("unread"):
@@ -298,12 +308,13 @@ def forget(db, mark):
     if path == local_store.HUB_FILE or path.startswith(local_store.TOPICS_FOLDER + "/") and path.count("/") == 1:
         db.execute("DELETE FROM issues WHERE number = ?", (number,))
         db.execute("DELETE FROM timeline WHERE issue = ? AND seq < ?", (number, VERSION_SEQ))
-    elif number < 0:
-        return "version"
-    else:
-        db.execute("DELETE FROM comments WHERE id = ?", (number,))
-        db.execute("DELETE FROM comment_edit_reads WHERE comment = ?", (number,))
-        db.execute("DELETE FROM comment_edits WHERE comment = ?", (number,))
+        return "issue", number
+    if number < 0:
+        return "version", None
+    db.execute("DELETE FROM comments WHERE id = ?", (number,))
+    db.execute("DELETE FROM comment_edit_reads WHERE comment = ?", (number,))
+    db.execute("DELETE FROM comment_edits WHERE comment = ?", (number,))
+    return "comment", number
 
 
 def store_file(db, store, relpath, parsed, mtime, changed_issues, changed_comments, touched_versions):

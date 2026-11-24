@@ -1799,7 +1799,8 @@ def memories(db, allowed):
     kinds = record_format.MEMORY_TYPES
     counts = counts_for(allowed)
     every = {row["comment"]: row for row in db.execute(
-        "SELECT comment, issue, type, at, title, author, reconstructed, created_at FROM events WHERE type IN (%s)"
+        "SELECT comment, issue, type, at, title, author, reconstructed, created_at FROM events WHERE type IN (%s) "
+        "AND comment IN (SELECT id FROM comments)"   # an event whose comment is gone is told by nobody (fail closed)
         % ",".join("?" * len(kinds)), kinds)}
     plains = plain_lines(db)
     changed = edited_comments(db) if allowed else set()
@@ -1858,7 +1859,7 @@ def explained(db, allowed, kind):
     changed = unconfirmed_edits(db, allowed)
     rows = []
     for row in db.execute("SELECT x.*, e.issue, e.at, e.author, e.created_at AS created FROM explanations x JOIN events e ON e.comment = "
-                          "x.comment WHERE x.kind = ? AND e.type IN (%s)" % ",".join("?" * len(kinds)),
+                          "x.comment WHERE x.kind = ? AND e.type IN (%s) AND e.comment IN (SELECT id FROM comments)" % ",".join("?" * len(kinds)),
                           (kind,) + kinds):
         if counts(row["author"]) and row["comment"] not in changed:
             try:
