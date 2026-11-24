@@ -578,6 +578,7 @@ class LocalStore:
                 "author": self.author_of(parsed),
                 "last_edited": self.edited_stamp(parsed, mtime, parsed.front["created"]) if changed else None,
                 "editor": None, "edit_total": 1 if changed else 0, "edit_editors": [None] if changed else [],
+                "local": True,
             })
         rows = rows[-recortex.COMMENTS_READ:]
         order = sorted(range(len(rows)), key=lambda i: (rows[i]["created"], i), reverse=True)

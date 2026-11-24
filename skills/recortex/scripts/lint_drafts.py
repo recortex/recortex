@@ -37,6 +37,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
 import record_format  # noqa: E402
+import record_store  # noqa: E402
 
 # A final record holds the deliverable's sections, named by the profile, then Sources.
 FINAL_RECORD_SECTIONS = ["## " + recortex.SOURCES_HEADING]
@@ -1260,7 +1261,7 @@ def check_record(text, kind, lookup, add):
                 "told and the mark would count for nothing" % (key, target, step, target))
     if kind == "plan" and not is_reconstructed(text):
         check_plan_record(text, lookup, add, skipped)
-    for item in record_format.citations(text, repo):
+    for item in record_format.citations(text, repo, local=record_store.is_local(repo)):
         if item["kind"] != "memory":
             continue
         found = lookup.memory(item["comment"])
@@ -1530,7 +1531,9 @@ def lint_text(text, kind="generic", template=False, allow_placeholders=False,
     if kind == "pointer":
         if length > 1000:
             add("error", "pointer-length", 0, "a pointer comment stays short (at most 1000 characters)")
+        local = record_store.is_local((config or {}).get("repo") or "")   # a local record is cited as #N or #N/ID
         if "https://github.com/" not in text and not re.search(r"[\w.-]+/[\w.-]+#[0-9]+", text) \
+                and not (local and re.search(r"(?<![A-Za-z0-9_/&#])#[0-9]{1,9}(?:/[0-9]{10,19})?(?![0-9])", text)) \
                 and not (allow_placeholders and recortex.PLACEHOLDER_RE.search(text)):
             add("error", "pointer-link", 0, "a pointer comment must link to the new home with a full reference")
 

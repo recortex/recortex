@@ -364,7 +364,7 @@ def status_command(args):
     if args.json:
         print(json.dumps(report, indent=1))
     else:
-        index.print_plan(report)
+        index.print_plan(report, repo)
     return 0
 
 

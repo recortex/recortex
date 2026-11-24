@@ -11151,6 +11151,17 @@ class CompatTests(unittest.TestCase):
             with open(os.path.join(COMPAT, name), "rb") as handle:
                 self.assertEqual(digest, hashlib.sha256(handle.read()).hexdigest(), name)
 
+    def test_an_entry_of_a_local_record_cited_as_n_slash_id_reads_as_the_issue_n_followed_by_text(self):
+        """1.9.0: a local record cites an entry as #N/ID. The frozen reader finds the issue #N there and nothing more, so a
+        local record read by 0.5.0 loses no issue number."""
+        code = ("import sys, json; sys.dont_write_bytecode = True; sys.path.insert(0, sys.argv[1]); import record_format; "
+                "print(json.dumps(record_format.mentions(sys.stdin.read())))")
+        env = environment_for(os.environ, {"PYTHONDONTWRITEBYTECODE": "1"})
+        run = subprocess.run([sys.executable, "-I", "-c", code, COMPAT], input="It follows #3/2874410936621547 and #4.\n",
+                             capture_output=True, text=True, env=env, cwd=COMPAT)
+        self.assertEqual(0, run.returncode, run.stderr)
+        self.assertEqual([3, 4], [row["target"] for row in json.loads(run.stdout)])
+
     def test_the_example_memories_read_as_before(self):
         drafts = [(name, kind, recortex.read_text(os.path.join(EXAMPLE, name)))
                   for name, kind in (("result-speed-1.md", "result"), ("decision-reader-1.md", "decision"))]

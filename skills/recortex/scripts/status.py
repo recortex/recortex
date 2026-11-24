@@ -35,6 +35,7 @@ import index  # noqa: E402
 import observer_runtime as runtime  # noqa: E402
 import recortex  # noqa: E402
 import record_format  # noqa: E402
+import record_store  # noqa: E402
 import storage  # noqa: E402
 import task_rules  # noqa: E402
 import write_rules  # noqa: E402
@@ -207,7 +208,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     config, repo, allowed = load(args)
     say(recortex.describe(config, repo))
-    say(index.DATA_HEADER)
+    say(index.data_header(repo))
     if args.waiting:
         for line in waiting_lines(config, repo):
             say(line)
@@ -216,8 +217,12 @@ def main(argv=None):
     db = open_index(repo)
     try:
         age = index.age_text(index.get_meta(db, "synced_at"))
-        say({"failed": SYNC_FAILED, "partly": SYNC_PARTLY, "busy": SYNC_BUSY}[problem] % age if problem else
-            "Index: the local copy is %s." % age)
+        said = {"failed": SYNC_FAILED, "partly": SYNC_PARTLY, "busy": SYNC_BUSY}[problem] % age if problem else \
+            "Index: the local copy is %s." % age
+        if record_store.is_local(repo):
+            said = said.replace("GitHub could not be read", record_store.words_for(repo)["unread"]).replace(
+                "GitHub was only partly read", "the record was only partly read")
+        say(said)
         for line in in_short(db):
             say(line)
         judgment = guidance.return_pointer(db, repo, allowed)

@@ -593,6 +593,8 @@ GITHUB_ADDRESS = re.compile(r"https://github\.com/([A-Za-z0-9][A-Za-z0-9_-]{0,38
 SHORT_REFERENCE = re.compile(r"(?<![A-Za-z0-9_./-])([A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Za-z0-9._-]{1,100})#([0-9]{1,9})"
                              r"(?![0-9])")
 BARE_ISSUE = re.compile(r"(?<![A-Za-z0-9_/&#])#([0-9]+)\b")
+# an entry of a local record, cited as #N/ID: its topic and its number (read only with citations(local=True))
+LOCAL_ENTRY = re.compile(r"(?<![A-Za-z0-9_/&#])#([0-9]{1,9})/([0-9]{10,19})(?![0-9])")
 
 
 def masked(text):
@@ -605,14 +607,20 @@ def masked(text):
     return "\n".join(out)
 
 
-def citations(text, repo):
+def citations(text, repo, local=False):
     """Issues and memories cited in a text, outside code, in order, as dicts with kind, issue, comment, start and end
     (offsets in the text with LF line endings): kind "issue" for #N, for an issue or pull request address of `repo`
     and for `repo`#N; "memory" for a comment address of `repo`; "elsewhere" for any other github.com issue or comment
-    address or owner/name#N."""
+    address or owner/name#N. With `local` (the record is a local one) #N/ID is a memory of the topic N, read before the
+    bare issues; without it every result is as it always was."""
     plain_text = masked(text)
     home = (repo or "").lower()
     found, taken = [], []
+    if local:
+        for match in LOCAL_ENTRY.finditer(plain_text):
+            found.append({"kind": "memory", "issue": int(match.group(1)), "comment": int(match.group(2)),
+                          "start": match.start(), "end": match.end()})
+            taken.append((match.start(), match.end()))
     for match in GITHUB_ADDRESS.finditer(plain_text):
         same = match.group(1).lower() == home
         kind = ("memory" if match.group(3) else "issue") if same else "elsewhere"

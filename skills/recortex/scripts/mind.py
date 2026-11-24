@@ -43,6 +43,7 @@ import mind_versions  # noqa: E402
 from project_map import branch_anchor  # noqa: E402
 import recortex  # noqa: E402
 import record_format  # noqa: E402
+import record_store  # noqa: E402
 import storage  # noqa: E402
 import usage  # noqa: E402
 import versions  # noqa: E402
@@ -285,8 +286,8 @@ def github_url(kind, repo, *parts):
     """An address on GitHub built from checked parts only, or None when a part fails. The forms: issue (repo, n),
     memory (repo, n, comment id), pull (repo, n), lines (repo, commit, path, first, last), picture (repo, ref,
     path)."""
-    if not recortex.valid_repo(repo):
-        return None
+    if not recortex.valid_repo(repo) or record_store.is_local(repo):
+        return None   # a local record has no address on the web: its entries are shown in the page and cited as #N/ID
     base = SCHEME + "github.com/" + repo
     if kind in ("issue", "pull"):
         n = number(parts[0], ISSUE_NUMBER)
@@ -3455,8 +3456,12 @@ class Page:
         missing, lines = self.model.get("not_told") or {}, []
         if (self.model.get("built") or {}).get("complete") is False:
             lines.append(E("p", None, "The record was still being read when this page was built."))
+        words = record_store.words_for(self.repo)
+        local = record_store.is_local(self.repo)
         others = integer(missing.get("others"))
-        if others:
+        if others and local:
+            lines.append(E("p", None, record_store.count_line(words["page_hidden"], others)))
+        elif others:
             lines.append(E("p", None, plural(others, "1 memory by an account outside your allowed list is not told "
                                                      "here.",
                                              "%d memories by accounts outside your allowed list are not told here.")))
@@ -3464,10 +3469,9 @@ class Page:
         if edited:
             links = [github_url("memory", self.repo, entry.get("issue"), entry.get("id"))
                      for entry in missing.get("edited_ids", [])]
-            lines.append(E("p", None, plural(edited, "1 memory was changed on GitHub after it was posted, so it is not "
-                                                     "told here.",
-                                             "%d memories were changed on GitHub after they were posted, so they are "
-                                             "not told here.")))
+            lines.append(E("p", None, record_store.count_line(words["page_changed"], edited) if local else
+                           plural(edited, "1 memory was changed on GitHub after it was posted, so it is not told here.",
+                                  "%d memories were changed on GitHub after they were posted, so they are not told here.")))
             lines.append(E("ul", {"class": "plainlist"}, *[E("li", None, E("a", {"href": address},
                                                                          "Open it on GitHub"))
                                                             for address in links if address]))

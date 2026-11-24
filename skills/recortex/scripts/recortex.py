@@ -316,10 +316,11 @@ def resume_comment_problem(comment, allowed):
     if extract_resume_block(comment["body"]) is None:
         return "malformed markers"
     author = comment["author"]
+    local = bool(comment.get("local"))   # a comment of a local record: its two reasons are said in its own words
     if not author or author.lower() not in allowed:
-        return "written by a non-allowed account"
+        return "written on another machine" if local else "written by a non-allowed account"
     if comment["last_edited"] or comment["edit_total"] > 0 or comment["edit_editors"]:
-        return "edited after posting"
+        return "changed outside recortex" if local else "edited after posting"
     return None
 
 

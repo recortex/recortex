@@ -31,6 +31,7 @@ import mind_plan  # noqa: E402
 import mind_sheet  # noqa: E402
 import mind_text  # noqa: E402
 import project_map  # noqa: E402
+import record_store  # noqa: E402
 import recortex  # noqa: E402
 import record_format  # noqa: E402
 import task_rules  # noqa: E402
@@ -542,7 +543,7 @@ class Build(mind_plan.PlanMixin, mind_sheet.SheetMixin):
 
     def text_runs(self, text, seen):
         spans = [(item["start"], item["end"], self.citation(item, text[item["start"]:item["end"]]))
-                 for item in record_format.citations(text, self.repo)]
+                 for item in record_format.citations(text, self.repo, local=record_store.is_local(self.repo))]
         out, at = [], 0
         for start, end, run in sorted(spans, key=lambda span: span[0]):
             if start < at:
@@ -960,7 +961,8 @@ class Build(mind_plan.PlanMixin, mind_sheet.SheetMixin):
                 spots = (column("action", 0), column("owner", 1), column("where", 2))
                 for row in table[1]:
                     cell = lambda i: row[i] if i < len(row) else ""
-                    citations = record_format.citations(cell(spots[0]) + " " + cell(spots[2]), self.repo)
+                    citations = record_format.citations(cell(spots[0]) + " " + cell(spots[2]), self.repo,
+                                                        local=record_store.is_local(self.repo))
                     refs = sorted({item["issue"] for item in citations if item["kind"] == "issue"})
                     next_rows.append({"action": self.runs(cell(spots[0]), seen), "owner": short(cell(spots[1])),
                                       "action_text": short(cell(spots[0])), "task_refs": refs, "work_step": None,

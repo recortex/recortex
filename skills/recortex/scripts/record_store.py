@@ -69,6 +69,16 @@ WORDS = {
         "unread": "GitHub could not be read",
         "hidden": "%d memories by accounts outside your allowed list are not listed.",
         "changed": "%d memories edited after they were posted and are not listed.",
+        "on": "on GitHub",
+        "read_from": "GitHub",
+        "changed_mark": "  [changed on GitHub after it was posted, by allowed accounts only]",
+        "page_hidden": "%d memories by accounts outside your allowed list are not told here.",
+        "page_changed": "%d memories were changed on GitHub after they were posted, so they are not told here.",
+        "dash_hidden": "by other accounts",
+        "dash_changed": "edited",
+        "problem_author": "written by a non-allowed account",
+        "problem_edited": "edited after posting",
+        "sync_failed": "GitHub could not be read",
     },
     "local": {
         "name": "the local record",
@@ -76,6 +86,16 @@ WORDS = {
         "unread": "the record folder could not be read",
         "hidden": "%d memories written on another machine are not listed.",
         "changed": "%d memories changed outside recortex are not listed.",
+        "on": "in the local record",
+        "read_from": "the local record",
+        "changed_mark": "",
+        "page_hidden": "%d memories written on another machine are not told here.",
+        "page_changed": "%d memories were changed outside recortex, so they are not told here.",
+        "dash_hidden": "written on another machine",
+        "dash_changed": "changed outside recortex",
+        "problem_author": "written on another machine",
+        "problem_edited": "changed outside recortex",
+        "sync_failed": "the record folder could not be read",
     },
 }
 
@@ -141,6 +161,26 @@ def github_account_state(timeout):
     except recortex.GhError:
         return "unnamed", None
     return ("ready", login) if recortex.LOGIN.fullmatch(login) else ("unnamed", None)
+
+
+def words_for(repo):
+    """The words of the store that holds the record named `repo`, from its name alone (it opens nothing, so a hook can use it)."""
+    return WORDS["local" if is_local(repo) else "github"]
+
+
+def place_of(repo):
+    """Where the record is, in the words of a payload: the GitHub issues of a repository, or the local record of the project."""
+    words = words_for(repo)
+    return words["place"] % repo if "%s" in words["place"] else words["place"]
+
+
+def count_line(template, count):
+    """A fixed count line from WORDS, with the singular form for one (the plural form's "memories" and "are" are the template's)."""
+    if count == 1:
+        template = (template.replace("%d memories", "1 memory").replace(" are not", " is not").replace(" were ", " was ")
+                    .replace("so they are", "so it is"))
+        return template
+    return template % count
 
 
 def address_of(repo, issue, entry=None):

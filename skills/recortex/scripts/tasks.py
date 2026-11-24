@@ -181,7 +181,7 @@ def status_command(args):
     if args.json:
         say(json.dumps(report, indent=1, sort_keys=True))
         return 0
-    index.print_tasks(report)
+    index.print_tasks(report, repo)
     for task in report["tasks"]:
         if task["hand"]:
             which = " (%s differ%s)" % (numbers_words(task["hand_steps"]), "s" if len(task["hand_steps"]) == 1 else "") \

@@ -758,7 +758,7 @@ def log_command(args):
         rows = [row for row in write_rules.text_memories(db, items) if args.issue is None or row["issue"] == args.issue]
     finally:
         db.close()
-    print(index.DATA_HEADER)
+    print(index.data_header(repo))
     for row in reversed(rows):
         print("%d  %s  #%d  %s  %s  %s" % (row["id"], row["at"][:10], row["issue"], index.clean(", ".join(row["sections"]), 60),
                                            row["form"] or "unknown form", index.clean(row["plain"])))

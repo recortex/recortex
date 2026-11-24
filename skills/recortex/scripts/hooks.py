@@ -61,6 +61,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import names  # noqa: E402
 import index  # noqa: E402
 import brief  # noqa: E402
@@ -84,7 +85,7 @@ STATUS_REASONS = {
     "error": "an unexpected error",
 }
 NOTICE_REPO = r"[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Za-z0-9._-]{1,100}"
-NOTICE_READ = r"read (?:just now|[0-9]{1,6} (?:minutes?|hours|days) ago|at an unknown time)(?:; GitHub could not be read now)?"
+NOTICE_READ = r"read (?:just now|[0-9]{1,6} (?:minutes?|hours|days) ago|at an unknown time)(?:; (?:GitHub|the record folder) could not be read now)?"
 DASHBOARD_HINT = "Ask to open your project dashboard or type /recortex:dashboard."
 NOTICE_FORM = re.compile(
     r"recortex: (?:on\. (?:(?:Record %s, %s\.|The record was %s\.)(?: %s)?|The record(?: of %s)? is being read for the first time; "
@@ -197,7 +198,7 @@ def notice(status, source=None):
         bare = "recortex: on. The record is being read for the first time; the brief follows with your next message."
     else:
         read = "read %s%s" % (when(status.get("synced_at"), status.get("fresh")),
-                              "; GitHub could not be read now" if status.get("fresh") is False else "")
+                              "; %s now" % record_store.words_for(repo)["unread"] if status.get("fresh") is False else "")
         named, bare = "recortex: on. Record %s, %s." % (repo, read), "recortex: on. The record was %s." % read
         if source == "startup" and status.get("state") == "on" and repo:
             named += " " + DASHBOARD_HINT
@@ -247,7 +248,18 @@ def why_not_configured():
     repo, hub = config.get("repo"), config.get("hub")
     if not recortex.valid_repo(repo) or isinstance(hub, bool) or not isinstance(hub, int) or hub < 1:
         return "no-hub"
+    if not kind_agrees(config):
+        return "no-hub"
     return "not-trusted"
+
+
+def kind_agrees(config):
+    """True when the project file's record name and its kind of record agree (record_store.kind_of); a hook never exits."""
+    try:
+        record_store.kind_of(config)
+    except SystemExit:
+        return False
+    return True
 
 
 def configured():
@@ -256,6 +268,8 @@ def configured():
     repo, hub = config.get("repo"), config.get("hub")
     if not recortex.valid_repo(repo) or isinstance(hub, bool) or \
             not isinstance(hub, int) or hub < 1:
+        return None
+    if not kind_agrees(config):
         return None
     if repo.lower() not in recortex.trusted_repos():
         return None
@@ -379,6 +393,9 @@ def run(event, data, budget):
         code = "storage"
         reason = "the local storage was refused (%s)" % STORAGE_REASONS.get(getattr(error, "kind", ""),
                                                                             "a storage folder or file is not safe to use")
+    except record_store.StoreError as error:   # the record folder of a local record: one fixed sentence by the kind of the error
+        code = "storage"
+        reason = STORAGE_REASONS.get(getattr(error, "kind", ""), "the record folder cannot be used")
     except Exception as error:  # noqa: BLE001 - a hook never fails a session
         reason = "an unexpected %s" % type(error).__name__
     LAST.update(state="off", reason=code)
@@ -459,8 +476,8 @@ def discovery_off():
 
 
 def discovery():
-    """One fixed line, once per project, for a git repository with a GitHub remote and no setup. No network; no
-    project file is read (git reports the remotes)."""
+    """One fixed line, once per project, for a git repository with a GitHub remote, or with no remote, and no setup. No
+    network; no project file is read (git reports the remotes)."""
     import subprocess
     if recortex.find_config() or discovery_off():
         return ""
@@ -474,8 +491,8 @@ def discovery():
                                  capture_output=True, text=True, timeout=3).stdout
     except (OSError, subprocess.TimeoutExpired):
         return ""
-    if "github.com" not in remotes:
-        return ""
+    if remotes.strip() and "github.com" not in remotes:
+        return ""   # a remote that is elsewhere: silent; a GitHub remote, or none at all (a person with no account), gets the line
     private = storage.folder(storage.state_top(for_key=True))
     path = os.path.join(private, "discovery.json")
     try:
@@ -575,6 +592,19 @@ STORAGE_REASONS = {
     "changed": "the index changed while it was being opened",
     "name": "the repository name cannot be used as a folder name",
     "lock": "the sync lock could not be taken",
+    # the record folder of a local record (record_store._open_local, storage.check_record_folder, local_sync)
+    "missing": "the record folder is missing",
+    "unbound": "this machine has no approved folder for this project's local record",
+    "moved": "the record folder is not the one this machine approved for this project",
+    "ancestor-owner": "a folder above the record folder belongs to another account",
+    "ancestor-permissions": "a folder above the record folder can be written by another account",
+    "record-json": "the record folder's record.json does not pass its check",
+    "duplicate": "two files of the record carry the same number",
+    "too-many": "the record folder holds more files than recortex reads",
+    "place": "the project file names a place for the record that this version does not know",
+    "unreadable": "a topic file of the record could not be read",
+    "size": "a file of the record is larger than recortex reads",
+    "busy": "another process holds the record's write lock",
 }
 
 
@@ -642,18 +672,18 @@ def produce(event, data, budget, config, repo, hub):
                         failure = "more to read than fits in a session start; continuing in the background"
                     else:
                         fresh = False  # GitHub did not answer in time; nothing was read
-                        failure = "GitHub could not be read (timed out)"
+                        failure = "%s (timed out)" % record_store.words_for(repo)["sync_failed"]
                     start_background(repo, config)  # a large backlog catches up without blocking sessions
-            except storage.StorageError:
-                raise
+            except (storage.StorageError, record_store.StoreError):
+                raise   # an unsafe folder, or a record folder that cannot be used: the brief says so in one fixed line
             except index.SyncBusy:
                 fresh = None  # another sync holds the lock; use the index as it is
             except (Exception, OutOfTime) as error:  # noqa: BLE001 - the cached index is used
                 fresh = False
                 slow = isinstance(error, OutOfTime) or "timed out" in str(error) or "deadline" in str(error)
-                failure = "GitHub could not be read (%s)" % ("timed out" if slow else "gh failed"
-                                                             if isinstance(error, recortex.GhError) else
-                                                             type(error).__name__)
+                failure = "%s (%s)" % (record_store.words_for(repo)["sync_failed"],
+                                       "timed out" if slow else "gh failed" if isinstance(error, recortex.GhError) else
+                                       type(error).__name__)
                 if slow:
                     start_background(repo, config)
         db, refused = open_usable(repo)
@@ -1102,6 +1132,68 @@ def gh_line():
     return "gh: found (%s); %s" % (shown, GH_STATES[state] % login if state == "ready" else GH_STATES[state])
 
 
+UNREAD_NAMED = 20   # the files --doctor names, with the reason for each
+
+
+def local_record_lines(repo, config):
+    """For --doctor, which runs where the user reads it: for a local record, where its folder is and how this machine
+    approved it, the folder's owner and mode, the counts of the files by the state of their seal, and the files that were not
+    read (up to UNREAD_NAMED, each with its reason). Returns (lines, problems). Paths and names are shown here and nowhere
+    that a model reads."""
+    import local_sync
+    lines, problems = [], []
+    match = record_store.LOCAL_NAME.fullmatch(repo)
+    place = config.get("place")
+    rows = storage.record_bindings(match.group(1)) if match else []
+    lines.append("record: a local record (place %s); %d folder%s approved on this machine for it" % (
+        place if place in ("own", "project") else "unknown", len(rows), "" if len(rows) == 1 else "s"))
+    for row in rows:
+        exists, owner, mode, problem = storage.describe(row["path"])
+        lines.append("  approved folder %s  (%s; owner %s, mode %s%s)" % (row["path"], row["place"], owner or "?", mode or "?",
+                                                                       ", " + problem if problem else ""))
+    try:
+        store = record_store.for_repo(repo, config)
+    except (record_store.StoreError, SystemExit) as error:
+        kind = getattr(error, "kind", "refused")
+        lines.append("  the folder cannot be used: %s" % STORAGE_REASONS.get(kind, "the record folder cannot be used"))
+        problems.append("the record folder cannot be used (%s)" % kind)
+        return lines, problems
+    lines.append("  record folder in use: %s" % store.folder)
+    try:
+        db = index.connect(repo, create=False, tighten=False)
+    except (storage.StorageError, index.RefusedIndex):
+        db = None
+    if db is not None:
+        try:
+            counts = local_sync.counts(db)
+            lines.append("  files by seal: %d sealed, %d changed outside recortex, %d written under another key, %d not read"
+                         % (counts["sealed"], counts["changed"], counts["foreign"], counts["unread"]))
+            named = [(row["path"], row["state"][len("unread:"):]) for row in db.execute(
+                "SELECT path, state FROM local_files WHERE state LIKE 'unread:%' ORDER BY path LIMIT ?", (UNREAD_NAMED,))]
+        finally:
+            db.close()
+    else:
+        named = []
+    try:
+        listing = store.scan()
+        known, unknown, folders = local_sync.classify(listing, "")
+        for folder in folders:
+            sub = store.scan(folder)
+            known_here, unknown_here, more = local_sync.classify(sub, folder)
+            named += [("%s/%s" % (folder, name), why) for name, why in unknown_here]
+            for deeper in more:
+                named += [("%s/%s/%s" % (folder, deeper, name), why)
+                          for name, why in local_sync.classify(store.scan("%s/%s" % (folder, deeper)), "%s/%s" % (folder, deeper))[1]]
+        named += [(name, why) for name, why in unknown]
+    except (storage.StorageError, OSError):
+        pass
+    for path, reason in named[:UNREAD_NAMED]:
+        lines.append("  not read: %s (%s)" % (path, reason))
+    if len(named) > UNREAD_NAMED:
+        lines.append("  and %d more not read" % (len(named) - UNREAD_NAMED))
+    return lines, problems
+
+
 def observer_log_lines(repo, config):
     """For --doctor: one line when the observer's log of what it did could not take a post (observer_store.note_act_failure):
     fixed words, the count and the UTC day of the last failure, never text. Nothing when there is no failure, no
@@ -1271,7 +1363,14 @@ def doctor():
              "; listed in %s" % ", ".join(sources) if sources else "", ", ".join(allowed) or "none"))
     if not trusted:
         problems.append("the repository is not trusted, so the hooks stay silent")
-    print(gh_line())
+    if record_store.is_local(repo):
+        print("gh: not needed for a local record")
+        found, extra = local_record_lines(repo, config)
+        for line in found:
+            print(line)
+        problems += extra
+    else:
+        print(gh_line())
     print("storage: index under %s, state and key under %s; hooks and terminal scripts resolve the same folders "
           "(CLAUDE_PLUGIN_DATA is not used)%s" % (storage.cache_top(), storage.state_top(for_key=True),
                                                  "; RECORTEX_TESTING and RECORTEX_DATA_HOME are set (for tests only): index and state under %s"
