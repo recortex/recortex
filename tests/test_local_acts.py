@@ -1201,6 +1201,103 @@ class AdoptTests(LocalActsBox):
         self.assertIn(b"swapped quoting", self.read(path))
         self.assertEqual("changed", self.store.topic(number)[1].state)
 
+    def foreign_record_json(self, name=None):
+        """record.json rewritten under another key (and, when `name` is given, with that name); the bytes before the change."""
+        path = os.path.join(self.folder_path, "record.json")
+        before = self.read(path)
+        record = json.loads(before)
+        plain = {k: v for k, v in record.items() if k != "seal"}
+        if name is not None:
+            plain["name"] = name
+        other = local_store.Sealing(b"another key")
+        self.write(path, (json.dumps(dict(plain, seal={"key": other.key_id, "mac": other.json_mac(plain)}), sort_keys=True,
+                                     indent=1) + "\n").encode())
+        return before
+
+    def test_a_foreign_file_changed_after_the_first_check_and_before_its_own_replace_is_refused_and_left_as_it_is(self):
+        first, second = self.entry_of("reader"), self.entry_of("speed")
+        self.foreign_file(first, sync=False)
+        self.foreign_file(second, sync=False)
+        self.sync()
+        plan = self.store.adopt_plan("foreign")
+        self.assertEqual(2, plan["entries"])
+        swapped = {}
+        real = storage.replace_record_file
+
+        def replace(path, data):
+            if not swapped:   # the first file is replaced; the other is changed while it waits for its turn, after every file passed the first check
+                other = second if os.path.realpath(path) == os.path.realpath(first) else first
+                swapped["path"] = other
+                swapped["bytes"] = self.read(other).replace(b"The reader", b"The Reader", 1)
+                self.assertNotEqual(swapped["bytes"], self.read(other))
+                self.write(other, swapped["bytes"])
+            return real(path, data)
+        with mock.patch.object(storage, "replace_record_file", replace):
+            with self.assertRaises(record_store.StoreError) as caught:
+                self.store.adopt("foreign", 0, plan["digest"])
+        self.assertIn("changed while it was being sealed", str(caught.exception))
+        self.assertEqual(swapped["bytes"], self.read(swapped["path"]))   # the file was not replaced over the change
+        relpath = os.path.relpath(swapped["path"], self.folder_path).replace(os.sep, "/")
+        self.assertEqual("foreign", local_store.parse_file(self.read(swapped["path"]), relpath, LOCAL_ID).state)
+
+    def test_a_file_that_the_index_says_was_sealed_here_is_refused_when_a_stale_listing_offers_it(self):
+        entry = self.entry_of("reader")
+        self.sync()   # seen sealed: the index holds its path and its id
+        relpath = self.foreign_file(entry, sync=False)   # rewritten under another key id since
+        digest = self.store._digest([relpath])
+        before = self.read(entry)
+        with mock.patch.object(local_store.LocalStore, "_foreign_paths", return_value=[relpath]):   # the listing was made before the index knew
+            with self.assertRaises(record_store.StoreError) as caught:
+                self.store.adopt("foreign", 0, digest)
+        self.assertIn("changed since the question was asked", str(caught.exception))
+        self.assertEqual(before, self.read(entry))   # the bytes just read say that it was sealed here, so nothing was taken back
+
+    def test_a_record_json_that_changes_and_changes_back_is_sealed_as_it_was_read(self):
+        self.foreign_file(self.entry_of("reader"), sync=False)
+        original = self.foreign_record_json()   # foreign, with the name of the sample project; never seen sealed
+        self.sync()
+        plan = self.store.adopt_plan("foreign")
+        self.assertEqual(1, plan["record"])
+        path = os.path.join(self.folder_path, "record.json")
+        as_read = self.read(path)
+        self.foreign_record_json(name="a name nobody was asked about")
+        planted = self.read(path)
+        self.write(path, as_read)
+        checked, same = local_store.checked, local_store.LocalStore._same
+        calls = []
+
+        def after_the_first_file(*args, **kwargs):
+            data = checked(*args, **kwargs)
+            if not calls:
+                calls.append("planted")
+                self.write(path, planted)   # record.json is another file for a moment, after the bytes were read
+            return data
+
+        def back_before_the_compare(store, read, relpath):
+            if "back" not in calls:
+                calls.append("back")
+                self.write(path, as_read)   # and the same as it was when the compare is made
+            return same(store, read, relpath)
+        with mock.patch.object(local_store, "checked", after_the_first_file), \
+                mock.patch.object(local_store.LocalStore, "_same", back_before_the_compare):
+            self.assertEqual(2, self.store.adopt("foreign", 0, plan["digest"]))
+        self.assertEqual(["planted", "back"], calls)
+        record = self.store.read_record()
+        self.assertEqual("sealed", record["state"])
+        self.assertEqual("sample project", record["name"])   # what was read, never the name that was there for a moment
+        self.assertNotEqual(original, as_read)   # (the file was sealed here; the test made it foreign)
+
+    def test_record_json_bytes_are_checked_as_the_file_is(self):
+        good = self.read(os.path.join(self.folder_path, "record.json"))
+        self.assertEqual("sealed", self.store.record_from(good)["state"])
+        too_long = good[:-2] + b" " * (local_store.RECORD_LIMIT + 1) + b"}\n"
+        for data in (None, b"", b"[]", b"\xff\xfe", good.replace(b'"id"', b'"ident"', 1), good.replace(LOCAL_ID.encode(), b"q7c2m5t3v4x6b2da", 1),
+                     too_long):
+            with self.subTest(data=data[:20] if data else data):
+                with self.assertRaises(record_store.RecordFolderError) as caught:
+                    self.store.record_from(data)
+                self.assertEqual("record-json", caught.exception.kind)
+
     def test_a_subagents_call_records_no_adopt_grant(self):
         number = self.numbers["reader"]
         self.change()

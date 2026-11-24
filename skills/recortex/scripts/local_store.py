@@ -367,8 +367,16 @@ class LocalStore:
         """record.json, checked: its id must be this record's, and its seal sealed or foreign."""
         try:
             data = storage.read_record_file(self.path(RECORD_FILE), RECORD_LIMIT)
-            record = json.loads(data.decode("utf-8")) if data is not None else None
-        except (storage.StorageError, ValueError, UnicodeDecodeError, RecursionError):
+        except storage.StorageError:
+            data = None
+        return self.record_from(data)
+
+    def record_from(self, data):
+        """The record of the bytes of a record.json, with the checks `read_record` makes of the file: its id must be this record's,
+        and its seal sealed or foreign. Raises RecordFolderError (record-json) for bytes that do not pass, and for no bytes."""
+        try:
+            record = json.loads(data.decode("utf-8")) if data is not None and len(data) <= RECORD_LIMIT else None
+        except (ValueError, UnicodeDecodeError, RecursionError):
             record = None
         problem = record_store.RecordFolderError(RECORD_JSON_REFUSED, "record-json")
         if not isinstance(record, dict) or set(record) != {"format", "id", "name", "profiles", "created", "seal"} \
@@ -1020,7 +1028,7 @@ class LocalStore:
                 made[relpath] = checked(parsed.kind, parsed.front, parsed.body, relpath, self.record_id)
             record_data = None
             if RECORD_FILE in read:
-                record = self.read_record()
+                record = self.record_from(read[RECORD_FILE])   # the bytes just read, not the file again: what is sealed is what was asked about
                 plain = {key: value for key, value in record.items() if key not in ("seal", "state")}
                 seal = sealing()
                 record_data = (json.dumps(dict(plain, seal={"key": seal.key_id, "mac": seal.json_mac(plain)}), sort_keys=True,
