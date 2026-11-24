@@ -30,7 +30,6 @@ Examples:
 
 import argparse
 import difflib
-import json
 import os
 import re
 import subprocess
@@ -38,6 +37,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import lint_drafts  # noqa: E402
 import lookup as record_lookup  # noqa: E402
 import record_format  # noqa: E402
@@ -258,6 +258,7 @@ def main(argv=None, *, body_guard=None):
 
     config = recortex.load_config()
     repo = recortex.resolve_repo(args.repo, config)
+    records = record_store.for_repo(repo, config)
     print(recortex.describe(config, repo))
     if not os.path.isfile(args.body_file):
         sys.exit("error: not a file: %s" % args.body_file)
@@ -319,7 +320,6 @@ def main(argv=None, *, body_guard=None):
         return 1
 
     if args.command == "comment":
-        command = ["issue", "comment", str(args.issue), "--repo", repo, "--body-file", args.body_file]
         marker = record_format.parse_marker(record_format.first_lines(draft)[0]) or {}
         if args.kind in record_format.LINKABLE and not lint_drafts.is_reconstructed(draft) \
                 and not any(key in marker for key in record_format.LINK_KINDS):
@@ -327,39 +327,39 @@ def main(argv=None, *, body_guard=None):
         for note in plan_notes(repo, config, args.issue, args.kind, draft):
             print("note: " + note)
         if args.dry_run:
-            print("would run: " + recortex.show_command(command, "%d characters" % len(draft)))
-            print("would read back: gh api repos/%s/issues/comments/<id> and compare with %s" % (repo, args.body_file))
+            print("would run: " + records.show("post_entry", args.issue, body_file=args.body_file,
+                                                  note="%d characters" % len(draft)))
+            print("would read back: %s and compare with %s" % (records.read_back("entry"), args.body_file))
             return 0
-        url = recortex.gh(command).strip().split("\n")[-1]
+        url = records.post_entry(args.issue, body_file=args.body_file).strip().split("\n")[-1]
         print("posted: %s" % url)
-        match = re.search(r"#issuecomment-([0-9]+)", url)
-        if not match:
+        posted = records.posted_id(url)
+        if not posted:
             print("MISMATCH: could not find the comment id in gh output, so the comment was not read back")
             return 1
-        ok = recortex.verify_body(draft, recortex.read_comment_body(repo, match.group(1)), "comment %s" % url)
+        ok = recortex.verify_body(draft, recortex.read_comment_body(repo, posted), "comment %s" % url)
         if ok and args.kind in record_format.MEMORY_TYPES:
-            print("memory id: %s" % match.group(1))
+            print("memory id: %s" % posted)
         if ok and register:
             register_with_observer(repo, config, args.issue, args.kind if args.kind in record_format.OBSERVED_TYPES
-                                   else marker.get("type"), int(match.group(1)))
+                                   else marker.get("type"), int(posted))
         return 0 if ok else 1
 
-    command = ["issue", "edit", str(args.issue), "--repo", repo, "--body-file", args.body_file]
+    edit_note = "%d characters" % len(draft)
     if args.dry_run and args.offline:
-        print("would run: " + recortex.show_command(command, "%d characters" % len(draft)))
+        print("would run: " + records.show("edit_body", args.issue, body_file=args.body_file, note=edit_note))
         print("expected body not checked: --offline reads nothing from GitHub")
         if args.kind == "final-record":
             print("section labels not checked: --offline reads nothing from GitHub")
         return 0
-    labels_command = None
+    labels_change = None
     if follow and plan["checked"]:
         add, remove = plan["add"], plan["remove"]
         if body_guard is not None and (add or remove):
             print("not posted: the reviewed change authorized a body edit only. Refresh the target.")
             return 1
         if add:
-            have = {l["name"].lower() for l in json.loads(recortex.gh(
-                ["label", "list", "--repo", repo, "--json", "name", "--limit", "1000"]))}
+            have = {l["name"].lower() for l in records.list_labels()}
             missing = [label for label in add if label.lower() not in have]
             if missing:
                 print("not posted: these labels do not exist in %s: %s; run setup_labels.py first"
@@ -373,7 +373,7 @@ def main(argv=None, *, body_guard=None):
                       "with --allow-label-removal")
                 return 1
         if add or remove:
-            labels_command = recortex.label_command(repo, args.issue, add, remove)
+            labels_change = (add, remove)
     old = recortex.read_issue_body(repo, args.issue)
     if composed_from is not None and recortex.normalize(old) != recortex.normalize(composed_from):
         print("stopped: the live body of %s#%d changed while the section was being replaced; nothing was written. Read "
@@ -381,7 +381,7 @@ def main(argv=None, *, body_guard=None):
         return 1
     diff = list(difflib.unified_diff(recortex.normalize(old).split("\n"), recortex.normalize(draft).split("\n"),
                                      "%s#%d now" % (repo, args.issue), args.body_file, lineterm=""))
-    if not diff and not labels_command:
+    if not diff and not labels_change:
         print("no change: %s#%d already matches %s" % (repo, args.issue, args.body_file))
         return 0
     if diff:
@@ -399,16 +399,17 @@ def main(argv=None, *, body_guard=None):
         if diff and expected is None:
             print("note: a real replacement requires --expected-body-file with the body saved before drafting")
         if diff:
-            print("would run: " + recortex.show_command(command, "%d characters" % len(draft)))
-        if labels_command:
-            print("would run: " + recortex.show_command(labels_command, "section labels follow the headings"))
+            print("would run: " + records.show("edit_body", args.issue, body_file=args.body_file, note=edit_note))
+        if labels_change:
+            print("would run: " + records.show("set_labels", args.issue, *labels_change,
+                                               note="section labels follow the headings"))
             if plan["remove"] and not args.allow_label_removal:
                 print("note: the real run removes section labels only with --allow-label-removal")
         elif follow and not plan["checked"]:
             print("section labels not checked: no profile defines any")
         return 0
     if not diff:
-        return follow_labels(repo, args.issue, labels_command, plan, profiles, draft)
+        return follow_labels(repo, args.issue, labels_change, plan, profiles, draft)
     if not args.backup:
         sys.exit("error: --backup FILE is required so the replaced body is kept")
     if os.path.exists(args.backup):
@@ -424,12 +425,12 @@ def main(argv=None, *, body_guard=None):
     except FileExistsError:
         sys.exit("error: backup file exists and is not overwritten: %s" % args.backup)
     print("backup of the replaced body: %s" % args.backup)
-    recortex.gh(command)
-    print("ran: " + recortex.show_command(command))
+    records.edit_body(args.issue, body_file=args.body_file)
+    print("ran: " + records.show("edit_body", args.issue, body_file=args.body_file))
     ok = recortex.verify_body(draft, recortex.read_issue_body(repo, args.issue), "%s#%d" % (repo, args.issue))
     if not ok:
         return 1
-    result = follow_labels(repo, args.issue, labels_command, plan, profiles, draft) if follow else 0
+    result = follow_labels(repo, args.issue, labels_change, plan, profiles, draft) if follow else 0
     if result == 0 and not args.no_version:
         result = keep_version(config, repo, args, draft)
     return result
@@ -477,17 +478,18 @@ def body_still_matches(repo, number, expected, consequence):
     return False
 
 
-def follow_labels(repo, number, command, plan, profiles, draft):
+def follow_labels(repo, number, change, plan, profiles, draft):
     """Apply the section-label change, read the labels back and compare."""
     if not plan["checked"]:
         print("section labels not checked: no profile defines any")
         return 0
     wanted = plan["wanted"]
-    if command:
+    if change:
         if not body_still_matches(repo, number, draft, "section labels were not changed"):
             return 1
-        recortex.gh(command)
-        print("ran: " + recortex.show_command(command))
+        records = record_store.for_repo(repo)
+        records.set_labels(number, *change)
+        print("ran: " + records.show("set_labels", number, *change))
     now = recortex.read_issue(repo, number)["labels"]
     add, remove = recortex.label_changes(now, wanted, profiles)
     if add or remove:
