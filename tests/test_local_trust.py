@@ -419,5 +419,111 @@ class Discovery(local_record.LocalSandbox):
         self.assertEqual("", self.hook(self.checkout("https://gitlab.example.org/a/b.git")))
 
 
+class DoctorNamesTests(Box):
+    """What --doctor names for a record that the session's line only points at: a folder that was refused and the files that
+    carry one number."""
+
+    def setUp(self):
+        super().setUp()
+        import local_sync
+        self.local_sync = local_sync
+
+    def doctor(self):
+        done = self.run_script("hooks.py", "--doctor")
+        self.assertEqual(1, done.returncode, done.stdout + done.stderr)   # a problem is listed, so the doctor does not say that it works
+        return done.stdout
+
+    def test_a_topic_folder_that_others_can_write_is_named_with_its_reason(self):
+        self.sync()
+        slug = self.slug("reader")
+        folder = os.path.join(self.folder, "topics", slug)
+        os.chmod(folder, 0o775)
+        out = self.doctor()
+        self.assertIn("  folder not read: topics/%s (%s)" % (slug, self.hooks.STORAGE_REASONS["permissions"]), out)
+        self.assertNotIn("the hooks can show the brief", out)
+        self.assertIn("a folder of the record was not read (topics/%s)" % slug, out)
+        for other in ("hub", "topics"):   # a folder that lists is not named
+            self.assertNotIn("folder not read: %s (" % other, out)
+
+    def test_the_session_line_and_the_doctor_agree_about_a_refused_topic_folder(self):
+        self.sync()
+        os.chmod(os.path.join(self.folder, "topics", self.slug("speed")), 0o775)
+        done = self.run_script("hooks.py", "session-start", stdin=json.dumps({"session_id": "s1", "source": "startup"}))
+        self.assertIn("Run hooks.py --doctor.", done.stdout)
+        self.assertIn("topics/%s (" % self.slug("speed"), self.doctor())
+
+    def test_a_folder_that_cannot_be_listed_does_not_hide_the_other_folders_names(self):
+        self.sync()
+        self.write(os.path.join(self.folder, "topics", self.slug("reader"), "stray.txt"), b"x")
+        self.write(os.path.join(self.folder, "stray-top.txt"), b"x")
+        os.chmod(os.path.join(self.folder, "topics", self.slug("speed")), 0o775)
+        out = self.doctor()
+        self.assertIn("folder not read: topics/%s" % self.slug("speed"), out)
+        self.assertIn("not read: topics/%s/stray.txt (name)" % self.slug("reader"), out)
+        self.assertIn("not read: stray-top.txt (name)", out)
+
+    def test_the_top_folder_is_named_as_a_dot(self):
+        self.sync()
+        real = self.storage.scan_record_folder
+
+        def refuse(path, sub=""):
+            if sub == "":
+                raise self.storage.StorageError("x", "owner")
+            return real(path, sub)
+        with mock.patch.object(self.storage, "scan_record_folder", side_effect=refuse):
+            lines, problems = self.hooks.local_record_lines(self.repo, self.config)
+        self.assertIn("  folder not read: . (%s)" % self.hooks.STORAGE_REASONS["owner"], lines)
+        self.assertTrue(problems)
+
+    def test_two_topic_files_with_one_number_are_named_by_the_doctor(self):
+        self.sync()
+        self.damage("duplicate-number")
+        with self.assertRaises(self.local_sync.SyncStop) as caught:
+            self.sync()
+        self.assertEqual(self.local_sync.DUPLICATE, str(caught.exception))   # the line that points at the doctor
+        out = self.doctor()
+        number = self.numbers["reader"]
+        self.assertIn("  topic files that carry number %d: topics/reader-again.md, topics/%s.md" % (number, self.slug("reader")), out)
+        self.assertIn("two files of the record carry the same number", out)
+
+    def test_two_entry_files_with_one_number_are_named_by_the_doctor(self):
+        self.sync()
+        path = self.entry_path("speed", 0)
+        copy = os.path.join(os.path.dirname(path), "2026-12-01T0000Z-" + os.path.basename(path).split("-", 3)[-1])
+        self.write(copy, self.read(path))
+        with self.assertRaises(self.local_sync.SyncStop):
+            self.sync()
+        folder = "topics/%s/" % self.slug("speed")
+        entry_id = os.path.basename(path)[:-3].split("-", 3)[-1]
+        out = self.doctor()
+        self.assertIn("entry files that carry number %d: %s%s, %s2026-12-01T0000Z-%s.md" % (
+            self.local_store.entry_number(entry_id), folder, os.path.basename(path), folder, entry_id), out)
+
+    def test_a_file_that_does_not_read_as_the_entry_is_not_counted(self):
+        self.sync()
+        path = self.entry_path("speed", 0)
+        other = os.path.join(os.path.dirname(path), "2026-12-01T0000Z-aaaaaaaaaaaaaaaa.md")
+        self.write(other, self.read(path))   # its name names another id than the file holds: unread, as the sync has it, and no duplicate
+        self.sync()
+        out = self.run_script("hooks.py", "--doctor").stdout
+        self.assertNotIn("files that carry number", out)
+
+    def test_no_duplicate_line_when_numbers_differ(self):
+        self.sync()
+        out = self.run_script("hooks.py", "--doctor").stdout
+        self.assertNotIn("files that carry number", out)
+        self.assertNotIn("folder not read", out)
+
+    def test_names_that_are_not_the_records_own_are_not_printed_as_duplicates(self):
+        self.sync()
+        path = self.entry_path("speed", 0)
+        self.write(os.path.join(os.path.dirname(path), "copy of entry.md"), self.read(path))
+        self.write(os.path.join(self.folder, "topics", "Copy Of Topic.md"), self.read(self.topic_path("reader")))
+        self.sync()
+        out = self.run_script("hooks.py", "--doctor").stdout
+        self.assertNotIn("files that carry number", out)
+        self.assertIn("not read: topics/Copy Of Topic.md (name)", out)
+
+
 if __name__ == "__main__":
     unittest.main()

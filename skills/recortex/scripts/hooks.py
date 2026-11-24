@@ -1135,11 +1135,59 @@ def gh_line():
 UNREAD_NAMED = 20   # the files --doctor names, with the reason for each
 
 
+DUPLICATES_NAMED = 10   # the numbers --doctor names when files share one, and the files it names for each
+
+
+def duplicate_number_lines(store, listings, topic_files, entry_files):
+    """The doctor's answer to the sync's stop for a duplicate number (local_sync.check_numbers): one line for each number that
+    two or more topic files carry in their front matter, or that two or more entry files carry (an entry's number comes from the
+    id in its name, and counts only for a file that reads as that entry, in a folder whose topic file is there), with the files by
+    their path in the record. The paths are names that local_sync.classify knows (SLUG and ENTRY_NAME); nothing else is printed."""
+    import local_store
+
+    def read(relpath):
+        try:
+            return store.read_parsed(relpath, listings.get(relpath.rpartition("/")[0]))
+        except (local_store.Unread, storage.StorageError, OSError):
+            return None
+
+    tables = {"topic": {}, "entry": {}}
+    for relpath in topic_files:
+        parsed = read(relpath)
+        if parsed is not None and parsed.kind in ("hub", "topic"):
+            tables["topic"].setdefault(parsed.number, []).append(relpath)
+    for relpath in entry_files:
+        folder, _, name = relpath.rpartition("/")
+        match = local_store.ENTRY_NAME.fullmatch(name)
+        owner = local_store.HUB_FILE if folder == local_store.HUB_FOLDER else folder + ".md"
+        if match and owner in topic_files:   # a folder with no topic file of its own holds entries of nothing
+            tables["entry"].setdefault(local_store.entry_number(match.group(2)), []).append((relpath, match.group(2)))
+    lines = []
+    for label in ("topic", "entry"):
+        for number in sorted(tables[label]):
+            if label == "topic":
+                paths = tables[label][number]
+            else:   # the number came from a name: the file must read as that entry, as the sync counts only those
+                paths = []
+                for relpath, entry_id in tables[label][number]:
+                    parsed = read(relpath)
+                    if parsed is not None and parsed.kind == "entry" and parsed.entry_id == entry_id:
+                        paths.append(relpath)
+            if len(paths) < 2:
+                continue
+            if len(lines) >= DUPLICATES_NAMED:
+                return lines + ["  and more numbers carried by several files"]
+            more = " and %d more" % (len(paths) - DUPLICATES_NAMED) if len(paths) > DUPLICATES_NAMED else ""
+            lines.append("  %s files that carry number %d: %s%s" % (label, number, ", ".join(paths[:DUPLICATES_NAMED]), more))
+    return lines
+
+
 def local_record_lines(repo, config):
     """For --doctor, which runs where the user reads it: for a local record, where its folder is and how this machine
     approved it, the folder's owner and mode, the counts of the files by the state of their seal, and the files that were not
     read (up to UNREAD_NAMED, each with its reason). Returns (lines, problems). Paths and names are shown here and nowhere
     that a model reads."""
+    import local_store
     import local_sync
     lines, problems = [], []
     match = record_store.LOCAL_NAME.fullmatch(repo)
@@ -1174,19 +1222,49 @@ def local_record_lines(repo, config):
             db.close()
     else:
         named = []
-    try:
-        listing = store.scan()
-        known, unknown, folders = local_sync.classify(listing, "")
+    refused = []        # (folder, why) for each folder that could not be listed; the names are the record's own fixed ones or match SLUG
+    listings = {}       # folder -> its listing, for the files read below
+    topic_files, entry_files = [], []
+
+    def listing_of(where):
+        try:
+            listings[where] = store.scan(where) if where else store.scan()
+        except (storage.StorageError, OSError) as error:   # the sync stops on this folder, so the doctor says which one and why
+            refused.append((where, STORAGE_REASONS.get(getattr(error, "kind", ""), "it cannot be listed")))
+            return None
+        return listings[where]
+
+    top = listing_of("")
+    unknown = []
+    if top is not None:
+        known, unknown, folders = local_sync.classify(top, "")
+        topic_files += [relpath for _, _, _, relpath in known]
         for folder in folders:
-            sub = store.scan(folder)
+            sub = listing_of(folder)
+            if sub is None:
+                continue
             known_here, unknown_here, more = local_sync.classify(sub, folder)
             named += [("%s/%s" % (folder, name), why) for name, why in unknown_here]
+            if folder == local_store.TOPICS_FOLDER:
+                topic_files += [relpath for _, _, _, relpath in known_here]
+            else:
+                entry_files += [relpath for _, _, _, relpath in known_here]
             for deeper in more:
-                named += [("%s/%s/%s" % (folder, deeper, name), why)
-                          for name, why in local_sync.classify(store.scan("%s/%s" % (folder, deeper)), "%s/%s" % (folder, deeper))[1]]
-        named += [(name, why) for name, why in unknown]
-    except (storage.StorageError, OSError):
-        pass
+                where = "%s/%s" % (folder, deeper)
+                inner = listing_of(where)
+                if inner is None:
+                    continue
+                known_deep, unknown_deep, _ = local_sync.classify(inner, where)
+                named += [("%s/%s" % (where, name), why) for name, why in unknown_deep]
+                entry_files += [relpath for _, _, _, relpath in known_deep]
+    named += [(name, why) for name, why in unknown]
+    for where, why in refused:
+        lines.append("  folder not read: %s (%s)" % (where or ".", why))
+        problems.append("a folder of the record was not read (%s)" % (where or "."))
+    found = duplicate_number_lines(store, listings, topic_files, entry_files)
+    lines += found
+    if found:
+        problems.append("two files of the record carry the same number, so a sync stops")
     for path, reason in named[:UNREAD_NAMED]:
         # a file name is a stranger's text: it is printed only when it is made of plain characters
         shown = path if re.fullmatch(r"[A-Za-z0-9._ ()/+-]{1,200}", path) else "(a name with characters recortex does not print)"
