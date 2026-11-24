@@ -313,3 +313,7 @@ Every pull request names its topic issue in its description ("Topic: #12"), carr
 | A doubt about an earlier number | An `active` issue until checked; then a correction comment, and the body edited if the number was wrong |
 | A file, table, commit or tag behind a number | "Sources" of the body |
 | A job identifier, log path or older-tracker link | The comment that reports the event |
+
+## In a local record
+
+The hub is `hub.md`, a topic is `topics/<slug>.md`, and each topic has a folder of the same name for its entries and for the earlier texts of its body. A label is a line of the topic's front matter, a closed topic has its reason and time there, and an entry is one file whose name carries its time and id. The address of a topic is `#N` and of an entry `#N/ID`. [local-record.md](local-record.md) has the layout and the seal.

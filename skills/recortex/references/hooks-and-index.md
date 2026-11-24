@@ -143,3 +143,7 @@ The count is made from local files only and prints nothing it read: the project 
 | `MANIFEST.json` | Repository, hub, time of compilation, time of the index, counts, and the `--ref` given |
 
 `--dry-run` lists what would be read and written and reads nothing from GitHub. Files of the same name are replaced; nothing else in the folder is touched.
+
+## The local sync
+
+For a local record `index.py sync` reads the record folder instead of GitHub and fills the same tables. A file is read again only when its size or time changed; a deletion removes its rows; `--rebuild` reads everything. A sealed file is the user's; a changed one and a foreign one are stored with their state and never counted as the user's words (see [local-record.md](local-record.md)). Files that are not recortex's, a sync tool's conflict copies and half-written files are not read, and their count is told once in the brief. Two files that carry one number stop the sync before anything is stored. The hook's budget and its fixed lines are the same; `hooks.py --doctor` names the folder, its owner and mode, the counts by state and the files not read.

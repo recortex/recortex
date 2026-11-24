@@ -29,3 +29,5 @@ Do not copy text from comments, from the former bodies kept as "Record: former i
 ## After the deliverable ships
 
 Post a result comment on the hub naming the version that shipped (tag, DOI, submission identifier) and the commit of every input, post a new resume block, and take a snapshot so the state at release is kept offline as well.
+
+A local record compiles the same deliverables. Its pictures are not fetched; a figure falls back to its title, caption and link.

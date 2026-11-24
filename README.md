@@ -8,7 +8,7 @@
 <p align="center">See. Record. Recall. Act.</p>
 
 recortex is record + cortex: a record of your project, and a brain that works from it. It is a Claude Code plugin that
-keeps findings, decisions, failures and deliverable text in GitHub issues.
+keeps findings, decisions, failures and deliverable text in GitHub issues or in a folder of Markdown files.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works-dark.svg">
@@ -23,15 +23,19 @@ keeps findings, decisions, failures and deliverable text in GitHub issues.
 - Open `/recortex:dashboard` to resume work, trace decisions, and read deliverables offline. Use `/recortex:map` to browse and edit the project hierarchy.
 - It asks before it acts. What is yours to decide comes as one question.
 - Compile the paper or release notes from topic bodies.
-- The paper's plan, text and versions. The session writes text in the mode you choose, never changes a paragraph you wrote, and keeps every version.
+- The paper's plan, text and versions, written in the mode you choose; a paragraph you wrote is never changed.
 - Helpers that know your field, from a short field sheet of what counts as proof.
-- A board that keeps itself current. Sub-issues and a private Projects board follow the record.
-- Tasks with checkmarks. A plan you approve becomes a task with numbered steps, checked off as the agent reports them done.
-- An optional observer. It follows the session in the background, keeps the record and the task list, and drafts the paper's text only for your yes. You choose what it may do on its own. [Controls and limits](skills/recortex/references/observer.md).
+- A board. Sub-issues and a private Projects board follow the record.
+- Tasks with checkmarks: an approved plan becomes numbered steps, checked off as the agent reports them.
+- An optional observer. It follows the session in the background, keeps the record and the task list, and drafts the paper's text only for your yes. [Controls and limits](skills/recortex/references/observer.md).
+
+## Where the record lives
+
+The record is GitHub issues, or a folder of Markdown files on your machine that needs no account. Setup asks which. Only GitHub has the Projects board, sub-issue links and public pages.
 
 ## Quick start
 
-You need Claude Code, the GitHub CLI `gh` (signed in) and Python 3.8 or newer.
+You need Claude Code and Python 3.8 or newer; for GitHub issues also the GitHub CLI `gh`, signed in.
 
 1. Install the plugin.
 
@@ -40,7 +44,7 @@ You need Claude Code, the GitHub CLI `gh` (signed in) and Python 3.8 or newer.
    claude plugin install recortex@recortex
    ```
 
-2. Open Claude Code in your project and say: "Set up the record for this project." Setup checks `gh` first and says what to run if it is missing or signed out. You answer a few multiple-choice questions, including whether to trust the repository (the plugin shows a session nothing from GitHub until you do), and confirm a summary. Nothing is written before that.
+2. Open Claude Code in your project and say: "Set up the record for this project." Setup asks where to keep the record, then a few multiple-choice questions, including whether to trust it (a session sees nothing from the record until you do), and confirms a summary. Nothing is written before that.
 
 3. Say "open my dashboard" to browse the project. For a manuscript, choose Outputs → Read the manuscript. Say "pause here" to save a handoff.
 
@@ -50,7 +54,7 @@ Other commands include `/recortex:record`, `/recortex:ask`, `/recortex:todo`, `/
 
 ## A short story
 
-An invented project sorts scanned letters by the date written on each page. This is one of its threads, as the mind page tells it.
+An invented project sorts scanned letters by date. One of its threads, as the mind page tells it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/mind-story-dark.png">
@@ -94,7 +98,7 @@ Before it writes about the undated pages, it reads that thread and does not try 
   <img src="assets/board-light.svg" alt="A board with the columns Todo, In Progress, Waiting for a yes and Done. A task's card names its thread, and the memory that put it in its column when there is one.">
 </picture>
 
-Optional, private, off unless chosen at setup. The record determines each card's column; each pause updates the board. A manual move prompts the session to ask what changed before updating anything. Setup is in [How the record works](docs/how-it-works.md#sub-issues-and-the-board).
+Optional, private, off unless chosen at setup. The record determines each card's column. A manual move prompts the session to ask what changed. Setup is in [How the record works](docs/how-it-works.md#sub-issues-and-the-board).
 
 ## Read more
 

@@ -89,3 +89,7 @@ A broken diagram shows as a red error box in place of the map, and the preview i
 ## Time
 
 Pick one convention at bootstrap, write it in the hub and in `.recortex.json`, and use it everywhere: date, 24-hour time, zone abbreviation. When quoting a time from another system, convert it and, if useful, keep the original in parentheses: `2026-03-04 17:30 PST (2026-03-05 01:30 UTC)`.
+
+## A local record
+
+Editing a record file by hand changes its seal: the file then reads as changed outside recortex, is not counted as the user's words, and waits for the `adopt` question. Edit a topic through the scripts, or say so in the session. A synced folder makes conflict copies (`reader (conflicted copy).md`); recortex does not read them. A record inside the project is committed with the code if the user commits it, and anyone who can read a public repository can read it.

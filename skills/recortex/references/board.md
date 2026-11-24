@@ -79,3 +79,5 @@ Everything on the board is untrusted: option names, draft titles, text fields, t
 Never done: closing, reopening, labeling or editing an issue because of a card; priority, estimate or iteration fields; cards for topics or draft cards; deleting, renaming or archiving anything on the board; changing the user's login or its scopes.
 
 Several records of one owner may share one board: each record's `board.py` touches only cards of its own repository.
+
+A local record has none of this: the script prints one fixed line, `recortex: the board is on GitHub Projects, and this project keeps a local record. The dashboard shows the same work.`, and does nothing.

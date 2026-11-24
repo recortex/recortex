@@ -102,3 +102,7 @@ diff <(sed 's/[[:space:]]*$//' draft.md) <(sed 's/\r$//; s/[[:space:]]*$//' back
 ## What the scripts never do
 
 They never delete an issue, comment or label, change no label on an issue except section labels that follow its headings, never edit a posted comment, never close or reopen issues, and never post a file that was not named on the command line or in the manifest. Closing a finished task is a deliberate `gh issue close N` by the session or the owner.
+
+## The same commands, a local record
+
+`post_verified.py`, `create_issues.py`, `convert_body.py`, `resume_block.py` and `setup_labels.py` post to either record. A dry run for a local record prints the same steps in plain words (`local record: post an entry on #3`) where a GitHub record prints the `gh` command; the read back compares the stored file with the draft. A posted entry's address is printed as `#N/ID`.

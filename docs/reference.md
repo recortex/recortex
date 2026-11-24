@@ -91,3 +91,16 @@ python3 skills/recortex/scripts/setup.py fields show
 python3 skills/recortex/scripts/setup.py fields set --answers answers.json --dry-run
 python3 skills/recortex/scripts/setup.py fields approve --fingerprint <the fingerprint in the line fields show printed> --yes
 ```
+
+## A local record
+
+Setup asks where the record is kept (`setup.py record-question`). Three questions belong to a local record: `inproject` (keep it inside the project), `folder` (use it at a new place) and `adopt` (take back what was changed outside recortex). The features that need GitHub print one fixed line and do nothing:
+
+- recortex: the board is on GitHub Projects, and this project keeps a local record. The dashboard shows the same work.
+- recortex: sub-issue links are a GitHub feature. In a local record a topic lists its tasks in its text.
+- recortex: the triage workflow labels issues that other people open on GitHub. A local record has none.
+- recortex: publishing to GitHub Pages needs a repository on GitHub. For a local record the page is saved as a file.
+- recortex: the manuscript's versions branch is kept on GitHub. A local record keeps every version of a topic's text in the topic's folder.
+- recortex: approval by pull request is a GitHub feature. In a local record a change of the text is approved in the chat.
+
+The dashboard's Record pane (`GET /read/N` on the live dashboard) reads a topic whole.

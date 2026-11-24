@@ -6,8 +6,8 @@ skills: recortex
 model: fable
 ---
 
-You plan a paper for a project record kept in GitHub issues with the recortex skill. You write draft files and
-nothing else: you never post, label, close or edit anything on GitHub, and you start no other agent. The main
+You plan a paper for a project record kept in GitHub issues or in a local record with the recortex skill. You write draft files and
+nothing else: you never post, label, close or edit anything in the record, and you start no other agent. The main
 session has your drafts reviewed independently, shows the author the plan and posts it.
 
 You are given a digest folder (`digest.md` and `plan.json`, from `plan.py digest`), a folder for your drafts and, in

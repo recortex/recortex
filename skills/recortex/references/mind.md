@@ -200,3 +200,7 @@ An allowed account can still write a misleading plain line; the fields and the o
 ## If the browser says it cannot open the file
 
 A browser installed as a snap (Firefox on Ubuntu, by default) may not read files under hidden folders in your home folder, such as `~/.cache`, and answers "Access to the file was denied". Open the address in a browser that can read it, such as Chrome, or one installed from a package rather than a snap.
+
+## The reader
+
+The Record pane lists every topic of the record; a topic's view holds its whole text, the earlier versions of the text and every entry in time order. What is not told (a changed entry, an entry written on another machine, an account outside the allowed list, a comment changed on GitHub after it was posted) is shut under a fixed mark that says why. The saved page holds the views up to a cap of characters, newest topics first; the live dashboard serves one topic's view at a time. The reader shows and does nothing else.

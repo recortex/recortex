@@ -59,3 +59,5 @@ If your home folder is on a network mount that many hosts see, and a session may
 ## Updating
 
 To update, see [Upgrading](../skills/recortex/references/upgrading.md).
+
+The GitHub CLI `gh` is needed only for a record in GitHub issues. A local record needs Python and nothing else.

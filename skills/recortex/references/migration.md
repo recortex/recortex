@@ -117,3 +117,5 @@ A tracker whose topic bodies hold a full record (a dated "Current state", folded
 
    The record comment repeats the former body, so every `@name` in it notifies that account again; the script lists them before posting. A former body too long to fit in one comment with its heading and note is kept by hand: post it in two comments headed "Record: former issue body, kept as history (not deliverable text), part 1 of 2" and "part 2 of 2" with `post_verified.py comment --kind generic`, then replace the body with `post_verified.py body --expected-body-file <saved live body>`.
 8. Update the hub: the deliverable-text rule at the top, the issues per section, the active issues, and no numbers from the bodies.
+
+A local record can be the home of the new record. The old tracker is copied in through the same drafts and manifest; `snapshot.py` has nothing to save for a local record, which is Markdown files already.

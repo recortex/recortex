@@ -66,3 +66,7 @@ Only posted work is durable in GitHub. An abrupt stop before capture or publicat
 | The rules themselves | The skill, and optionally the project's CLAUDE.md | Loaded by Claude Code |
 
 The resume block is small on purpose (under 4,000 characters) and a new one is posted at the end of every working stretch, so the first thing a blank session reads is short, current and written for exactly that reader. Posting it as a comment, never as an edit, also keeps a history of where the project stood at each stop.
+
+## Where the record lives
+
+The record is one interface with two homes: GitHub issues, or a folder of Markdown files (a hub, a file for each topic and a file for each entry, each sealed with a key that stays on your machine). Every script, hook and view reads and writes through that interface, so a local record has the same brief, recall, dashboard and tasks. The sync reads a local record's files into the same index. The dashboard's Record pane reads any topic whole.

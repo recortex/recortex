@@ -20,3 +20,5 @@ Say "catch up the record". Claude takes a read-only inventory of what exists (`c
 Say "migrate the issues of owner/old-tracker into the new structure". Claude snapshots the old tracker to local Markdown, maps every old issue and pull request to a topic, shows you the map, copies the content into new issues (deliverable text in the bodies, history in comments), and, if you want, leaves one short pointer comment on each old item. Nothing in the old tracker is edited or deleted.
 
 Topic bodies that hold a full record (a dated current state, folded old text, decisions, open work) are converted in place with `convert_body.py`: it checks that the live body is the one the new text was drafted from, keeps the former body as a comment, replaces the body, sets the section labels from the new headings and reads everything back. The steps are in [`references/migration.md`](../skills/recortex/references/migration.md).
+
+A project can be caught up into a local record in the same way: the inventory and the gap read git and the files, and the lists of pull requests and issues are skipped.

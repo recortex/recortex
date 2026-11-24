@@ -28,3 +28,5 @@ For each issue, post a comment from `templates/comment-triage.md` (kind `triage`
 An idea or a question that someone opened as an issue stays an issue with its `type:` label. One that comes up in the session's own work on a thread is recorded as an idea or question memory on that thread, and a later result may `checks` it ([issue-model.md](issue-model.md), "Events").
 
 Labeling and commenting need no confirmation. Closing an issue, changing the project's scope, and editing a deliverable body each need the user's yes first; the triage comment says which of these it waits for. Triage comments are events: the timeline and `compile.py` include them.
+
+A local record has none of this: the script prints one fixed line, `recortex: the triage workflow labels issues that other people open on GitHub. A local record has none.`, and does nothing.
