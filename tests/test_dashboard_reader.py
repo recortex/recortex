@@ -97,6 +97,26 @@ class MarkTests(ReaderBox):
         self.assertEqual(0, len(re.findall(r'class="readentry folded"[^>]*open', view)))
 
 
+    def test_the_text_of_a_topic_that_an_outside_account_opened_sits_shut_under_its_mark_and_a_told_text_does_not(self):
+        import mind_reader
+        data = self.repo()
+        told = self.topic_view(self.view_page(5)[2], 5)   # what the example record's own topic shows
+        self.assertNotIn('<details class="readfold">', told)
+        data["issues"]["5"]["user"] = "hubot"   # an account that is not on the list opened it
+        data["issues"]["5"]["updated_at"] = "2026-04-25T10:00:00Z"   # the sync takes it up again
+        self.save(data)
+        self.ready()
+        status, _, text = self.view_page(5)
+        self.assertEqual(200, status, text[:200])
+        view = self.topic_view(text, 5)
+        part = re.search(r'<section class="readpart" id="read-5-text">(.*?)</section>', view, re.S).group(1)
+        fold = re.search(r'<details class="readfold"><summary><span class="markword">(.*?)</span> Shut\. Open it to read it\.</summary>'
+                         r'<div class="readtext">(.*)</div></details>', part, re.S)
+        self.assertTrue(fold, part[:300])
+        self.assertEqual(mind_reader.GITHUB_OUTSIDE, fold.group(1))
+        self.assertNotIn(mind_reader.GITHUB_OUTSIDE, part.replace(fold.group(1), "", 1))   # the mark is said once, over the shut text
+
+
 class BesideTests(ts.MindSandbox):
     """10.3: a GitHub record's page has the reader's link beside each of its links to an issue or a comment on GitHub."""
 

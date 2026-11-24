@@ -372,6 +372,17 @@ class WordsTests(Features):
             self.outputs.append(observer_hooks._output("SessionStart", notices=[code], repo=self.repo)["systemMessage"])
 
 
+class HarnessTests(Features):
+    """The sandbox is a test run to the plugin: a hook that a local test runs cannot leave a live dashboard server behind."""
+
+    def test_a_test_run_of_the_local_sandbox_starts_no_live_dashboard_server(self):
+        import dashboard_server
+        self.assertEqual("1", os.environ.get("RECORTEX_TESTING"))
+        self.assertFalse(dashboard_server.may_start())
+        with self.assertRaises(OSError):
+            dashboard_server.start()
+
+
 class LiveServerTests(Features):
     """10.1: the live dashboard serves a local record: the main page with the Record pane, and one topic's view at /read/<N>. The
     only test of this round that starts a server: in this process, on a free loopback port, stopped with addCleanup first."""

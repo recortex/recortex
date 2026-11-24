@@ -7313,6 +7313,26 @@ class MindIndexTests(MindSandbox):
 
     # ------------------------------------------------------------ the hooks read no memory text
 
+    def test_an_explanation_whose_comment_is_no_longer_in_the_index_is_not_listed(self):
+        """A row of `explanations` that outlived its comment (a file that was taken out of the index, a comment deleted) explains
+        nothing: the join to `events` alone would still list it."""
+        import sqlite3
+        import index as index_module
+        self.put(9104, 5, HOSTILE_FOLD)
+        self.ready()
+
+        def listed():
+            db = sqlite3.connect(self.index_file())
+            db.row_factory = sqlite3.Row
+            try:
+                return [row["comment"] for row in index_module.explained(db, set(), "word")]
+            finally:
+                db.close()
+        self.assertIn(9104, listed())
+        self.sql("DELETE FROM comments WHERE id = 9104")   # the comment goes; its event and its explanation rows stay
+        self.assertEqual(1, self.sql("SELECT COUNT(*) FROM explanations WHERE comment = 9104")[0][0])
+        self.assertNotIn(9104, listed())
+
     def test_no_payload_reads_the_text_of_a_memory(self):
         self.ready()
         def payloads():

@@ -30,7 +30,7 @@ RECORD_ID = "k3f5x2m7q4w6z5ab"
 OTHER_ID = "q7c2m5t3v4x6b2da"
 REPO = "local--record/" + RECORD_ID
 START = 1795000000        # the clock of a seeded record: a minute between two writes
-HARNESS = {"RECORTEX_SETUP_QUESTIONS": "0", "RECORTEX_LINK_PAUSE": "0", "PYTHONDONTWRITEBYTECODE": "1"}
+HARNESS = {"RECORTEX_SETUP_QUESTIONS": "0", "RECORTEX_LINK_PAUSE": "0", "PYTHONDONTWRITEBYTECODE": "1", "RECORTEX_TESTING": "1"}
 
 
 def fixture():
@@ -52,7 +52,7 @@ class LocalSandbox(unittest.TestCase):
         self.outside = tempfile.mkdtemp(prefix="recortex-local-")   # the folders above a record in the system's temporary folder
         os.chmod(self.outside, 0o755)
         self.addCleanup(self.forget)
-        self.addCleanup(self.no_gh_was_started)   # registered first, so that it runs last
+        self.addCleanup(self.no_gh_was_started)   # registered after forget, so that it runs first, while the log is still there
         self.gh_log = os.path.join(self.dir, "gh-calls.log")
         self.no_gh = os.path.join(self.dir, "no-gh.sh")
         with open(self.no_gh, "w") as handle:
