@@ -678,7 +678,7 @@ class EveryRowTests(ActsBox):
         "replace": {"old": OTHER, "new": REPO},
         "inproject": {"project": "/srv/octo-project", "state": "unknown", "answers": None},
         "folder": {"id": "k3f5x2m7q4w6z5ab", "path": "a" * 64},
-        "adopt": {"mode": "topic", "topic": 3, "lines": 4, "entries": 0, "topics": 0, "digest": "b" * 64},
+        "adopt": {"mode": "topic", "topic": 3, "lines": 4, "entries": 0, "topics": 0, "labels": 2, "state": "open", "digest": "b" * 64},
     }
 
     def test_every_question_holds_recortex_and_every_yes_label_is_one_the_typed_answer_may_use(self):

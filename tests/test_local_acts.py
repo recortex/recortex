@@ -110,6 +110,12 @@ class LocalActsBox(base.ActsBox):
     def command_for(self, *words):
         return self.command("setup.py", *words)
 
+    def sync(self):
+        """index.py sync in the project, in this environment: the marks of the files as they are now."""
+        done = subprocess.run([sys.executable, os.path.join(SCRIPTS, "index.py"), "sync"], capture_output=True, text=True,
+                              cwd=self.project, input="")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+
 
 class ActTableTests(LocalActsBox):
     def test_the_three_acts_are_in_the_table_and_in_the_grant_kinds(self):
@@ -147,14 +153,18 @@ class ActTableTests(LocalActsBox):
         self.assertEqual("recortex: this project's local record is now at a folder this machine has not approved for it (record %s). "
                          "Use the record at its new place?" % LOCAL_ID, acts.ACTS["folder"].text(folder))
         self.assertEqual(["Use the record there", "Leave it unused"], acts.ACTS["folder"].labels(folder))
-        topic = {"mode": "topic", "topic": 3, "lines": 4, "entries": 0, "topics": 0, "digest": "0" * 64}
-        self.assertEqual("recortex: topic #3 of the local record was changed outside recortex (4 lines differ from the last version "
-                         "recortex wrote). Take the text as it is now as yours?", acts.ACTS["adopt"].text(topic))
-        self.assertEqual(["Take topic #3 as mine", "Leave it as it is"], acts.ACTS["adopt"].labels(topic))
+        topic = {"mode": "topic", "topic": 3, "lines": 4, "entries": 0, "topics": 0, "labels": 2, "state": "open", "digest": "0" * 64}
+        self.assertEqual("recortex: topic #3 of the local record was changed outside recortex (4 lines of its text differ from the "
+                         "last version recortex wrote; it has 2 labels and is open). Take the text, the title and the labels as they "
+                         "are now as yours?", acts.ACTS["adopt"].text(topic))
+        token = acts.ACTS["adopt"].value(topic)[:8]
+        self.assertEqual(["Take topic #3 as mine " + token, "Leave it as it is"], acts.ACTS["adopt"].labels(topic))
         foreign = {"mode": "foreign", "topic": 0, "lines": 0, "entries": 2, "topics": 1, "digest": "0" * 64}
-        self.assertEqual("recortex: 2 entries and 1 topics of this record were written under another key (another machine, or this "
-                         "one before its key changed). Seal them as yours on this machine?", acts.ACTS["adopt"].text(foreign))
-        self.assertEqual(["Seal them as mine", "Leave them as they are"], acts.ACTS["adopt"].labels(foreign))
+        self.assertEqual("recortex: 2 entries and 1 topics of this record carry a seal this machine cannot check (they were written on "
+                         "another machine, or here before the key changed). Seal them as yours on this machine?",
+                         acts.ACTS["adopt"].text(foreign))
+        token = acts.ACTS["adopt"].value(foreign)[:8]
+        self.assertEqual(["Seal them as mine " + token, "Leave them as they are"], acts.ACTS["adopt"].labels(foreign))
 
     def test_no_question_prints_a_path_or_a_text_of_the_record(self):
         self.damage_topic("reader")
@@ -718,13 +728,16 @@ class AdoptTests(LocalActsBox):
         self.write(path, data)
         return relpath
 
-    def entry_of(self, key):
+    def entries_of(self, key):
         folder = os.path.join(self.folder_path, "topics", os.path.basename(self.path_of(key))[:-3])
-        for name in sorted(os.listdir(folder)):
-            path = os.path.join(folder, name)
-            if b"\nkind: entry\n" in self.read(path):
-                return path
-        raise AssertionError("no entry")
+        return [os.path.join(folder, name) for name in sorted(os.listdir(folder))
+                if b"\nkind: entry\n" in self.read(os.path.join(folder, name))]
+
+    def entry_of(self, key):
+        found = self.entries_of(key)
+        if not found:
+            raise AssertionError("no entry")
+        return found[0]
 
     def test_a_topic_changed_outside_recortex_is_planned_by_counts_and_a_digest(self):
         number = self.numbers["reader"]
@@ -854,7 +867,7 @@ class AdoptTests(LocalActsBox):
         command = self.command_for("adopt", "--topic", str(number), "--yes")
         found = acts.asks(command, self.project)
         self.assertEqual(["adopt"], [item["kind"] for item in found])
-        self.assertEqual("Take topic #%d as mine" % number, found[0]["label"])
+        self.assertEqual("Take topic #%d as mine %s" % (number, acts.ACTS["adopt"].value(values)[:8]), found[0]["label"])
         self.yes("adopt", values)
         self.assertIsNone(self.hook(command))
         self.assertTrue(self.said("adopt", values))
@@ -872,6 +885,105 @@ class AdoptTests(LocalActsBox):
         self.write(speed, self.read(speed).replace(b"standard lib", b"stdlib", 1))
         self.hook(self.command_for("adopt", "--topic", str(second), "--yes"))
         self.assertFalse(self.said("adopt", asked))
+
+    def refused_adopt(self, *words):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            return setup.main(["adopt"] + list(words) + ["--yes"])
+
+    def test_a_change_that_keeps_the_counts_gets_no_grant_for_a_topic_and_seals_nothing(self):
+        number = self.numbers["reader"]
+        path = self.change()
+        asked = self.store.adopt_plan("topic", number)
+        self.yes("adopt", asked)   # the user's yes to the question about these bytes
+        self.write(path, self.read(path).replace(b"lenient quoting", b"planted quoting", 1))   # the same counts, other bytes
+        new = self.store.adopt_plan("topic", number)
+        self.assertEqual((asked["lines"], asked["labels"], asked["state"]), (new["lines"], new["labels"], new["state"]))
+        self.assertNotEqual(asked["digest"], new["digest"])
+        self.assertNotEqual(acts.ACTS["adopt"].labels(asked)[0], acts.ACTS["adopt"].labels(new)[0])   # the label is the bytes' own
+        self.assertEqual(acts.ACTS["adopt"].text(asked), acts.ACTS["adopt"].text(new))   # the words alone would not tell them apart
+        self.assertIsNone(self.hook(self.command_for("adopt", "--topic", str(number), "--yes")))
+        self.assertFalse(self.said("adopt", new))
+        self.assertFalse(self.said("adopt", asked))
+        before = self.read(path)
+        self.assertEqual(1, self.refused_adopt("--topic", str(number)))
+        self.assertEqual(before, self.read(path))
+        self.assertEqual("changed", self.store.topic(number)[1].state)
+
+    def test_a_change_that_keeps_the_counts_gets_no_grant_for_the_foreign_files_either(self):
+        entry = self.entry_of("reader")
+        self.foreign_file(entry)
+        asked = self.store.adopt_plan("foreign")
+        self.yes("adopt", asked)
+        relpath = os.path.relpath(entry, self.folder_path).replace(os.sep, "/")
+        parsed = local_store.parse_file(self.read(entry), relpath, LOCAL_ID)
+        other = local_store.render(parsed.kind, parsed.front, parsed.body + "\nplanted\n", relpath, LOCAL_ID,
+                                   local_store.Sealing(b"another key again"))
+        self.write(entry, other)   # one foreign entry swapped for another: the same counts
+        new = self.store.adopt_plan("foreign")
+        self.assertEqual((asked["entries"], asked["topics"]), (new["entries"], new["topics"]))
+        self.assertNotEqual(asked["digest"], new["digest"])
+        self.assertIsNone(self.hook(self.command_for("adopt", "--foreign", "--yes")))
+        self.assertFalse(self.said("adopt", new))
+        self.assertEqual(1, self.refused_adopt("--foreign"))
+        self.assertEqual(other, self.read(entry))
+
+    def test_a_change_of_the_front_matter_shows_in_the_question(self):
+        number = self.numbers["reader"]
+        path = self.change()
+        one = self.store.adopt_plan("topic", number)
+        self.write(path, self.read(path).replace(b'labels: ["final-record", "topic:reader"]',
+                                                 b'labels: ["final-record", "topic:reader", "topic:extra", "rel:fixed"]', 1))
+        two = self.store.adopt_plan("topic", number)
+        self.assertEqual((2, 4), (one["labels"], two["labels"]))
+        self.assertIn("it has 2 labels and is open", acts.ACTS["adopt"].text(one))
+        self.assertIn("it has 4 labels and is open", acts.ACTS["adopt"].text(two))
+        self.assertIn("Take the text, the title and the labels as they are now as yours?", acts.ACTS["adopt"].text(two))
+        self.write(path, self.read(path).replace(b'title: "Reader quoting"', b'title: "A planted title"', 1))   # a title alone: the label differs
+        three = self.store.adopt_plan("topic", number)
+        self.assertEqual(acts.ACTS["adopt"].text(two), acts.ACTS["adopt"].text(three))
+        self.assertNotEqual(acts.ACTS["adopt"].labels(two)[0], acts.ACTS["adopt"].labels(three)[0])
+        self.assertEqual(1, self.store.adopt("topic", number, three["digest"]))
+        self.assertEqual("A planted title", self.store.topic(number)[1].front["title"])   # the title was sealed with the text, as asked
+
+    def test_an_entry_this_machine_sealed_and_that_now_carries_another_key_is_not_adoptable(self):
+        written_elsewhere = self.entry_of("speed")
+        self.foreign_file(written_elsewhere)   # never sealed here as far as the index knows
+        self.sync()
+        sealed_here = self.entry_of("reader")
+        self.foreign_file(sealed_here)   # sealed here at the last sync, rewritten under another key id since
+        plan = self.store.adopt_plan("foreign")
+        self.assertEqual((1, 0), (plan["entries"], plan["topics"]))   # only the file that was never sealed here
+        before = self.read(sealed_here)
+        self.assertEqual(1, self.store.adopt("foreign", 0, plan["digest"]))
+        self.assertEqual(before, self.read(sealed_here))   # the rewritten one is still as it was
+        self.assertEqual("sealed", local_store.parse_file(self.read(written_elsewhere), os.path.relpath(
+            written_elsewhere, self.folder_path).replace(os.sep, "/"), LOCAL_ID).state)
+        with self.assertRaises(record_store.StoreError) as caught:
+            self.store.adopt_plan("foreign")
+        self.assertIn("nothing in this record carries a seal that was written on another machine", str(caught.exception))
+        with self.assertRaises(SystemExit):   # no plan: the command says so and stops
+            self.refused_adopt("--foreign")
+
+    def test_a_file_changed_between_the_check_and_the_seal_is_refused(self):
+        number = self.numbers["reader"]
+        path = self.change()
+        plan = self.store.adopt_plan("topic", number)
+        original = local_store.checked
+        done = []
+
+        def swapped(*args, **kwargs):
+            data = original(*args, **kwargs)
+            if not done:
+                done.append(True)
+                self.write(path, self.read(path).replace(b"lenient quoting", b"swapped quoting", 1))   # after the check, before the seal
+            return data
+        with mock.patch.object(local_store, "checked", swapped):
+            with self.assertRaises(record_store.StoreError) as caught:
+                self.store.adopt("topic", number, plan["digest"])
+        self.assertIn("changed while it was being sealed", str(caught.exception))
+        self.assertIn(b"swapped quoting", self.read(path))
+        self.assertEqual("changed", self.store.topic(number)[1].state)
 
     def test_a_subagents_call_records_no_adopt_grant(self):
         number = self.numbers["reader"]

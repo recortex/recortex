@@ -988,18 +988,24 @@ class Adopt(Act):
 
     def text(self, values):
         if values["mode"] == "topic":
-            return ("recortex: topic #%d of the local record was changed outside recortex (%d lines differ from the last version "
-                    "recortex wrote). Take the text as it is now as yours?" % (values["topic"], values["lines"]))
-        return ("recortex: %d entries and %d topics of this record were written under another key (another machine, or this one "
-                "before its key changed). Seal them as yours on this machine?" % (values["entries"], values["topics"]))
+            return ("recortex: topic #%d of the local record was changed outside recortex (%d lines of its text differ from the last "
+                    "version recortex wrote; it has %d labels and is %s). Take the text, the title and the labels as they are now as "
+                    "yours?" % (values["topic"], values["lines"], values["labels"], values["state"]))
+        return ("recortex: %d entries and %d topics of this record carry a seal this machine cannot check (they were written on "
+                "another machine, or here before the key changed). Seal them as yours on this machine?"
+                % (values["entries"], values["topics"]))
 
     def options(self, values):
+        # the yes label carries a token of the bytes asked about, so that an answer is an answer to those bytes and no others: a file
+        # that changed since, with the same counts, makes a label that the user never chose
+        token = self.value(values)[:8]
         if values["mode"] == "topic":
-            return [option("Take topic #%d as mine" % values["topic"], "recortex seals the text as it is now, and keeps the "
-                           "last version it wrote.", "yes", [("setup.py", "adopt", "--topic", str(values["topic"]), "--yes")]),
+            return [option("Take topic #%d as mine %s" % (values["topic"], token), "recortex seals the text, the title and the labels "
+                           "as they are now, and keeps the last version it wrote.", "yes",
+                           [("setup.py", "adopt", "--topic", str(values["topic"]), "--yes")]),
                     option("Leave it as it is", "Nothing changes; the text stays marked as changed outside recortex.", "no")]
-        return [option("Seal them as mine", "recortex seals those files under this machine's key, and changes nothing else in "
-                       "them.", "yes", [("setup.py", "adopt", "--foreign", "--yes")]),
+        return [option("Seal them as mine %s" % token, "recortex seals those files under this machine's key, and changes nothing else "
+                       "in them.", "yes", [("setup.py", "adopt", "--foreign", "--yes")]),
                 option("Leave them as they are", "Nothing changes; they stay marked as written elsewhere.", "no")]
 
     def value(self, values):

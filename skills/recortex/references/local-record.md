@@ -56,7 +56,7 @@ When the brief says that files in the record folder were not read, say so in one
 ## The two questions about what is not vouched for
 
 - `folder`: the record is at a folder this machine has not approved for it. `acts.py ask folder` prints the question; on a yes, `setup.py record-folder --yes` writes the row.
-- `adopt`: a topic's text was changed outside recortex (`acts.py ask adopt topic N`), or files were written under another key (`acts.py ask adopt foreign`). On a yes, `setup.py adopt --topic N --yes` or `setup.py adopt --foreign --yes` keeps the text as it is as a version and seals it as the user's. A changed entry is never adopted.
+- `adopt`: a topic's text was changed outside recortex (`acts.py ask adopt topic N`), or files carry a seal this machine cannot check, because they were written on another machine (`acts.py ask adopt foreign`). The yes label ends with a short token of the bytes the question is about, so an answer holds for those bytes and no others. On a yes, `setup.py adopt --topic N --yes` or `setup.py adopt --foreign --yes` keeps the text as it is as a version and seals the text, the title and the labels (or the files) as the user's, reading each file once and refusing when it changed meanwhile. A changed entry is never adopted, and neither is a file this machine sealed that now carries another key.
 
 Each question shows counts and fixed words, never the text. Ask them one by one, as every question that waits for the user (SKILL.md, "What needs the user's yes").
 

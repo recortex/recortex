@@ -218,7 +218,7 @@ Every act that is the user's own is one question that `acts.py ask KIND` prints,
 | `publish` | the public page | Update the public page, Set up the public page, Publish the private record | the target, the flags |
 | `inproject` | keep a local record inside the project | Keep it inside the project | the project folder |
 | `folder` | use a local record at the folder this machine has not approved | Use the record there | the record's id and its folder |
-| `adopt` | take back what was changed outside recortex | Take topic #N as mine, Seal them as mine | the topic or the files, and the bytes asked about |
+| `adopt` | take back what was changed outside recortex | Take topic #N as mine TOKEN, Seal them as mine TOKEN | the topic or the files, and the bytes asked about |
 
 A question holds fixed words and checked values only: a repository, a hold's short id and the action it stops in words (never the text of a hold), a number, a path that trust-ancestor accepts. The question's whole text and its options in order must match for the answer to count; a reworded question, another label, a second use and a command with other values grant nothing. A newer answer that is no yes takes an unused grant of the kind away, a later pause or approval is a new question (the question names its moment), and an act done outside every session spends a grant nobody used. When the transcript cannot be read here, `acts.py ask trust --typed` is the one question that may be answered by typing the label of its yes option (see "Shared home folders and several hosts"); every other question needs the dialog, and a session without it says so in one line.
 
