@@ -807,7 +807,7 @@ def dashboard_line(repo, entry, data, settings):
         if not notes:
             return ""
         entry["dash"] = max(note["at"] for note in notes)
-        return dashboard_notes.line(notes)
+        return dashboard_notes.line(notes, repo)
     except Exception:  # noqa: BLE001 - a hook never fails over a line about the dashboard
         return ""
 

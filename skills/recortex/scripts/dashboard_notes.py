@@ -21,6 +21,7 @@ import os
 import time
 
 import field_sheet
+import record_store
 import storage
 
 FILE = "dashboard-notes.json"
@@ -40,6 +41,7 @@ WORDS = {"step": ("completed step", "completed steps"), "map": ("map edit", "map
          "verdict": ("review verdict", "review verdicts"), "edit": ("applied edit", "applied edits")}
 HEAD = "recortex: since your last prompt the user recorded in the dashboard: "
 TAIL = (". They are on GitHub and may not be in what you read: run status.py --sync and read them before you go on.")
+TAIL_LOCAL = (". They are in the record and may not be in what you read: run status.py --sync and read them before you go on.")
 
 
 def _folder(repo, create=False):
@@ -148,7 +150,7 @@ def since(repo, after):
         return []
 
 
-def line(notes):
+def line(notes, repo=None):
     """The one fixed line for `notes`, or "": the kinds that occurred, in the order of KINDS, each a count and its word; at most
     six distinct issue numbers, rising, then ", and more". Within CAP: when the numbers do not fit they are left out, and when
     even the counts do not, there is no line."""
@@ -163,7 +165,7 @@ def line(notes):
             numbers = ", ".join("#%d" % number for number in issues[:shown])
             more = ", and more" if len(issues) > shown else ""
             where = " (issue%s %s%s)" % ("" if len(issues) == 1 and shown == 1 else "s", numbers, more)
-        text = HEAD + said + where + TAIL
+        text = HEAD + said + where + (TAIL_LOCAL if repo and record_store.is_local(repo) else TAIL)
         if len(text) <= CAP:
             return text
     return ""

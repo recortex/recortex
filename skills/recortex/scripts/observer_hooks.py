@@ -22,6 +22,7 @@ import observer_runtime
 import observer_sources
 import observer_store
 import pretool_guard
+import record_store
 import recortex
 import storage
 
@@ -262,13 +263,19 @@ UNCHECKED = {"reason": "recortex observer: this machine's holds could not be che
 ANSWERS = frozenset(("control", "control-refused", "release-refused"))
 
 
-def _output(event, context="", notices=(), denial=None, lines=()):
+def _notice(code, repo=None):
+    """The fixed line of a notice; for a local record it names the record where it would name GitHub."""
+    text = NOTICES[code]
+    return text.replace("verified in GitHub", "verified in the record") if repo and record_store.is_local(repo) else text
+
+
+def _output(event, context="", notices=(), denial=None, lines=(), repo=None):
     """The hook's JSON. `lines` are notices built here from fixed words and a checked value (SWITCHED)."""
     if event == "PreCompact":
         return {}  # Claude Code discards a PreCompact hook's systemMessage; its capture has run
     out = {}
     if notices or lines:
-        out["systemMessage"] = "\n".join(dict.fromkeys([NOTICES[code] for code in notices] + list(lines)))
+        out["systemMessage"] = "\n".join(dict.fromkeys([_notice(code, repo) for code in notices] + list(lines)))
     if context or denial:
         specific = {"hookEventName": event}
         if context and event not in ("Stop", "PreCompact"):
@@ -900,7 +907,7 @@ def _handle(event, data, config, repo, decision):
                 # A 1.4.0 approval holds no level: the observer waits for the user's answer to the level question.
                 return _output(event, lines=[observer_runtime.PAUSED] if event == "SessionStart" else [], denial=held)
             notice = "approval-host" if reason == "host" else "approval"
-            return _output(event, notices=[notice] if event == "SessionStart" else [], denial=held)
+            return _output(event, notices=[notice] if event == "SessionStart" else [], denial=held, repo=repo)
         if event == "PreToolUse" and not checked:
             denial = decision["early"] = _held(repo, data)
         with observer_store.Store(repo, max_bytes=settings["max_pending_bytes"], wait=0.1,
@@ -1045,4 +1052,4 @@ def _handle(event, data, config, repo, decision):
         # cannot record a suppression when the queue is what failed, so the notice waits for the prompt or stop.
         if event not in TOOL_EVENTS:
             notices.append("capture")
-    return _output(event, context=context, notices=notices, denial=denial, lines=lines)
+    return _output(event, context=context, notices=notices, denial=denial, lines=lines, repo=repo)

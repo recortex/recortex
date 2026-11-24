@@ -351,6 +351,27 @@ class LedgerTests(Features):
         self.assertIn("wrong_author", str(caught.exception))
 
 
+class WordsTests(Features):
+    """No local output says GitHub: the fixed lines of the dashboard's note to the next prompt and of the observer's notices too."""
+
+    def test_the_note_after_a_dashboard_action_and_the_observers_pending_notice_name_the_record(self):
+        import dashboard_notes
+        import observer_hooks
+        notes = [{"at": 1.0, "kind": "step", "issue": 7}, {"at": 2.0, "kind": "map", "issue": 1}]
+        local = dashboard_notes.line(notes, self.repo)
+        self.assertIn("They are in the record and may not be in what you read", local)
+        self.assertIn("on GitHub", dashboard_notes.line(notes, "octo-org/octo-repo"))   # a GitHub record's line is what it was
+        self.assertEqual(dashboard_notes.line(notes), dashboard_notes.line(notes, "octo-org/octo-repo"))
+        pending = observer_hooks._output("SessionStart", notices=["pending"], repo=self.repo)["systemMessage"]
+        self.assertIn("not yet verified in the record", pending)
+        self.assertIn("not yet verified in GitHub", observer_hooks._output("SessionStart", notices=["pending"],
+                                                                         repo="octo-org/octo-repo")["systemMessage"])
+        self.assertEqual(observer_hooks.NOTICES["pending"], observer_hooks._output("SessionStart", notices=["pending"])["systemMessage"])
+        self.outputs += [local, pending]   # the scan at the end of the test looks at them like at any output
+        for code in observer_hooks.NOTICES:
+            self.outputs.append(observer_hooks._output("SessionStart", notices=[code], repo=self.repo)["systemMessage"])
+
+
 class LiveServerTests(Features):
     """10.1: the live dashboard serves a local record: the main page with the Record pane, and one topic's view at /read/<N>. The
     only test of this round that starts a server: in this process, on a free loopback port, stopped with addCleanup first."""
