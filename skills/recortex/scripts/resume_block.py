@@ -16,12 +16,12 @@ Examples:
 
 import argparse
 import re
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import lint_drafts  # noqa: E402
 import board_api  # noqa: E402
 
@@ -94,9 +94,7 @@ def show(args, config):
     lines.append(block)
     if args.active:
         try:
-            raw = recortex.gh(["issue", "list", "--repo", repo, "--label", "active", "--state", "open",
-                           "--json", "number,labels", "--limit", "50"], timeout=args.timeout)
-            active = json.loads(raw)
+            active = record_store.for_repo(repo, config).find_issues("active", timeout=args.timeout)
             lines += ["", "Open issues labeled active: %d (numbers and labels only; titles are not shown)" % len(active)]
             for issue in active:
                 names = [defuse(str(l.get("name", "")))[:LABEL_CAP] for l in issue.get("labels", [])]
@@ -138,11 +136,11 @@ def update(args, config):
         print("not posted: fix the errors above")
         return 1
 
-    command = ["issue", "comment", str(hub), "--repo", repo, "--body-file", "-"]
+    records = record_store.for_repo(repo, config)
     if not args.dry_run:
         allowed = recortex.allowed_users(repo)
         try:
-            me = recortex.gh(["api", "user", "--jq", ".login"]).strip()
+            me = records.whoami()
         except recortex.GhError:
             me = ""
         if not allowed:
@@ -153,18 +151,18 @@ def update(args, config):
                   "`show` and the hook will ignore it until the user adds that login to %s."
                   % (me or "an unknown login", repo, ", ".join(sorted(allowed)), recortex.trusted_target()))
     if args.dry_run:
-        print("would run: " + recortex.show_command(command, "new resume comment from stdin, %d characters" % len(comment)))
-        print("would read back: gh api repos/%s/issues/comments/<id> and compare" % repo)
+        print("would run: " + records.show("post_entry", hub, note="new resume comment from stdin, %d characters" % len(comment)))
+        print("would read back: %s and compare" % records.read_back("entry"))
         print(comment)
         return 0
-    url = recortex.gh(command, stdin=comment).strip().split("\n")[-1]
+    url = records.post_entry(hub, body=comment).strip().split("\n")[-1]
     print("posted: %s" % url)
-    match = re.search(r"#issuecomment-([0-9]+)", url)
-    if not match:
+    posted = records.posted_id(url)
+    if not posted:
         print("MISMATCH: could not find the comment id in gh output, so the comment was not read back")
         return 1
-    ok = recortex.verify_body(comment, recortex.read_comment_body(repo, match.group(1)), "resume comment %s" % url)
-    if ok and board_api.entry(config, repo)[0] == "approved":
+    ok = recortex.verify_body(comment, recortex.read_comment_body(repo, posted), "resume comment %s" % url)
+    if ok and records.supports("board") and board_api.entry(config, repo)[0] == "approved":
         print(BOARD_REMINDER)
     return 0 if ok else 1
 
