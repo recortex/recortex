@@ -49,7 +49,7 @@ NEEDS_DIALOG = ("acts: this question is answered in the question dialog only. Wh
 TYPED_UNRECORDED = ("acts: a typed answer cannot be recorded here, because the plugin's hook did not see this command, so "
                     "nothing is asked.")
 DESCRIPTION = re.compile(r"[A-Za-z0-9 .,;:'()/_#-]{20,120}")
-KIND = re.compile(r"[a-z-]{1,20}")
+KIND = re.compile(r"[a-z]{1,10}")
 ASCII_PATH = re.compile(r"/[A-Za-z0-9 ._/+@%=,:~-]{0,300}")
 HOLD_WORDS = {"git-push": "pushing with git", "git-tag": "changing git tags", "gh-release": "changing GitHub releases",
               "command": "running one exact command (observer.py holds shows it)", "publish": "posting to the record"}
@@ -797,24 +797,25 @@ def setup_call(words):
     return found[0], found[1][0], found[1][1:]
 
 
-class RecordInProject(Act):
+class InProject(Act):
     """The record kept inside the project, in `.recortex`: committed with the project's code if the user commits it, so a public
     repository shows it to everyone. Asked before anything is made, so it needs no project file; its value is bound to the
     project folder. The words about the repository (public, private, not known) are in the option's description, because the
     command that carries the answer cannot know them, and the question text must be the same for both."""
 
-    kind, header = "record-in-project", "Record"
+    kind, header = "inproject", "Record"
     pre_setup = True
     STATES = {"public": "The project's repository is public.", "private": "The project's repository is private now.",
               "unknown": "recortex could not tell if its repository is public."}
     ANSWERS = re.compile(r"[^\x00-\x1f\x7f]{1,300}")
 
     def parse(self, args, ctx):
-        state = args.values[0] if args.values else "unknown"
         answers = args.path
-        if state not in self.STATES or (answers is not None and not self.ANSWERS.fullmatch(answers)):
-            raise ActError("acts: record-in-project takes public, private or unknown, and --path with the answers file.")
-        return {"project": os.path.realpath(ctx.root), "state": state, "answers": answers}
+        if args.values or (answers is not None and not self.ANSWERS.fullmatch(answers)):
+            raise ActError("acts: inproject takes no state (it is read from the project's remotes), only --path with the answers "
+                           "file.")
+        # the state is computed here, by the function that `setup.py record-question --in-project` prints: never taken from an argument
+        return {"project": os.path.realpath(ctx.root), "state": record_store.project_visibility(ctx.root), "answers": answers}
 
     def from_command(self, words, ctx):
         call = setup_call(words)
@@ -849,7 +850,7 @@ class RecordInProject(Act):
         return digest(self.kind, values["project"])
 
     def ask_words(self, values):
-        return [values["state"]] + (["--path", values["answers"]] if values.get("answers") else [])
+        return ["--path", values["answers"]] if values.get("answers") else []
 
 
 class Folder(Act):
@@ -978,7 +979,7 @@ def register(act):
 
 
 for _act in (Release(), Disable(), Resume(), Undo(), Trust(), Hosts(), Advisory(), Reminder(), Replace(), Publish(),
-             RecordInProject(), Folder(), Adopt()):
+             InProject(), Folder(), Adopt()):
     register(_act)
 
 

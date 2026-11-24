@@ -114,7 +114,7 @@ class RecordQuestionTests(Fresh):
         text = ("recortex: the record will be in .recortex inside this project. If you commit it, it is committed with your code, "
                 "and in a public repository anyone can read it. Keep the record inside the project?")
         lines = self.question("--in-project")
-        self.assertEqual(["question record-in-project", "  " + text], lines[:2])
+        self.assertEqual(["question inproject", "  " + text], lines[:2])
         self.assertTrue(lines[2].startswith("  - Keep it inside the project: Create .recortex here; nothing is added to .gitignore."))
         self.assertEqual("  - Use its own folder instead: Keep the record private, outside the project.", lines[3])
 
@@ -301,7 +301,7 @@ class ApplyLocalTests(Fresh):
         done = self.apply("--yes", place="project")
         self.assertNotEqual(0, done.returncode)
         self.assertIn("needs your answer to its question", done.stderr)
-        self.assertIn("acts.py ask record-in-project", done.stdout)
+        self.assertIn("acts.py ask inproject", done.stdout)
         self.assertEqual([], self.storage.record_bindings())
         self.assertEqual(before, self.snapshot())
         self.assertFalse(os.path.exists(os.path.join(self.project, ".recortex")))
@@ -323,7 +323,7 @@ class ApplyLocalTests(Fresh):
         code, text, allowed = self.apply_in_process(place="project")
         self.assertEqual(0, code, text)
         allowed.assert_called_once()
-        self.assertEqual("record-in-project", allowed.call_args[0][0])
+        self.assertEqual("inproject", allowed.call_args[0][0])
         self.assertEqual(os.path.realpath(self.project), allowed.call_args[0][1]["project"])
         folder = os.path.join(os.path.realpath(self.project), ".recortex")
         self.assertEqual([".gitattributes", "hub", "hub.md", "record.json"], sorted(os.listdir(folder)))

@@ -14,6 +14,8 @@ Standard library only."""
 import json
 import os
 import re
+import subprocess
+import urllib.parse
 
 import names
 import recortex
@@ -161,6 +163,77 @@ def github_account_state(timeout):
     except recortex.GhError:
         return "unnamed", None
     return ("ready", login) if recortex.LOGIN.fullmatch(login) else ("unnamed", None)
+
+
+# ---------------------------------------------------------------- what is known of a project's repository (setup, 9.3)
+
+REMOTE_SCHEMES = ("https", "http", "ssh", "git", "git+ssh", "ssh+git")
+REMOTE_OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
+REMOTE_NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
+SCP_REMOTE = re.compile(r"(?:[A-Za-z0-9._-]{1,40}@)?github\.com:([^/:@\s]+)/([^/:@\s]+)")
+REMOTE_LIMIT = 8   # the repositories that GitHub is asked about: more than this are not looked at
+
+
+def github_repo_of(value):
+    """`owner/name` when a git remote URL names a repository on github.com, by an exact check of its host, else None. The URL
+    forms are https://, http://, ssh://, git:// (with an optional user and port) and the scp form git@github.com:owner/name. A
+    host that only holds the word (`evil.example/github.com/...`, `github.com.evil.example`, `evilgithub.com`) is not GitHub."""
+    if not isinstance(value, str) or len(value) > 500 or any(ord(char) < 32 or ord(char) == 127 or char.isspace() for char in value):
+        return None
+    if "://" in value:
+        try:
+            parts = urllib.parse.urlsplit(value)
+            host = parts.hostname
+            parts.port   # a port that is not a number raises here
+        except ValueError:
+            return None
+        if parts.scheme.lower() not in REMOTE_SCHEMES or host != "github.com" or parts.query or parts.fragment:
+            return None
+        owner, _, name = parts.path.strip("/").partition("/")
+    else:
+        found = SCP_REMOTE.fullmatch(value)
+        if not found:
+            return None
+        owner, name = found.groups()
+    name = name[:-1] if name.endswith("/") else name
+    name = name[:-4] if name.endswith(".git") else name
+    if not REMOTE_OWNER.fullmatch(owner) or not REMOTE_NAME.fullmatch(name) or name in (".", ".."):
+        return None
+    return "%s/%s" % (owner, name)
+
+
+def project_remotes(root):
+    """The values of every `remote.<name>.url` and `remote.<name>.pushurl` of the checkout that holds `root`, read locally."""
+    try:
+        done = subprocess.run(["git", "-C", root, "config", "--null", "--get-regexp", r"^remote\..*\.(url|pushurl)$"],
+                              capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    values = []
+    for row in done.stdout.split("\0"):
+        key, _, value = row.partition("\n")
+        if key and value:
+            values.append(value)
+    return values
+
+
+def project_visibility(root):
+    """"public", "private" or "unknown" for the repository of the project at `root`: its remotes are read locally, each by an
+    exact check of the host; GitHub is asked about each repository it names (at most REMOTE_LIMIT) only when gh is ready. "public"
+    when any one is public; "private" only when every remote is a GitHub repository confirmed private; else "unknown"."""
+    repos = [github_repo_of(value) for value in project_remotes(root)]
+    named = sorted({repo for repo in repos if repo})
+    if not named or recortex.gh_account()[0] != "ready":
+        return "unknown"
+    seen = {}
+    for repo in named[:REMOTE_LIMIT]:
+        answer = GithubStore(repo).visibility()
+        seen[repo] = {"false": "public", "true": "private"}.get(answer, "unknown")
+        if seen[repo] == "public":
+            return "public"
+    if None not in repos and len(named) <= REMOTE_LIMIT and all(state == "private" for state in seen.values()):
+        return "private"
+    return "unknown"
 
 
 def words_for(repo):

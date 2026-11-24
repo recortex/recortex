@@ -40,7 +40,7 @@ MAP_RANK = {"off": 0, "shadow": 1, "automatic": 2}
 # The kinds of act that have a question in acts.py (a test holds this equal to the grant rows of acts.ACTS). Each one's value is
 # a hash of the act's checked values (acts.digest), except `hosts` ("any") and `advisory` (the mode).
 ACT_KINDS = ("release", "disable", "resume", "undo", "trust", "hosts", "advisory", "reminder", "replace", "publish",
-             "record-in-project", "folder", "adopt")
+             "inproject", "folder", "adopt")
 TYPED_KINDS = ("trust",)   # the one question whose answer can never be read back from the transcript has a typed form
 HASH = re.compile(r"[0-9a-f]{32}")
 MAP_UNANSWERED = ("recortex observer: turning Project Map upkeep on, or raising it, needs your answer to the question about "

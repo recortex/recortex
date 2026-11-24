@@ -1534,7 +1534,7 @@ def record_question_command(args):
         import acts
         state = in_project_state(os.path.abspath(args.root or recortex.project_root()))
         values = {"project": os.path.realpath(args.root or recortex.project_root()), "state": state, "answers": None}
-        for line in acts.question_lines(acts.describe(acts.ACTS["record-in-project"], values, "choice"), bare_no=True):
+        for line in acts.question_lines(acts.describe(acts.ACTS["inproject"], values, "choice"), bare_no=True):
             print(line)
         return 0
     state, login = recortex.gh_account()
@@ -1547,18 +1547,8 @@ def record_question_command(args):
 
 
 def in_project_state(root):
-    """"public", "private" or "unknown" for the project's repository: the remotes of the checkout, read locally; GitHub is asked
-    once, only for a remote that names github.com and only when gh is ready."""
-    try:
-        text = subprocess.run(["git", "-C", root, "config", "--get-regexp", r"^remote\..*\.url$"], capture_output=True, text=True,
-                              timeout=3).stdout
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
-    found = re.search(r"github\.com[:/]([A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Za-z0-9._-]{1,100}?)(?:\.git)?(?:\s|$)", text)
-    if not found or recortex.gh_account()[0] != "ready":
-        return "unknown"
-    value = record_store.GithubStore(found.group(1)).visibility()
-    return {"false": "public", "true": "private"}.get(value, "unknown")
+    """"public", "private" or "unknown" for the project's repository: the one function that acts.py uses for the same question."""
+    return record_store.project_visibility(root)
 
 
 def local_answers(answers):
@@ -1634,8 +1624,8 @@ def apply_local(answers, root, dry, drafts):
         raise SystemExit("error: a record folder of your own lies outside the project; %s does not" % path)
     project_folder = os.path.join(root, names.RECORD_DIR)
     if place == "project":
-        if not dry and not acts.allowed("record-in-project", {"project": os.path.realpath(root), "state": "unknown", "answers": None}):
-            print(acts.refusal("record-in-project", {"project": os.path.realpath(root), "state": "unknown",
+        if not dry and not acts.allowed("inproject", {"project": os.path.realpath(root), "state": "unknown", "answers": None}):
+            print(acts.refusal("inproject", {"project": os.path.realpath(root), "state": "unknown",
                                                      "answers": None})["note"])
             raise SystemExit("error: a record inside the project needs your answer to its question; nothing was made")
         refuse_unsafe(root, os.path.join(project_folder, "record.json"))   # no link on the way, and .recortex is a folder

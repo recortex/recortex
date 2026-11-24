@@ -1,4 +1,4 @@
-"""The three acts a local record adds (1.9.0, spec 9.3 and 9.5): `record-in-project` (a record inside the project, asked before the
+"""The three acts a local record adds (1.9.0, spec 9.3 and 9.5): `inproject` (a record inside the project, asked before the
 project is set up), `folder` (this machine has not approved the folder a record is at) and `adopt` (take back as the user's own
 what was changed outside recortex, or written under another key). Each is a question printed by `acts.py`, answered in the
 dialog, and taken once from a grant bound to exactly its values. Offline; the failing `gh` of the sandbox must stay unused."""
@@ -8,6 +8,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -104,7 +105,7 @@ class LocalActsBox(base.ActsBox):
 
 class ActTableTests(LocalActsBox):
     def test_the_three_acts_are_in_the_table_and_in_the_grant_kinds(self):
-        for kind in ("record-in-project", "folder", "adopt"):
+        for kind in ("inproject", "folder", "adopt"):
             self.assertIn(kind, acts.ACTS)
             self.assertIn(kind, observer_grants.ACT_KINDS)
         grant_rows = sorted(kind for kind, act in acts.ACTS.items() if act.grant)
@@ -112,17 +113,17 @@ class ActTableTests(LocalActsBox):
 
     def test_every_option_description_fits_the_fixed_form_and_the_question_is_printed(self):
         self.damage_topic("reader")
-        for argv in (("record-in-project", "public"), ("record-in-project", "private"), ("record-in-project", "unknown"),
-                     ("record-in-project", "unknown", "--path", "/tmp/answers.json"), ("folder",),
-                     ("adopt", "topic", str(self.numbers["reader"]))):
-            with self.subTest(argv=argv):
-                code, printed = self.ask_main(*argv, "--json")
-                self.assertEqual(0, code, printed)
-                body = json.loads(printed)
-                for option in body["options"]:
-                    self.assertRegex(option["description"], acts.DESCRIPTION)
-                self.assertEqual("choice", body["form"])
-                self.assertLessEqual(len(body["header"]), 12)
+        for state in ("public", "private", "unknown"):
+            for argv in (("inproject",), ("inproject", "--path", "/tmp/answers.json"), ("folder",),
+                         ("adopt", "topic", str(self.numbers["reader"]))):
+                with self.subTest(state=state, argv=argv), mock.patch.object(record_store, "project_visibility", return_value=state):
+                    code, printed = self.ask_main(*argv, "--json")
+                    self.assertEqual(0, code, printed)
+                    body = json.loads(printed)
+                    for option in body["options"]:
+                        self.assertRegex(option["description"], acts.DESCRIPTION)
+                    self.assertEqual("choice", body["form"])
+                    self.assertLessEqual(len(body["header"]), 12)
 
     def damage_topic(self, key):
         path = self.path_of(key)
@@ -132,8 +133,8 @@ class ActTableTests(LocalActsBox):
         values = {"project": self.project, "state": "unknown", "answers": None}
         self.assertEqual("recortex: the record will be in .recortex inside this project. If you commit it, it is committed with "
                          "your code, and in a public repository anyone can read it. Keep the record inside the project?",
-                         acts.ACTS["record-in-project"].text(values))
-        self.assertEqual(["Keep it inside the project", "Use its own folder instead"], acts.ACTS["record-in-project"].labels(values))
+                         acts.ACTS["inproject"].text(values))
+        self.assertEqual(["Keep it inside the project", "Use its own folder instead"], acts.ACTS["inproject"].labels(values))
         folder = {"id": LOCAL_ID, "path": "0" * 64}
         self.assertEqual("recortex: this project's local record is now at a folder this machine has not approved for it (record %s). "
                          "Use the record at its new place?" % LOCAL_ID, acts.ACTS["folder"].text(folder))
@@ -157,7 +158,7 @@ class ActTableTests(LocalActsBox):
 
     def test_the_question_of_a_record_inside_the_project_needs_no_project_file_and_the_others_do(self):
         os.remove(os.path.join(self.project, ".recortex.json"))
-        self.assertEqual(0, self.ask_main("record-in-project", "unknown")[0])
+        self.assertEqual(0, self.ask_main("inproject")[0])
         for argv in (("folder",), ("adopt", "foreign")):
             code, printed = self.ask_main(*argv)
             self.assertEqual((1, acts.NOT_SET_UP + "\n"), (code, printed))
@@ -166,7 +167,7 @@ class ActTableTests(LocalActsBox):
         one = {"project": "/srv/one", "state": "public", "answers": None}
         two = {"project": "/srv/two", "state": "public", "answers": None}
         again = {"project": "/srv/one", "state": "private", "answers": "/srv/one/a.json"}
-        act = acts.ACTS["record-in-project"]
+        act = acts.ACTS["inproject"]
         self.assertNotEqual(act.value(one), act.value(two))
         self.assertEqual(act.value(one), act.value(again))   # what is known of the repository is not part of the value
         self.assertEqual(act.text(one), act.text(again))      # nor of the question: the answer is to this text
@@ -178,6 +179,119 @@ class ActTableTests(LocalActsBox):
         other = dict(values, path="1" * 64)
         self.assertNotEqual(act.value(values), act.value(other))
         self.assertNotIn(self.folder_path, json.dumps(values))
+
+
+class InProjectStateTests(LocalActsBox):
+    """9.3: what the question says of the project's repository is computed by acts.py from the remotes and GitHub, never taken from
+    an argument, and read by an exact check of each remote's host."""
+
+    PRIVATE_URL = "https://github.com/octo-org/octo-repo.git"
+    PUBLIC_URL = "git@github.com:octo-org/octo-pages.git"
+
+    def setUp(self):
+        super().setUp()
+        subprocess.run(["git", "-C", self.project, "init", "-q", "."], check=True)
+        self.asked = []
+        self.visibility = {"octo-org/octo-repo": "true", "octo-org/octo-pages": "false"}
+
+        def visibility(store, timeout=30):
+            self.asked.append(store.repo)
+            return self.visibility.get(store.repo, "")
+        for patch in (mock.patch.object(record_store.GithubStore, "visibility", visibility),
+                      mock.patch.object(record_store.recortex, "gh_account", return_value=("ready", "octocat"))):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", self.project] + list(args), check=True, capture_output=True)
+
+    def remote(self, name, url, push=False):
+        self.git("remote", "add", name, url)
+        if push:
+            self.git("config", "remote.%s.pushurl" % name, push)
+
+    def state(self):
+        return record_store.project_visibility(self.project)
+
+    def test_a_state_given_as_an_argument_is_refused_whatever_it_says(self):
+        self.remote("origin", self.PUBLIC_URL)
+        for word in ("private", "public", "unknown", "anything"):
+            code, printed = self.ask_main("inproject", word)
+            self.assertEqual(1, code, word)
+            self.assertIn("takes no state", printed)
+            self.assertNotIn("question inproject", printed)
+        code, printed = self.ask_main("inproject", "--json")
+        body = json.loads(printed)
+        self.assertIn("The project's repository is public.", body["options"][0]["description"])
+
+    def test_a_remote_that_only_holds_the_word_github_is_not_github(self):
+        for url in ("https://evil.example/github.com/octo-org/octo-repo", "https://github.com.evil.example/octo-org/octo-repo",
+                    "https://evilgithub.com/octo-org/octo-repo", "https://github.com@evil.example/octo-org/octo-repo",
+                    "git@github.com.evil.example:octo-org/octo-repo", "https://github.com/octo-org/octo-repo?x=github.com",
+                    "https://github.com/octo-org/octo-repo/extra", "file:///srv/github.com/octo-org/octo-repo"):
+            with self.subTest(url=url):
+                self.assertIsNone(record_store.github_repo_of(url))
+        self.remote("origin", "https://evil.example/github.com/octo-org/octo-repo")
+        self.assertEqual("unknown", self.state())
+        self.assertEqual([], self.asked)   # GitHub is not asked about a repository that no remote names
+        code, printed = self.ask_main("inproject", "--json")
+        self.assertIn("could not tell", json.loads(printed)["options"][0]["description"])
+
+    def test_the_forms_of_a_github_remote_are_read_exactly(self):
+        for url in ("https://github.com/octo-org/octo-repo", "https://github.com/octo-org/octo-repo.git", "http://github.com/octo-org/octo-repo/",
+                    "git@github.com:octo-org/octo-repo.git", "github.com:octo-org/octo-repo", "ssh://git@github.com/octo-org/octo-repo.git",
+                    "ssh://git@github.com:22/octo-org/octo-repo", "git://github.com/octo-org/octo-repo.git",
+                    "https://octocat:token@github.com/octo-org/octo-repo"):
+            with self.subTest(url=url):
+                self.assertEqual("octo-org/octo-repo", record_store.github_repo_of(url))
+
+    def test_one_public_remote_makes_it_public_whatever_the_others_are(self):
+        self.remote("origin", self.PRIVATE_URL)
+        self.remote("upstream", self.PUBLIC_URL)
+        self.assertEqual("public", self.state())
+        self.git("remote", "add", "elsewhere", "https://git.example/team/thing.git")
+        self.assertEqual("public", self.state())
+
+    def test_private_needs_every_remote_to_be_a_github_repository_confirmed_private(self):
+        self.remote("origin", self.PRIVATE_URL)
+        self.assertEqual("private", self.state())
+        self.remote("other", "https://github.com/octo-org/octo-docs.git")
+        self.visibility["octo-org/octo-docs"] = "true"
+        self.assertEqual("private", self.state())
+        self.visibility["octo-org/octo-docs"] = ""   # GitHub did not answer for one of them
+        self.assertEqual("unknown", self.state())
+        self.visibility["octo-org/octo-docs"] = "true"
+        self.git("remote", "add", "mirror", "https://git.example/team/thing.git")   # one that is not GitHub's
+        self.assertEqual("unknown", self.state())
+
+    def test_a_push_url_counts_as_a_remote(self):
+        self.remote("origin", self.PRIVATE_URL, push=self.PUBLIC_URL)
+        self.assertEqual("public", self.state())
+        self.git("config", "remote.origin.pushurl", "https://evil.example/github.com/octo-org/octo-repo")
+        self.assertEqual("unknown", self.state())   # a private url with a push url elsewhere is not known to be private
+
+    def test_without_a_ready_gh_or_a_remote_nothing_is_asked_and_it_is_unknown(self):
+        self.assertEqual("unknown", self.state())
+        self.remote("origin", self.PRIVATE_URL)
+        with mock.patch.object(record_store.recortex, "gh_account", return_value=("signed-out", None)):
+            self.assertEqual("unknown", self.state())
+        self.assertEqual([], self.asked)
+
+    def test_only_a_few_repositories_are_asked_about_and_the_rest_is_unknown(self):
+        for number in range(record_store.REMOTE_LIMIT + 2):
+            self.remote("r%d" % number, "https://github.com/octo-org/octo-p%d.git" % number)
+            self.visibility["octo-org/octo-p%d" % number] = "true"
+        self.assertEqual("unknown", self.state())
+        self.assertEqual(record_store.REMOTE_LIMIT, len(self.asked))
+
+    def test_the_question_of_setup_and_of_acts_use_the_same_function(self):
+        with mock.patch.object(record_store, "project_visibility", return_value="private") as one:
+            code, printed = self.ask_main("inproject", "--json")
+            self.assertEqual(0, code)
+            self.assertIn("The project's repository is private now.", printed)
+            self.assertEqual(os.path.realpath(self.project), os.path.realpath(one.call_args[0][0]))
+            self.assertEqual("private", setup.in_project_state(self.project))
+        self.assertEqual(2, one.call_count)
 
 
 class InProjectGrantTests(LocalActsBox):
@@ -200,9 +314,9 @@ class InProjectGrantTests(LocalActsBox):
 
     def test_the_command_asks_for_the_grant_of_its_own_project_and_labels_it(self):
         found = acts.asks(self.apply_command(self.project), self.project)
-        self.assertEqual(["record-in-project"], [item["kind"] for item in found])
+        self.assertEqual(["inproject"], [item["kind"] for item in found])
         self.assertEqual("Keep it inside the project", found[0]["label"])
-        self.assertEqual(acts.ACTS["record-in-project"].value(self.values), found[0]["value"])
+        self.assertEqual(acts.ACTS["inproject"].value(self.values), found[0]["value"])
 
     def test_a_dry_run_an_own_folder_and_another_kind_of_answers_ask_for_nothing(self):
         self.assertEqual([], acts.asks(self.apply_command(self.project, "--dry-run"), self.project))
@@ -216,46 +330,46 @@ class InProjectGrantTests(LocalActsBox):
 
     def test_without_the_answer_nothing_is_taken_and_the_refusal_names_the_question(self):
         self.assertIsNone(self.hook(self.apply_command(self.project)))
-        self.assertFalse(acts.allowed("record-in-project", self.values))
-        note = acts.refusal("record-in-project", self.values)["note"]
-        self.assertIn("acts.py ask record-in-project", note)
+        self.assertFalse(acts.allowed("inproject", self.values))
+        note = acts.refusal("inproject", self.values)["note"]
+        self.assertIn("acts.py ask inproject", note)
 
     def test_the_answer_yes_is_taken_once(self):
-        self.yes("record-in-project", self.values)
+        self.yes("inproject", self.values)
         self.assertIsNone(self.hook(self.apply_command(self.project)))
-        self.assertTrue(self.said("record-in-project", self.values))
-        self.assertTrue(acts.allowed("record-in-project", self.values))
-        self.assertFalse(acts.allowed("record-in-project", self.values))   # one time only
+        self.assertTrue(self.said("inproject", self.values))
+        self.assertTrue(acts.allowed("inproject", self.values))
+        self.assertFalse(acts.allowed("inproject", self.values))   # one time only
 
     def test_an_answer_about_this_project_covers_no_other_folder(self):
         other = dict(self.values, project=os.path.realpath(self.other))
         self.assertEqual([], acts.asks(self.apply_command(self.other), self.project))   # another --root: no grant is asked for
-        self.yes("record-in-project", self.values)
+        self.yes("inproject", self.values)
         self.assertIsNone(self.hook(self.apply_command(self.other)))
-        self.assertFalse(self.said("record-in-project", self.values))
-        self.assertFalse(self.said("record-in-project", other))
-        self.assertFalse(acts.allowed("record-in-project", other))
+        self.assertFalse(self.said("inproject", self.values))
+        self.assertFalse(self.said("inproject", other))
+        self.assertFalse(acts.allowed("inproject", other))
         self.assertIsNone(self.hook(self.apply_command(self.project)))
-        self.assertTrue(self.said("record-in-project", self.values))
-        self.assertFalse(acts.allowed("record-in-project", other))   # the grant of this project is not the other's
+        self.assertTrue(self.said("inproject", self.values))
+        self.assertFalse(acts.allowed("inproject", other))   # the grant of this project is not the other's
 
     def test_the_other_answer_and_a_reworded_question_grant_nothing(self):
-        act = acts.ACTS["record-in-project"]
-        self.answer("record-in-project", self.values, "Use its own folder instead")
+        act = acts.ACTS["inproject"]
+        self.answer("inproject", self.values, "Use its own folder instead")
         self.hook(self.apply_command(self.project))
-        self.assertFalse(self.said("record-in-project", self.values))
-        self.answer("record-in-project", self.values, act.label(self.values), text=act.text(self.values).replace("anyone", "someone"))
+        self.assertFalse(self.said("inproject", self.values))
+        self.answer("inproject", self.values, act.label(self.values), text=act.text(self.values).replace("anyone", "someone"))
         self.hook(self.apply_command(self.project))
-        self.assertFalse(self.said("record-in-project", self.values))
-        self.answer("record-in-project", self.values, act.label(self.values), labels=["Keep it inside the project", "Use its own "
+        self.assertFalse(self.said("inproject", self.values))
+        self.answer("inproject", self.values, act.label(self.values), labels=["Keep it inside the project", "Use its own "
                                                                                     "folder instead", "Ask me later"])
         self.hook(self.apply_command(self.project))
-        self.assertFalse(self.said("record-in-project", self.values))
+        self.assertFalse(self.said("inproject", self.values))
 
     def test_a_subagents_call_records_no_grant(self):
-        self.yes("record-in-project", self.values)
+        self.yes("inproject", self.values)
         self.hook(self.apply_command(self.project), agent_id="agent-1", agent_type="general-purpose")
-        self.assertFalse(self.said("record-in-project", self.values))   # the main session's call alone records one
+        self.assertFalse(self.said("inproject", self.values))   # the main session's call alone records one
         self.assertIsNone(self.hook(self.apply_command(self.project, "--dry-run"), agent_id="agent-1"))   # a dry run is no act
 
     def test_apply_in_a_session_takes_the_grant_and_refuses_without_it(self):
@@ -267,14 +381,14 @@ class InProjectGrantTests(LocalActsBox):
             setup.main(argv)
         self.assertIn("needs your answer to its question", str(caught.exception))
         self.assertFalse(os.path.exists(os.path.join(project, ".recortex")))
-        self.yes("record-in-project", self.values)
+        self.yes("inproject", self.values)
         self.hook(self.apply_command(project))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = setup.main(argv)
         self.assertEqual(0, code, out.getvalue())
         self.assertTrue(os.path.isfile(os.path.join(project, ".recortex", "record.json")))
-        self.assertFalse(self.said("record-in-project", self.values))   # spent
+        self.assertFalse(self.said("inproject", self.values))   # spent
 
 
 class FolderTests(LocalActsBox):
