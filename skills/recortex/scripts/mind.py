@@ -995,7 +995,7 @@ class Page:
                      " Reconstructed later." if memory.get("reconstructed") else ""),
                    E("a", {"href": address}, "Open the original comment on GitHub")
                    if address else "",
-                   " " if address else "", self.record_link(integer(memory.get("issue")), integer(memory.get("id")))))
+                   *self.beside(address, self.record_link(integer(memory.get("issue")), integer(memory.get("id"))))))
 
     # ------------------------------------------------------------ the views
 
@@ -3031,7 +3031,7 @@ class Page:
                                " on %s; %s." % (text_of(issue.get("opened")), state)),
                              E("div", {"class": "why"}, self.blocks(issue.get("first"))) if issue.get("first") else "",
                              E("p", None, E("a", {"href": address}, "Open the whole issue on GitHub") if address else "",
-                               " " if address else "", self.record_link(n))))
+                               *self.beside(address, self.record_link(n)))))
         return E("div", {"id": "issues", "hidden": "hidden"}, *entries)
 
     def tree_topic(self, entry):
@@ -3483,6 +3483,11 @@ class Page:
         if not self.reader_has(n):
             return ""
         return E("a", {"href": self.read_href(n, entry)}, text)
+
+    @staticmethod
+    def beside(address, link):
+        """What goes after a link to GitHub: a space and the reader's link, or nothing at all when the page has no reader there."""
+        return (" ", link) if address and link else (link,) if link else ()
 
     def record_home(self):
         return Href(self.live_base + "/snapshot#record") if self.live_base else anchor("record")

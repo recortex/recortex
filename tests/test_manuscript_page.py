@@ -651,9 +651,10 @@ class WhoGetsItTests(PageBox):
         self.assertEqual([], ts.page_problems(text))
         page = ts.PageReader(text)
         views = [dict(attrs)["id"] for tag, attrs in page.elements if tag == "section" and "view" in dict(attrs).get("class", "")]
-        self.assertEqual(["now", "project-map", "history", "text", "paper", "threads", "settled", "lessons", "open", "todo", "map", "ask", "usage"], views)
+        self.assertEqual(["now", "project-map", "history", "text", "paper", "threads", "settled", "lessons", "open", "todo", "map", "ask", "usage",
+                          "record"], [v for v in views if not v.startswith("read-")])   # the reader's pane, then a view for each topic
         navs = [dict(attrs)["data-nav"] for tag, attrs in page.elements if "data-nav" in dict(attrs)]
-        self.assertEqual(["now", "project-map", "work", "history", "outputs"], navs)
+        self.assertEqual(["now", "project-map", "work", "history", "record", "outputs"], navs)
         words = self.words(text)
         self.assertIn("Read the manuscript", words)
         self.assertIn("The plan and the text", words)            # the old view's name, with the one manuscript profile
@@ -774,7 +775,7 @@ class TextAndOrderTests(PageBox):
         self.assertEqual([], ts.page_problems(text))
         view = self.sheet_of(text)
         self.assertIn("The text of this thread is not shown here", self.words(view))
-        self.assertNotIn("SMUGGLED", text)
+        self.assertNotIn("SMUGGLED", ts.outside_reader(text))   # the reader shows what is not told, shut under its mark
         self.assertEqual([], [p for s in self.model()["sheet"]["sections"] for p in s["parts"] if p["thread"] == 5 and p["shown"]])
 
     def test_figures_tables_and_sources_are_drawn_as_a_paper_draws_them(self):
