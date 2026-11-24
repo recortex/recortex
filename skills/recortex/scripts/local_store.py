@@ -85,7 +85,8 @@ def now():
 
 
 def stamp(moment=None):
-    return datetime.datetime.fromtimestamp(now() if moment is None else moment, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    moment = now() if moment is None else moment
+    return datetime.datetime.fromtimestamp(min(max(moment, 0), 253402300799), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def name_stamp(created):
@@ -201,6 +202,7 @@ def _value(key, text):
             if not isinstance(value, str) or not value.strip() or len(value) > TITLE_MAX or any(
                     ord(char) < 32 or ord(char) == 127 or char in "\u2028\u2029" for char in value):
                 raise ValueError
+            value.encode("utf-8")   # a lone surrogate (an escape like \ud800) is not text: UnicodeError is a ValueError, caught below
             return value
         if key == "labels":
             value = json.loads(text)

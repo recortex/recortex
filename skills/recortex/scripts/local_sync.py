@@ -191,7 +191,12 @@ def run(db, repo, hub, rebuild, clock, timeline_cap=None):
                 removed = removed or bool(gone and gone[0] in ("issue", "comment"))   # its rows are gone, nothing replaces them
                 db.execute("INSERT OR REPLACE INTO local_files VALUES (?,?,?,?,NULL)", (relpath, mtime, size, "unread:" + why))
                 continue
-            number = store_file(db, store, relpath, parsed, mtime, changed_issues, changed_comments, touched_versions)
+            try:
+                number = store_file(db, store, relpath, parsed, mtime, changed_issues, changed_comments, touched_versions)
+            except (UnicodeError, OverflowError, ValueError):   # a value that parsed and cannot be stored: this file is unread, the sync goes on
+                removed = True   # whatever it had stored is derived again
+                db.execute("INSERT OR REPLACE INTO local_files VALUES (?,?,?,?,NULL)", (relpath, mtime, size, "unread:store"))
+                continue
             now_row = (("issue" if parsed.kind in ("hub", "topic") else "comment" if parsed.kind == "entry" else "version"),
                        number if parsed.kind in ("hub", "topic", "entry") else None)
             if gone and gone[0] in ("issue", "comment") and gone != now_row:
@@ -286,7 +291,7 @@ def _unread(store, relpath, reason):
     if reason in ("seal", "front"):
         folder, _, name = relpath.rpartition("/")
         for row in store.scan(folder):
-            if row[0] == name and time.time() - row[2] / 1e9 < local_store.YOUNG_SECONDS:
+            if row[0] == name and 0 <= time.time() - row[2] / 1e9 < local_store.YOUNG_SECONDS:   # a time in the future is no sign of a write
                 return "skip", None, ""
     return "unread", None, reason
 
@@ -347,8 +352,9 @@ def store_file(db, store, relpath, parsed, mtime, changed_issues, changed_commen
         db.execute("UPDATE issues SET timeline_read = 1, edits_read = 1 WHERE number = ?", (number,))
         front = parsed.front
         if front["state"] == "closed":
+            closer = {"sealed": local_store.OWN_AUTHOR, "changed": None, "foreign": local_store.OTHER_AUTHOR}[parsed.state]
             db.execute("INSERT OR REPLACE INTO timeline(issue, seq, event, at, actor, detail) VALUES (?,?,?,?,?,?)",
-                       (number, 1, "closed", front["closed"], local_store.OWN_AUTHOR, front["reason"]))
+                       (number, 1, "closed", front["closed"], closer, front["reason"]))
         if parsed.state != "sealed":
             actor = None if parsed.state == "changed" else local_store.OTHER_AUTHOR
             at = local_store.stamp(mtime / 1e9)

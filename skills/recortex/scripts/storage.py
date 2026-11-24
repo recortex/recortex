@@ -55,6 +55,8 @@ PRIVATE = "private"
 KEY_NAME = "key"
 
 
+MTIME_NS_MAX = 2 ** 62   # the latest file time that a scan reports (the year 2116)
+
 class StorageError(Exception):
     """A folder or file the plugin would use is not safe to use.
 
@@ -677,7 +679,8 @@ def scan_record_folder(path, sub=""):
                     info = entry.stat(follow_symlinks=False)
                 except OSError:
                     continue
-                rows.append((entry.name, info.st_size, info.st_mtime_ns, _entry_kind(info)))
+                # a time that no calendar holds (a file's time set far ahead, or before 1970) is clamped, so that no later arithmetic fails on it
+                rows.append((entry.name, info.st_size, min(max(info.st_mtime_ns, 0), MTIME_NS_MAX), _entry_kind(info)))
         return sorted(rows)
     finally:
         os.close(descriptor)

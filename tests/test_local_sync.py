@@ -3,6 +3,7 @@ deadline. Offline; every file is made in the test's own sandbox (tests/local_rec
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -126,6 +127,23 @@ class RowTests(Box):
         row = db.execute("SELECT number, author, title FROM issues WHERE number = 2").fetchone()
         self.assertFalse(self.index.title_told(db, row, lambda author: (author or "").lower() in {"local--record"}))
         self.assertEqual("changed", self.rows("SELECT state FROM local_files WHERE path LIKE 'topics/reader-q%.md'")[0][0])
+
+    def test_the_closing_of_a_topic_is_by_the_owner_nobody_known_or_the_other_machine_by_its_state(self):
+        closed = lambda: self.rows("SELECT actor FROM timeline WHERE issue = 4 AND event = 'closed'")
+        self.sync()
+        self.assertEqual([("local--record",)], closed())   # sealed here: the owner
+        path = self.topic_path("task")
+        data = self.read(path)
+        self.write(path, data.replace(b"Not started.", b"Started.", 1))   # a hand edit of a closed topic
+        self.sync()
+        relpath = os.path.relpath(path, self.folder).replace(os.sep, "/")
+        self.assertEqual("changed", self.rows("SELECT state FROM local_files WHERE path = ?", relpath)[0][0])
+        self.assertEqual([(None,)], closed())
+        parsed = self.local_store.parse_file(data, relpath, self.record_id)
+        self.write(path, self.local_store.render("topic", parsed.front, parsed.body, relpath, self.record_id,
+                                                 self.local_store.Sealing(b"another machine")))
+        self.sync()
+        self.assertEqual([("other-machine",)], closed())
 
     def test_a_foreign_topic_has_another_author_and_actor(self):
         path = self.topic_path("speed")
@@ -347,6 +365,48 @@ class NotReadTests(Box):
             self.sync()
         self.assertEqual("1", self.meta("local_unread"))
         self.assertEqual("unread:seal", self.rows("SELECT state FROM local_files WHERE path = 'topics/half-written.md'")[0][0])
+
+    def test_an_unsealed_file_with_a_time_in_the_future_is_no_file_being_written(self):
+        path = self.damage("half-written")
+        future = time.time() + 3600
+        os.utime(path, (future, future))
+        self.sync()
+        self.assertEqual("1", self.meta("local_unread"))   # a time that has not come is no sign of a write: it is counted
+        self.assertEqual("unread:seal", self.rows("SELECT state FROM local_files WHERE path = 'topics/half-written.md'")[0][0])
+
+    def test_a_title_that_is_not_text_makes_the_file_unread_and_a_value_that_cannot_be_stored_does_too(self):
+        path = self.topic_path("speed")
+        data = self.read(path)
+        title = re.search(rb'^title: .*$', data, re.M).group(0)
+        self.write(path, data.replace(title, b'title: "\\ud800 lone"', 1))   # a JSON escape of half a character: not text
+        os.utime(path, (1, 1))   # old: not "still being written"
+        self.sync()
+        relpath = os.path.relpath(path, self.folder).replace(os.sep, "/")
+        self.assertEqual("unread:front", self.rows("SELECT state FROM local_files WHERE path = ?", relpath)[0][0])
+        self.write(path, data)
+        with mock.patch.object(self.local_sync, "store_file", side_effect=lambda *a: (_ for _ in ()).throw(
+                UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed"))):
+            summary = self.sync(rebuild=True)
+        self.assertTrue(summary["complete"])   # every file is unread by the same reason, and the sync went on
+        self.assertEqual({"unread:store"}, {row[0] for row in self.rows("SELECT state FROM local_files")})
+        summary = self.sync(rebuild=True)
+        self.assertEqual(0, int(self.meta("local_unread")))
+
+    def test_a_file_time_far_in_the_future_is_clamped_and_the_sync_goes_on(self):
+        path = self.damage("changed-entry")
+        os.utime(path, ns=(2 ** 40 * 10 ** 9,) * 2)   # the year 36812: no calendar holds it
+        rows = {row[0]: row for row in self.storage.scan_record_folder(self.folder, os.path.relpath(os.path.dirname(path), self.folder))}
+        self.assertEqual(self.storage.MTIME_NS_MAX, rows[os.path.basename(path)][2])
+        os.utime(path, ns=(-5 * 10 ** 9,) * 2)
+        rows = {row[0]: row for row in self.storage.scan_record_folder(self.folder, os.path.relpath(os.path.dirname(path), self.folder))}
+        self.assertEqual(0, rows[os.path.basename(path)][2])
+        self.assertRegex(self.local_store.stamp(2 ** 40), r"^9999-12-31T23:59:59Z$")
+        self.assertEqual("1970-01-01T00:00:00Z", self.local_store.stamp(-5))
+        os.utime(path, ns=(2 ** 40 * 10 ** 9,) * 2)
+        summary = self.sync()
+        self.assertTrue(summary["complete"])
+        self.assertEqual("changed", self.rows("SELECT state FROM local_files WHERE path = ?",
+                                              os.path.relpath(path, self.folder).replace(os.sep, "/"))[0][0])
 
     def test_the_names_that_are_skipped_in_silence(self):
         for name in (".gitignore", ".gitattributes", "README.md", ".DS_Store", "desktop.ini", "Thumbs.db", ".stfolder", ".stignore",
