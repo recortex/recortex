@@ -50,6 +50,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import names  # noqa: E402
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import lint_drafts  # noqa: E402
 import lookup as record_lookup  # noqa: E402
 import record_format  # noqa: E402
@@ -69,18 +70,15 @@ def save_state(path, state):
     os.replace(path + ".part", path)
 
 
-def number_from_url(url):
-    match = re.search(r"/(?:issues|pull)/([0-9]+)", url)
-    if not match:
-        raise recortex.GhError("could not read an issue number from gh output: %r" % url)
-    return int(match.group(1))
+def number_from_url(url, records):
+    return records.created_number(url)
 
 
-def comment_id_from_url(url):
-    match = re.search(r"#issuecomment-([0-9]+)", url)
-    if not match:
+def comment_id_from_url(url, records):
+    found = records.posted_id(url)
+    if found is None:
         raise recortex.GhError("could not read a comment id from gh output: %r" % url)
-    return match.group(1)
+    return found
 
 
 DESTINATION = re.compile(r"^## Destination topic[ \t]*\n(.*?)(?=^## |\Z)", re.M | re.S)
@@ -179,24 +177,22 @@ def final_lint(text, item, repo, numbers, config, checked, number=None):
 
 def find_created_issue(repo, title, bodies):
     """Look for an issue this account already created with this title and one of these bodies."""
-    rows = json.loads(recortex.gh(["issue", "list", "--repo", repo, "--author", "@me", "--state", "all",
-                               "--json", "number,title,body,url", "--limit", "200"]))
+    rows = record_store.for_repo(repo).find_issues("mine")
     wanted = {recortex.normalize(body) for body in bodies}
     return [row for row in rows if row.get("title") == title and recortex.normalize(row.get("body") or "") in wanted]
 
 
 def find_posted_comment(repo, number, body):
     """Look for a comment by this account on the issue with exactly this body."""
-    me = recortex.gh(["api", "user", "--jq", ".login"]).strip()
-    rows = recortex.parse_json_stream(recortex.gh(
-        ["api", "--paginate", "repos/%s/issues/%d/comments?per_page=100" % (repo, number)]))
+    records = record_store.for_repo(repo)
+    me = records.whoami()
+    rows = recortex.parse_json_stream(records.list_entries(number))
     return [row for row in rows if (row.get("user") or {}).get("login") == me
             and recortex.normalize(row.get("body") or "") == recortex.normalize(body)]
 
 
 def is_pinned(repo, number):
-    return bool(json.loads(recortex.gh(["issue", "view", str(number), "--repo", repo, "--json", "isPinned"]))
-                .get("isPinned"))
+    return record_store.for_repo(repo).is_pinned(number)
 
 
 def main(argv=None):
@@ -212,6 +208,7 @@ def main(argv=None):
     manifest.setdefault("issues", [])
     manifest.setdefault("comments", [])
     repo = recortex.resolve_repo(args.repo or manifest.get("repo"), config)
+    records = record_store.for_repo(repo, config)
     print(recortex.describe(config, repo))
     state_path = args.manifest + ".state.json"
     state = {"repo": repo, "issues": {}, "comments": {}}
@@ -234,8 +231,7 @@ def main(argv=None):
         return dry_run(manifest, repo, state)
 
     wanted = sorted({label for item in manifest["issues"] for label in item["labels"]})
-    have = {l["name"].lower() for l in json.loads(recortex.gh(
-        ["label", "list", "--repo", repo, "--json", "name", "--limit", "1000"]))}
+    have = {l["name"].lower() for l in records.list_labels()}
     missing = [label for label in wanted if label.lower() not in have]
     if missing:
         print("nothing posted: these labels do not exist in %s: %s" % (repo, ", ".join(missing)))
@@ -270,11 +266,8 @@ def main(argv=None):
                 continue
         state["issues"][key] = {"pending": True}
         save_state(state_path, state)
-        command = ["issue", "create", "--repo", repo, "--title", item["title"], "--body-file", "-"]
-        for label in item["labels"]:
-            command += ["--label", label]
-        url = recortex.gh(command, stdin=first_body).strip().split("\n")[-1]
-        number = number_from_url(url)
+        url = records.create_issue(item["title"], item["labels"], body=first_body).strip().split("\n")[-1]
+        number = number_from_url(url, records)
         state["issues"][key] = {"number": number, "url": url, "written": digest(first_body), "verified": None}
         save_state(state_path, state)
         print("created: NEW-%s is #%d  %s" % (key, number, url))
@@ -302,7 +295,7 @@ def main(argv=None):
                     failures += 1
                     current = None
                 else:
-                    recortex.gh(["issue", "edit", str(number), "--repo", repo, "--body-file", "-"], stdin=body)
+                    records.edit_body(number, body=body)
                     entry["written"] = digest(body)
                     save_state(state_path, state)
             if current is not None:
@@ -311,10 +304,10 @@ def main(argv=None):
                     save_state(state_path, state)
                 else:
                     failures += 1
-        if item.get("pin"):
+        if item.get("pin") and records.supports("pinning"):
             try:
                 if not is_pinned(repo, number):
-                    recortex.gh(["issue", "pin", str(number), "--repo", repo])
+                    records.pin(number)
                 pinned = is_pinned(repo, number)
             except recortex.GhError as error:
                 print("pin failed: %s" % error)
@@ -328,7 +321,7 @@ def main(argv=None):
                 failures += 1
 
     # 2b. Sub-issues. A refusal is one fixed line, not a failure: the hub's tables stay the structure.
-    for key, child, parent in sub_issue_links(manifest, numbers, config, repo):
+    for key, child, parent in (sub_issue_links(manifest, numbers, config, repo) if records.supports("sub-issues") else []):
         entry = state["issues"][key]
         if entry.get("parent") == parent:
             continue
@@ -378,19 +371,19 @@ def main(argv=None):
             else:
                 state["comments"][slot] = {"pending": True}
                 save_state(state_path, state)
-                url = recortex.gh(["issue", "comment", str(number), "--repo", target_repo, "--body-file", "-"],
-                              stdin=body).strip().split("\n")[-1]
+                url = record_store.for_repo(target_repo).post_entry(number, body=body).strip().split("\n")[-1]
                 entry = {"url": url, "written": digest(body), "verified": None}
             state["comments"][slot] = entry
             save_state(state_path, state)
-        returned = recortex.read_comment_body(target_repo, comment_id_from_url(entry["url"]))
+        target_records = record_store.for_repo(target_repo)
+        returned = recortex.read_comment_body(target_repo, comment_id_from_url(entry["url"], target_records))
         if recortex.verify_body(body, returned, label):
             entry["verified"] = digest(body)
             save_state(state_path, state)
             marker = record_format.parse_marker(record_format.first_lines(body)[0]) or {}
             kind = item["kind"] if item["kind"] in record_format.OBSERVED_TYPES else marker.get("type")
             if registrar and kind in record_format.OBSERVED_TYPES:
-                registrar(target_repo, number, kind, int(comment_id_from_url(entry["url"])))
+                registrar(target_repo, number, kind, int(comment_id_from_url(entry["url"], target_records)))
         else:
             failures += 1
 
@@ -407,6 +400,7 @@ def main(argv=None):
 
 
 def dry_run(manifest, repo, state):
+    records = record_store.for_repo(repo)
     print("dry run: no network access, nothing written")
     print("note: commands are listed issue by issue. The real run creates all issues first, then writes "
           "the bodies, then posts the comments.")
@@ -418,21 +412,18 @@ def dry_run(manifest, repo, state):
         if key in known:
             print("exists: NEW-%s is #%d (from the state file)" % (key, known[key]))
         else:
-            command = ["issue", "create", "--repo", repo, "--title", item["title"], "--body-file", "-"]
-            for label in item["labels"]:
-                command += ["--label", label]
             note = "body: %s" % ("a one-line stub, replaced in the next step" if refs
                                  else "%s, %d characters" % (item["body_file"], len(draft)))
-            print("would run: " + recortex.show_command(command, note))
+            print("would run: " + records.show("create_issue", item["title"], item["labels"], note=note))
         if refs or key in known:
-            print("would run: " + recortex.show_command(
-                ["issue", "edit", "<number of NEW-%s>" % key, "--repo", repo, "--body-file", "-"],
-                "%s, %d characters, with %s replaced by real numbers"
+            print("would run: " + records.show(
+                "edit_body", "<number of NEW-%s>" % key,
+                note="%s, %d characters, with %s replaced by real numbers"
                 % (item["body_file"], len(draft), ", ".join("NEW-" + r for r in refs) or "no placeholders")))
-        print("would read back: gh api repos/%s/issues/<number of NEW-%s> and compare with %s"
-              % (repo, key, item["body_file"]))
-        if item.get("pin"):
-            print("would run: " + recortex.show_command(["issue", "pin", "<number of NEW-%s>" % key, "--repo", repo]))
+        print("would read back: %s and compare with %s"
+              % (records.read_back("issue", "<number of NEW-%s>" % key), item["body_file"]))
+        if item.get("pin") and records.supports("pinning"):
+            print("would run: " + records.show("pin", "<number of NEW-%s>" % key))
     for item in manifest["issues"]:
         if item["kind"] == "final-record":
             print("would link: NEW-%s as a sub-issue of the hub (GraphQL addSubIssue, read back through Issue.parent)"
@@ -447,11 +438,10 @@ def dry_run(manifest, repo, state):
         target = item["issue"]
         shown = str(target) if isinstance(target, int) else "<number of %s>" % target
         target_repo = item.get("repo", repo)
-        print("would run: " + recortex.show_command(
-            ["issue", "comment", shown, "--repo", target_repo, "--body-file", "-"],
-            "%s, %d characters" % (item["body_file"], len(recortex.read_text(item["_path"])))))
-        print("would read back: gh api repos/%s/issues/comments/<id> and compare with %s"
-              % (target_repo, item["body_file"]))
+        target_records = record_store.for_repo(target_repo)
+        print("would run: " + target_records.show(
+            "post_entry", shown, note="%s, %d characters" % (item["body_file"], len(recortex.read_text(item["_path"])))))
+        print("would read back: %s and compare with %s" % (target_records.read_back("entry"), item["body_file"]))
     return 0
 
 
