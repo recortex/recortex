@@ -27,6 +27,15 @@ SETUP_ANSWERS = "setup-answers.json"
 # 1.4.0: when `setup.py questions` last ran for a repository, in its folder of the hook state (the prompt hook's reminder reads it).
 SETUP_RUN = "setup-questions-run.json"
 MANUSCRIPT_BRANCH = "recortex-manuscript"
+# 1.9.0: the local record. A record kept in files lives in its own folder under the data top (`records/<id>`), in a folder
+# the user names, or in `.recortex` inside the project; the machine's record of which folder belongs to which record id
+# (private folder of the state top), and the write lock of each record (its folder `local/<id>` of the state top).
+RECORDS = "records"
+RECORD_DIR = ".recortex"
+LOCAL_RECORDS = "local-records.json"
+LOCAL_RECORDS_LOCK = "local-records.lock"
+LOCAL_STATE = "local"
+WRITE_LOCK = "write.lock"
 # 1.7.0: whether the task reminder (the line about work that rests on a replaced decision) is added to prompts, per repository on
 # this machine (private folder of the configuration top, like the writing modes).
 TASK_REMINDERS = "task-reminders.json"

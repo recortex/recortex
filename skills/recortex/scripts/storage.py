@@ -87,6 +87,12 @@ def choose_top(base):
     return os.path.join(base, names.NAME)
 
 
+def records_top():
+    """The top folder of the local records the plugin keeps itself: $XDG_DATA_HOME/recortex, by default under ~/.local/share.
+    In a test run (RECORTEX_TESTING=1 with RECORTEX_DATA_HOME) it is test_home(), as for the cache and the state."""
+    return test_home() or choose_top(_env_dir("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share")))
+
+
 def cache_top():
     """The top folder of the index: $XDG_CACHE_HOME/recortex, the same for hooks and the terminal."""
     return test_home() or choose_top(_env_dir("XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")))
@@ -522,3 +528,397 @@ def remove_folder(parent, name):
         return True
     finally:
         os.close(outer)
+
+
+# ---------------------------------------------------------------- the local record (1.9.0)
+#
+# A local record is a folder of Markdown files (local_store.py). Where it lives decides the rules: the folder the plugin makes
+# under records_top() follows the private rules above (mode 0700 and 0600). A folder inside the project (`.recortex`) or one the
+# user named is also read by sync tools and by git, which keep no modes: a clone gives 0644 and 0755. For those two places the
+# rules differ in one stated point, the read bits. Everything else is as strict: no link anywhere on the way from `/`, every
+# folder and file owned by the user, no write bit for group or others, and a folder above that another account could replace
+# is a problem (observer_sources' component rule, with its codes). What the plugin writes has mode 0600 (folders 0700).
+# Every file of a record is opened and made here, and nothing of what a file holds is echoed in a message.
+
+PLACES = ("own", "project", "chosen")
+RECORD_BINDING_FORM = 1
+RECORD_BINDING_CAP = 262144
+
+
+def own_record_folder(record_id, create=False):
+    """The folder of a record of the default place, <records top>/private/records/<id>, or None when it is missing and
+    create is False. Private rules."""
+    return folder(records_top(), names.RECORDS, record_id, create=create)
+
+
+def record_path(root):
+    """The folder `.recortex` of the project at `root`: its real parent and the name. The last component is looked at with
+    lstat by check_record_folder, so a link there is refused."""
+    return os.path.join(os.path.realpath(root), names.RECORD_DIR)
+
+
+def _record_problem(path, info, record_folder):
+    """The code of observer_sources' component rule for one folder of the walk to the record folder, or None. The record
+    folder and what is under it count as inside (the user alone); the folders above may belong to root."""
+    import observer_sources
+    return observer_sources._component_problem(path, info, record_folder)
+
+
+RECORD_KINDS = {"source-symlink": "symlink", "source-path": "not-folder", "source-owner": "ancestor-owner",
+                "source-permissions": "ancestor-permissions"}
+
+
+def check_record_folder(path, place="chosen", create=False):
+    """Check the folder of a local record and return its real path. `place` is "own" (private rules), "project" or "chosen"
+    (the record rules). With `create` a missing last folder is made with mode 0700 (the rest of the way must exist).
+
+    Raises StorageError with a kind: symlink, not-folder, owner, permissions, ancestor-owner or ancestor-permissions (a folder
+    above that another account owns or can write: the user may trust it exactly as it is, observer_sources.Trust), missing,
+    name. Nothing of the path is put in the message."""
+    if place not in PLACES or not isinstance(path, str) or not os.path.isabs(path) or os.path.normpath(path) != path \
+            or "\x00" in path or any(ord(char) < 32 or ord(char) == 127 for char in path):
+        raise StorageError("the record folder's name is not usable", "name")
+    if place == "own":
+        info = check_path(path)
+        if not info:
+            if not create:
+                raise StorageError("the record folder is missing", "missing")
+            os.makedirs(path, mode=0o700, exist_ok=True)
+            check_path(path)
+        return os.path.realpath(path)
+    try:
+        last = os.lstat(path)
+    except FileNotFoundError:
+        if not create:
+            raise StorageError("the record folder is missing", "missing")
+        parent = os.path.dirname(path)
+        if os.path.realpath(parent) != parent:
+            raise StorageError("a folder on the way to the record folder is a link", "symlink")
+        try:
+            os.mkdir(path, 0o700)
+            last = os.lstat(path)
+        except OSError:
+            raise StorageError("the record folder cannot be made", "missing")
+    if stat.S_ISLNK(last.st_mode):
+        raise StorageError("the record folder is a symlink", "symlink")
+    if not stat.S_ISDIR(last.st_mode):
+        raise StorageError("the record folder is not a folder", "not-folder")
+    if _uid() is not None and last.st_uid != _uid():
+        raise StorageError("the record folder belongs to another user", "owner")
+    if last.st_mode & 0o022:
+        raise StorageError("the record folder can be written by group or others", "permissions")
+    # the walk from the folder to `/`: a link anywhere is refused, and a folder above must not be one another account can replace
+    current = path
+    while True:
+        info = os.lstat(current)
+        if stat.S_ISLNK(info.st_mode):
+            raise StorageError("a folder on the way to the record folder is a link", "symlink")
+        problem = _record_problem(current, info, path)
+        if problem in ("source-owner", "source-permissions") and current != path:
+            import observer_sources
+            if not observer_sources.Trust().accepts(current, info, path, None):
+                raise StorageError("a folder above the record folder can be replaced by another account",
+                                   RECORD_KINDS[problem])
+        elif problem:
+            raise StorageError("a folder on the way to the record folder is not usable", RECORD_KINDS.get(problem, "unsafe"))
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return path
+
+
+def _open_folder_nofollow(path):
+    """A descriptor of the folder `path`, opened without following a link, or a StorageError."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        return os.open(path, flags)
+    except OSError:
+        if os.path.islink(path):
+            raise StorageError("a folder of the record is a symlink", "symlink")
+        raise StorageError("a folder of the record cannot be opened", "not-folder")
+
+
+def _entry_kind(info):
+    if stat.S_ISLNK(info.st_mode):
+        return "link"
+    if stat.S_ISREG(info.st_mode):
+        return "file"
+    if stat.S_ISDIR(info.st_mode):
+        return "dir"
+    return "other"
+
+
+def scan_record_folder(path, sub=""):
+    """The entries of `path`/`sub` as (name, size, mtime_ns, kind) from lstat, kind "file", "dir", "link" or "other", in name
+    order, without opening a file or following a link. [] when the folder is missing. Raises StorageError when the folder
+    itself is a link or cannot be listed."""
+    full = os.path.join(path, sub) if sub else path
+    try:
+        os.lstat(full)
+    except FileNotFoundError:
+        return []
+    descriptor = _open_folder_nofollow(full)
+    try:
+        rows = []
+        try:
+            use_fd = os.scandir in getattr(os, "supports_fd", ())
+            iterator = os.scandir(descriptor if use_fd else full)
+        except OSError:
+            raise StorageError("a folder of the record cannot be listed", "not-folder")
+        with iterator:
+            for entry in iterator:
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                rows.append((entry.name, info.st_size, info.st_mtime_ns, _entry_kind(info)))
+        return sorted(rows)
+    finally:
+        os.close(descriptor)
+
+
+def read_record_file(path, limit):
+    """The bytes of one file of a record, or None when it does not exist. Only a regular file that the user owns, that group
+    and others cannot write, of at most `limit` bytes, read through one descriptor that is looked at (fstat) before and
+    after and is still the file at `path` (a swap, a growing file and a link are refused). A pipe or a device at the name is
+    opened without waiting and refused. Raises StorageError (kind symlink, not-folder, owner, permissions, changed, size);
+    nothing of the file is echoed."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        if os.path.islink(path):
+            raise StorageError("a file of the record is a symlink", "symlink")
+        raise StorageError("a file of the record cannot be opened", "not-folder")
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise StorageError("a name of the record is not a regular file", "not-folder")
+        if _uid() is not None and before.st_uid != _uid():
+            raise StorageError("a file of the record belongs to another user", "owner")
+        if before.st_mode & 0o022:
+            raise StorageError("a file of the record can be written by group or others", "permissions")
+        if before.st_size > limit:
+            raise StorageError("a file of the record is larger than the plugin reads", "size")
+        chunks, total = [], 0
+        while True:
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise StorageError("a file of the record is larger than the plugin reads", "size")
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if (after.st_size, after.st_mtime_ns, after.st_ino, after.st_dev) != \
+                (before.st_size, before.st_mtime_ns, before.st_ino, before.st_dev) or total != before.st_size:
+            raise StorageError("a file of the record changed while it was read", "changed")
+        if not same_file(path, before):
+            raise StorageError("a file of the record was replaced while it was read", "changed")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _write_record_temporary(target_folder, data):
+    """A fresh file `.part-...` in `target_folder` with mode 0600 that holds `data` whole; its path."""
+    descriptor, temporary = tempfile.mkstemp(dir=target_folder, prefix=".part-")
+    try:
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        view = memoryview(data)
+        while len(view):
+            view = view[os.write(descriptor, view):]
+        os.fsync(descriptor)
+    except BaseException:
+        os.close(descriptor)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    os.close(descriptor)
+    return temporary
+
+
+def _check_record_target(path):
+    """The folder of `path` is a real folder of the user's that group and others cannot write."""
+    target = os.path.dirname(path)
+    info = os.lstat(target)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise StorageError("a folder of the record is not a real folder", "symlink" if stat.S_ISLNK(info.st_mode) else "not-folder")
+    if _uid() is not None and info.st_uid != _uid():
+        raise StorageError("a folder of the record belongs to another user", "owner")
+    if info.st_mode & 0o022:
+        raise StorageError("a folder of the record can be written by group or others", "permissions")
+    return target
+
+
+def replace_record_file(path, data):
+    """Put `data` (bytes) at `path` whole: through a fresh temporary file with mode 0600 in the same folder, then moved into
+    place. What is at the name (a link included) is replaced, never followed."""
+    target = _check_record_target(path)
+    temporary = _write_record_temporary(target, data)
+    try:
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def link_new_record_file(path, data):
+    """Create the file `path` holding `data` (bytes) in one step, never replacing a file: a fresh temporary file hard-linked
+    into place, so that of two creators exactly one wins and nobody sees it half written. Where a link is refused (some synced
+    or network folders) the final name is made with an exclusive open instead, and written; a reader treats a file with no seal
+    that is young as not yet there. True when this call made it, False when the name is taken."""
+    target = _check_record_target(path)
+    temporary = _write_record_temporary(target, data)
+    try:
+        try:
+            os.link(temporary, path)
+            return True
+        except FileExistsError:
+            return False
+        except OSError:
+            pass
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        try:
+            descriptor = os.open(path, flags, 0o600)
+        except FileExistsError:
+            return False
+        try:
+            view = memoryview(data)
+            while len(view):
+                view = view[os.write(descriptor, view):]
+        finally:
+            os.close(descriptor)
+        return True
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
+def make_record_folder(path):
+    """A folder of a record (a topic's own folder) with mode 0700 where missing; the folder above must be the record's."""
+    _check_record_target(path)
+    if not os.path.lexists(path):
+        os.mkdir(path, 0o700)
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise StorageError("a folder of the record is not a real folder", "symlink" if stat.S_ISLNK(info.st_mode) else "not-folder")
+    return path
+
+
+WRITE_WAIT = 30
+
+
+def record_lock(record_id):
+    """The write lock of one record, a context manager: an exclusive flock on `write.lock` in the record's folder of the state
+    top (never in the record folder, which a sync tool would carry to another machine). Waits about WRITE_WAIT seconds, then
+    raises StorageError("busy")."""
+    import contextlib
+    import time
+    try:
+        import fcntl
+    except ImportError:   # pragma: no cover - platforms without fcntl have no lock to take
+        fcntl = None
+
+    @contextlib.contextmanager
+    def held():
+        place = folder(state_top(), names.LOCAL_STATE, record_id)
+        path = os.path.join(place, names.WRITE_LOCK)
+        if os.path.lexists(path):
+            check_path(path, "file")
+        descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0), 0o600)
+        try:
+            if fcntl:
+                deadline = time.monotonic() + WRITE_WAIT
+                while True:
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise StorageError("another process holds the record's write lock", "busy")
+                        time.sleep(0.05)
+            yield
+        finally:
+            os.close(descriptor)
+    return held()
+
+
+# The machine's record of which folder belongs to which record id: local-records.json in the private folder of the state top
+# (beside the key). A row binds the id to the folder's real path, owner, group, mode and place, with an HMAC under the user key;
+# a file restored or edited from elsewhere binds nothing. The hooks only read it.
+
+def _binding_mac(row):
+    message = json_text(["record", row["id"], row["path"], row["uid"], row["gid"], row["mode"], row["place"]]).encode("utf-8")
+    return hmac.new(user_key(create=False, tighten=False), message, hashlib.sha256).hexdigest()[:32]
+
+
+def json_text(value):
+    import json
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _binding_file(create=False):
+    private = folder(state_top(for_key=True), create=create, tighten=create)
+    return None if private is None else os.path.join(private, names.LOCAL_RECORDS)
+
+
+def _binding_fits(row):
+    return (isinstance(row, dict) and set(row) == {"id", "path", "uid", "gid", "mode", "place", "mac"}
+            and isinstance(row["id"], str) and len(row["id"]) == 16 and isinstance(row["path"], str)
+            and 0 < len(row["path"]) <= 4096 and os.path.isabs(row["path"])
+            and all(type(row[key]) is int and 0 <= row[key] < 2 ** 32 for key in ("uid", "gid"))
+            and type(row["mode"]) is int and 0 <= row["mode"] <= 0o7777 and row["place"] in PLACES
+            and isinstance(row["mac"], str) and len(row["mac"]) == 32)
+
+
+def record_bindings(record_id=None):
+    """The rows that bind record ids to folders and pass their HMAC, as a list of dicts (those of `record_id` when given).
+    [] when there is no file, it cannot be read or it does not fit; never raises for a damaged file, never echoes it."""
+    import json
+    try:
+        path = _binding_file()
+        text = read_file(path) if path else None
+        if not text or len(text) > RECORD_BINDING_CAP:
+            return []
+        data = json.loads(text)
+        rows = data.get("rows") if isinstance(data, dict) and data.get("form") == RECORD_BINDING_FORM else None
+        if not isinstance(rows, list):
+            return []
+        good = []
+        for row in rows:
+            if _binding_fits(row) and (record_id is None or row["id"] == record_id) \
+                    and hmac.compare_digest(row["mac"], _binding_mac(row)):
+                good.append(row)
+        return good
+    except (OSError, ValueError, StorageError, RecursionError):
+        return []
+
+
+def bind_record(record_id, path, place):
+    """The user's yes: record that this machine uses the folder `path` (a real path that passed check_record_folder) for
+    `record_id`. Keeps the rows of other folders (an in-project record has one row per checkout). Returns the row."""
+    import json
+    from field_sheet import approvals_lock
+    user_key()   # the key exists before a row is signed with it
+    info = os.lstat(path)
+    row = {"id": record_id, "path": path, "uid": info.st_uid, "gid": getattr(info, "st_gid", 0),
+           "mode": stat.S_IMODE(info.st_mode), "place": place}
+    with approvals_lock(state_top(for_key=True), names.LOCAL_RECORDS_LOCK):
+        kept = [old for old in record_bindings() if (old["id"], old["path"]) != (record_id, path)]
+        row["mac"] = _binding_mac(row)
+        file_path = _binding_file(create=True)
+        write_file(file_path, json.dumps({"form": RECORD_BINDING_FORM, "rows": kept[-63:] + [row]}, sort_keys=True,
+                                         indent=1) + "\n")
+    return row
