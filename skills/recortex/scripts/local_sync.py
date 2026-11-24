@@ -23,8 +23,8 @@ TABLE = ("CREATE TABLE IF NOT EXISTS local_files(path TEXT PRIMARY KEY, mtime IN
 # What this machine's seal once held for, kept apart from the marks so that no later state of a path, no deletion and no new name clears it:
 # a key for the path, for the entry's id and for the topic's number. An entry that was sealed here and now carries another key id was changed
 # outside recortex, and is never taken back as written on another machine (store.adopt). It lives in the index, survives a `--rebuild` of the
-# same record, and is lost only with the index file; `local_sealed_ok` says that the last sync finished, so that a table that a stopped or a
-# partial sync left is never taken for the whole.
+# same record, and is lost when the index file is deleted or moved aside; it does not yet cover files written since the last complete sync.
+# `local_sealed_ok` says that the last sync finished, so that a table that a stopped or a partial sync left is never taken for the whole.
 SEALED_TABLE = "CREATE TABLE IF NOT EXISTS local_sealed(key TEXT PRIMARY KEY)"
 SKIPPED = (".git", ".gitignore", ".gitattributes", "README.md", ".DS_Store", "desktop.ini", "Thumbs.db", ".stfolder", ".stignore",
            ".dropbox", ".dropbox.cache")

@@ -104,6 +104,15 @@ class LinkTests(unittest.TestCase):
         for word in ("sealed", "changed", "foreign", "unread", "#N/ID", "acts.py ask folder", "acts.py ask adopt", "hooks.py --doctor"):
             self.assertIn(word, text)
 
+    def test_the_page_says_when_the_memory_of_what_this_machine_sealed_is_missing_and_when_it_stays(self):
+        text = read("skills", "recortex", "references", "local-record.md")
+        sentence = next(line for line in text.split("\n") if "remembered in the index" in line)
+        sentence = sentence[sentence.index("Which files this machine sealed"):]
+        for part in ("does not yet cover files written since the last complete sync", "lost when the index file is deleted or moved aside",
+                     "a rebuild of the same record keeps it"):
+            self.assertIn(part, sentence)
+        self.assertNotIn("lost only", sentence)
+
     def test_the_readme_names_both_homes_and_stays_short(self):
         text = read("README.md")
         self.assertIn("Where the record lives", text)
