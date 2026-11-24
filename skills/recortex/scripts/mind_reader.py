@@ -119,19 +119,20 @@ class ReaderMixin:
         """The text, the entries and the earlier versions of one topic, for its view."""
         from mind_model import CAP_FIRST_LINES, CAP_TEXT   # the caps live beside the page's other caps
         body = row["body"] or ""
+        cap = recortex.BODY_LIMIT if local else CAP_TEXT   # a local text is never cut in the reader: the record holds it whole
         if topic["capped"]:
             # the first lines of a text that is not told are not told either: the capped view says the mark and nothing of the text
             topic["first"] = None if topic.get("body_mark") else self.doc(body, set(), cap=CAP_FIRST_LINES)
             topic["entries"], topic["versions"], topic["edits"] = [], [], []
             return
-        topic["body"] = self.doc(body, set(), cap=CAP_TEXT) if body.strip() else None
+        topic["body"] = self.doc(body, set(), cap=cap) if body.strip() else None
         topic["entries"] = []
         for entry, mark in listed:
             kind = kinds.get(entry["id"])
             number = topic["n"]
             item = {"id": entry["id"], "at": stamp_text(entry["created_at"]), "mark": mark,
                     "kind": kind if isinstance(kind, str) and KIND.fullmatch(kind) else None,
-                    "doc": self.doc(self.entry_text(entry["body"], kind), set(), cap=CAP_TEXT),
+                    "doc": self.doc(self.entry_text(entry["body"], kind), set(), cap=cap),
                     "note": bool(not mark and entry["id"] in edited and not local)}
             if local:
                 item["address"] = "#%d/%d" % (number, entry["id"])
@@ -153,7 +154,6 @@ class ReaderMixin:
     def local_versions(self, number):
         """The earlier texts of a local topic, newest first, each with its mark: the body files of its folder, read through the
         store (the index holds only their times). A version that cannot be read is left out."""
-        from mind_model import CAP_TEXT
         try:
             found = record_store.for_repo(self.repo, self.config).versions(number)
         except (record_store.StoreError, SystemExit, OSError, ValueError, TypeError, AttributeError):
@@ -161,5 +161,5 @@ class ReaderMixin:
         out = []
         for created, state, text in found[:50]:
             mark = None if state == "sealed" else LOCAL_FOREIGN if state == "foreign" else LOCAL_CHANGED
-            out.append({"at": stamp_text(created), "mark": mark, "doc": self.doc(text, set(), cap=CAP_TEXT)})
+            out.append({"at": stamp_text(created), "mark": mark, "doc": self.doc(text, set(), cap=recortex.BODY_LIMIT)})
         return out

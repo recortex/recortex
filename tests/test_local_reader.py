@@ -202,6 +202,25 @@ class ViewTests(Reader):
         self.assertNotRegex(page, r"[0-9a-f]{40}")
 
 
+    def test_a_long_local_text_an_entry_and_a_past_version_are_shown_whole(self):
+        number = self.numbers["reader"]
+        filler = "A line of the text that makes it long.\n\n" * 1350   # about 54,000 characters
+        self.assertGreater(len(filler), 50000)
+        self.store.edit_body(number, body=filler + "TAILOFTHEPASTVERSION\n")
+        self.store.edit_body(number, body=filler + "TAILOFTHECURRENTTEXT\n")
+        self.store.post_entry(number, body="<!-- ghim:event type=idea at=2026-11-24T10:00:00Z -->\n### Idea: 2026-11-24 10:00 UTC - a long one\n\n"
+                              "**In plain words, we had the idea to:** read it all\n\n" + filler + "TAILOFTHEENTRY\n")
+        page = self.page()
+        view = self.view(page, number)
+        past = view[view.index('id="read-%d-past"' % number):view.index('id="read-%d-entries"' % number)]
+        text = view[view.index('id="read-%d-text"' % number):view.index('id="read-%d-past"' % number)]
+        self.assertIn("TAILOFTHECURRENTTEXT", text)
+        self.assertIn("TAILOFTHEPASTVERSION", past)
+        self.assertIn("TAILOFTHEENTRY", view)
+        self.assertNotIn("Read the rest in the record.", view)   # no cut, so no link to the view that holds it
+        self.assertNotIn("This part is long, so the page stops here.", view)
+
+
 class NothingElseTests(Reader):
     def test_no_file_address_no_path_and_no_file_name_is_in_the_page(self):
         self.damage("changed-entry")
