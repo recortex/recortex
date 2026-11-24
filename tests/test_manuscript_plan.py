@@ -2071,7 +2071,7 @@ class PlanPageTests(PaperSandbox):
         self.assertIn("We plan to say (6)", words)
 
     def test_a_planned_statement_links_to_its_comment_on_github_and_to_nothing_else(self):
-        text = self.page()
+        text = ts.outside_reader(self.page())   # the reader's views hold a link of their own to each topic
         hrefs = [dict(attrs).get("href") for tag, attrs in ts.PageReader(text).elements if tag == "a"]
         self.assertIn("https://github.com/octo-org/sample-project/issues/13#issuecomment-9302", hrefs)
         self.assertIn("https://github.com/octo-org/sample-project/issues/13#issuecomment-9303", hrefs)
@@ -2130,7 +2130,7 @@ class PlanPageTests(PaperSandbox):
         self.write_config(dict(self.config, profiles=["research"]))
         text = self.page()
         self.assertEqual([], ts.page_problems(text))
-        words = self.words(text)
+        words = self.words(ts.outside_reader(text))   # the reader lists every topic, the plan's included, and shows its text
         for gone in ("The plan against the text", "What we plan to say here", "planned parts belong here",
                      "Planned claims nothing backs yet", "We plan to say", "This spoke against a planned claim",
                      "The plan of the paper"):
@@ -2160,7 +2160,8 @@ class PlanPageTrustTests(PaperSandbox):
         built = self.tool("mind.py", gh="false")
         self.assertEqual(0, built.returncode, built.stdout + built.stderr)
         with open(os.path.join(self.data, "private", self.slug(), "mind.html"), encoding="utf-8") as handle:
-            return " ".join(" ".join(ts.PageReader(handle.read()).texts).split())
+            # the page's own views; the reader shows what is not told, shut under its mark, and is left out here
+            return " ".join(" ".join(ts.PageReader(ts.outside_reader(handle.read())).texts).split())
 
     def test_a_plan_memory_of_another_account_is_not_told_on_the_page(self):
         plan = manuscript_record.plan_memory(

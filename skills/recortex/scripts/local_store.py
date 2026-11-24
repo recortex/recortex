@@ -198,7 +198,7 @@ def _value(key, text):
         if key == "title":
             value = json.loads(text)
             if not isinstance(value, str) or not value.strip() or len(value) > TITLE_MAX or any(
-                    ord(char) < 32 or ord(char) == 127 or char in "  " for char in value):
+                    ord(char) < 32 or ord(char) == 127 or char in "\u2028\u2029" for char in value):
                 raise ValueError
             return value
         if key == "labels":
