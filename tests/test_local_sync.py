@@ -392,6 +392,68 @@ class NotReadTests(Box):
         summary = self.sync(rebuild=True)
         self.assertEqual(0, int(self.meta("local_unread")))
 
+    def test_a_file_that_fails_after_its_first_insert_leaves_no_row_and_is_counted_unread(self):
+        entry = self.entry_path("reader", 0)
+        entry_relpath = os.path.relpath(entry, self.folder).replace(os.sep, "/")
+        entry_id = os.path.basename(entry)[:-3].rsplit("-", 1)[1]
+        target = self.local_store.entry_number(entry_id)
+        real_comments, real_issues = self.index.store_comment_page, self.index.store_issue_page
+        topic_number = self.numbers["speed"]
+        topic_relpath = os.path.relpath(self.topic_path("speed"), self.folder).replace(os.sep, "/")
+
+        def comments(db, rows, changed):
+            real_comments(db, rows, changed)   # the row is in the table before the value that cannot be stored is met
+            if any(row["id"] == target for row in rows):
+                raise ValueError("a value that cannot be stored")
+
+        def issues(db, rows, changed):
+            real_issues(db, rows, changed)
+            if any(row["number"] == topic_number for row in rows):
+                raise OverflowError("an integer that is too large")
+        with mock.patch.object(self.index, "store_comment_page", comments), mock.patch.object(self.index, "store_issue_page", issues):
+            summary = self.sync()
+        self.assertTrue(summary["complete"])
+        self.assertEqual([], self.rows("SELECT id FROM comments WHERE id = ?", target))
+        self.assertEqual([], self.rows("SELECT number FROM issues WHERE number = ?", topic_number))
+        self.assertEqual([], self.rows("SELECT issue FROM timeline WHERE issue = ?", topic_number))
+        states = dict(self.rows("SELECT path, state FROM local_files WHERE state LIKE 'unread:%'"))
+        self.assertEqual({entry_relpath: "unread:store", topic_relpath: "unread:store"}, states)
+        self.assertEqual("2", self.meta("local_unread"))
+        self.assertEqual(summary["unread"], 2)
+        self.assertIn((self.numbers["reader"],), self.rows("SELECT number FROM issues"))   # the other files are stored
+        self.assertGreater(len(self.rows("SELECT id FROM comments")), 3)
+        self.sync(rebuild=True)   # a rebuild reads the files again, whole
+        self.assertEqual([(target,)], self.rows("SELECT id FROM comments WHERE id = ?", target))
+        self.assertEqual("0", self.meta("local_unread"))
+
+    def test_the_savepoint_of_a_file_is_inside_the_transaction_of_the_sync(self):
+        path = os.path.join(self.folder, "record.json")
+        record = json.loads(self.read(path))
+        plain = {k: v for k, v in record.items() if k != "seal"}
+        other = self.local_store.Sealing(b"another key")
+        self.write(path, (json.dumps(dict(plain, seal={"key": other.key_id, "mac": other.json_mac(plain)}), sort_keys=True,
+                                     indent=1) + "\n").encode())   # a record under another key stores nothing in local_sealed: no statement but the file's own comes first
+        self.sync()
+        first, second = (os.path.relpath(self.entry_path("speed", index), self.folder).replace(os.sep, "/") for index in (0, 1))
+        numbers = [self.local_store.entry_number(os.path.basename(name)[:-3].rsplit("-", 1)[1]) for name in (first, second)]
+        db = self.db()
+        db.execute("DELETE FROM local_files WHERE path IN (?, ?)", (first, second))   # both are new to the index
+        db.execute("DELETE FROM comments WHERE id IN (?, ?)", numbers)
+        db.commit()
+        db.close()
+        stop = numbers[1]
+        real = self.index.store_comment_page
+
+        def comments(db, rows, changed):
+            real(db, rows, changed)
+            if any(row["id"] == stop for row in rows):
+                raise RuntimeError("the sync stops")
+        with mock.patch.object(self.index, "store_comment_page", comments):
+            with self.assertRaises(RuntimeError):
+                self.sync()
+        self.assertEqual([], self.rows("SELECT path FROM local_files WHERE path IN (?, ?)", first, second))
+        self.assertEqual([], self.rows("SELECT id FROM comments WHERE id IN (?, ?)", *numbers))   # the first file was not committed alone
+
     def test_a_file_time_far_in_the_future_is_clamped_and_the_sync_goes_on(self):
         path = self.damage("changed-entry")
         os.utime(path, ns=(2 ** 40 * 10 ** 9,) * 2)   # the year 36812: no calendar holds it

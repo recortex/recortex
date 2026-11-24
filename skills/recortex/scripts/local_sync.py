@@ -191,12 +191,18 @@ def run(db, repo, hub, rebuild, clock, timeline_cap=None):
                 removed = removed or bool(gone and gone[0] in ("issue", "comment"))   # its rows are gone, nothing replaces them
                 db.execute("INSERT OR REPLACE INTO local_files VALUES (?,?,?,?,NULL)", (relpath, mtime, size, "unread:" + why))
                 continue
+            if not db.in_transaction:
+                db.execute("BEGIN")   # the savepoint is then inside this sync's transaction: releasing the outermost one would commit
+            db.execute("SAVEPOINT f")   # what one file stored before it failed goes with it, and nothing else of this sync
             try:
                 number = store_file(db, store, relpath, parsed, mtime, changed_issues, changed_comments, touched_versions)
             except (UnicodeError, OverflowError, ValueError):   # a value that parsed and cannot be stored: this file is unread, the sync goes on
+                db.execute("ROLLBACK TO f")
+                db.execute("RELEASE f")
                 removed = True   # whatever it had stored is derived again
                 db.execute("INSERT OR REPLACE INTO local_files VALUES (?,?,?,?,NULL)", (relpath, mtime, size, "unread:store"))
                 continue
+            db.execute("RELEASE f")
             now_row = (("issue" if parsed.kind in ("hub", "topic") else "comment" if parsed.kind == "entry" else "version"),
                        number if parsed.kind in ("hub", "topic", "entry") else None)
             if gone and gone[0] in ("issue", "comment") and gone != now_row:
