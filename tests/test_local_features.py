@@ -258,6 +258,99 @@ class PaperTests(Features):
         self.assertIn("sections", self.ok("mind.py", "--paper"))
 
 
+class LedgerTests(Features):
+    """10.1: the map's ledger, a decision review's ledger and the observer's publisher, each end to end against a local record: what they
+    post is an entry of the hub or of a topic, read back through the store, and counted only when it is the user's own."""
+
+    def setUp(self):
+        super().setUp()
+        self.hub = self.numbers["hub"]
+        self.ok("index.py", "sync")
+
+    def test_a_map_change_is_previewed_posted_to_the_hub_and_replayed_from_the_record(self):
+        import project_map_io as api
+        before = len(self.store.hub_entries(self.hub))
+        branches = [{"id": "goal", "title": "Goal", "description": "What the project is for."},
+                    {"id": "method", "title": "Method", "parent": "goal", "evidence": ["issue:%d" % self.numbers["reader"]]}]
+        preview = api.preview(self.repo, self.hub, {"action": "seed", "branches": branches})
+        self.assertEqual(before, len(self.store.hub_entries(self.hub)))   # a preview posts nothing
+        done = api.commit(self.repo, self.hub, preview["operation"])
+        self.assertEqual(before + 1, len(self.store.hub_entries(self.hub)))   # one entry of the hub
+        state = api.current(self.repo, self.hub)
+        self.assertEqual(1, len(state["history"]))
+        self.assertEqual(1, len([row for row in api.verified_rows(self.repo, self.hub, api.model.MARKER) if row]))
+
+    def test_a_changed_map_entry_does_not_count(self):
+        import project_map_io as api
+        preview = api.preview(self.repo, self.hub, {"action": "seed", "branches": [{"id": "goal", "title": "Goal"}]})
+        api.commit(self.repo, self.hub, preview["operation"])
+        self.assertEqual(1, len(api.current(self.repo, self.hub)["history"]))
+        path = self.entry_path("hub", -1)
+        self.write(path, self.read(path).replace(b"Goal", b"Gain", 1))   # a change outside recortex
+        self.assertEqual(0, len(api.current(self.repo, self.hub)["history"]))
+
+    def test_a_decision_reviews_ledger_entry_is_posted_read_back_and_replayed(self):
+        import decision_review as ledger
+        import project_map_io as map_io
+        event = dict(id="0" * 32, group="impact-18", target="b" * 64, revision="a" * 64, previous=0, verdict="needs_update",
+                     note="The branch cites the old decision.", draft="Update the citation.", action="map", receipt=None)
+        self.assertTrue(ledger.valid(event))
+        body = ledger.encode(self.repo, self.hub, event)
+        self.store.post_entry(self.hub, body=body)
+        rows = map_io.verified_rows(self.repo, self.hub, ledger.MARKER)
+        self.assertEqual(1, len(rows))
+        history = ledger.replay(self.repo, self.hub, {"local--record"}, rows)
+        self.assertEqual(["needs_update"], [row["verdict"] for row in history])
+        self.assertEqual([], ledger.replay(self.repo, self.hub, {"octocat"}, rows))   # an account that is not the record's counts for nothing
+        path = self.entry_path("hub", -1)
+        self.write(path, self.read(path).replace(b"cites the old", b"cites an old", 1))
+        self.assertEqual([], ledger.replay(self.repo, self.hub, {"local--record"}, map_io.verified_rows(self.repo, self.hub, ledger.MARKER)))
+
+    def event(self, body, key="k1"):
+        import hashlib
+        return {"candidate": {"issue": self.numbers["speed"]}, "account": "local--record", "body": body, "eventkey": key,
+                "payload_hash": hashlib.sha256(body.encode("utf-8")).hexdigest()}
+
+    def test_the_observers_publisher_posts_one_entry_and_reconciles_it_by_its_event_key(self):
+        import observer_publisher as publisher
+        body = ("<!-- ghim:event type=idea at=2026-11-24T10:00:00Z eventkey=k1 -->\n### Idea: 2026-11-24 10:00 UTC - read in blocks\n\n"
+                "**In plain words, we had the idea to:** read the file in blocks\n\n**The idea:** Read the file in blocks of 64 KB.\n")
+        self.assertEqual("local--record", publisher._account(self.repo, self.config))
+        event = self.event(body)
+        self.assertIsNone(publisher._find_remote(self.repo, event, config=self.config))   # nothing was posted yet
+        posted = self.store.post_entry(self.numbers["speed"], body=body)
+        cid = int(self.store.posted_id(posted))
+        found = publisher._find_remote(self.repo, event, config=self.config)
+        self.assertEqual(cid, found["id"])
+        data = publisher._remote_comment(self.repo, cid, self.config)
+        receipt = publisher._check_remote(self.repo, event, data, config=self.config)
+        self.assertEqual((cid, "#%d/%d" % (self.numbers["speed"], cid), "local--record"),
+                         (receipt["comment_id"], receipt["url"], receipt["account"]))
+
+    def test_a_changed_or_foreign_entry_is_not_reconciled_as_the_publishers_own(self):
+        import observer_publisher as publisher
+        body = ("<!-- ghim:event type=idea at=2026-11-24T10:00:00Z eventkey=k2 -->\n### Idea: 2026-11-24 10:00 UTC - read in blocks\n\n"
+                "**In plain words, we had the idea to:** read the file in blocks\n\n**The idea:** Read the file in blocks of 64 KB.\n")
+        event = self.event(body, "k2")
+        cid = int(self.store.posted_id(self.store.post_entry(self.numbers["speed"], body=body)))
+        path = self.entry_path("speed", -1)
+        original = self.read(path)
+        self.write(path, original.replace(b"64 KB", b"4 KB", 1))   # changed outside recortex
+        data = publisher._remote_comment(self.repo, cid, self.config)
+        with self.assertRaises(publisher.PublishError) as caught:
+            publisher._check_remote(self.repo, event, data, config=self.config)
+        self.assertRegex(str(caught.exception), "remote_edited|remote_changed")
+        self.write(path, original)
+        relpath = os.path.relpath(path, self.folder).replace(os.sep, "/")
+        parsed = self.local_store.parse_file(original, relpath, self.record_id)
+        self.write(path, self.local_store.render(parsed.kind, parsed.front, parsed.body, relpath, self.record_id,
+                                                 self.local_store.Sealing(b"another machine's key")))
+        data = publisher._remote_comment(self.repo, cid, self.config)
+        with self.assertRaises(publisher.PublishError) as caught:
+            publisher._check_remote(self.repo, event, data, config=self.config)
+        self.assertIn("wrong_author", str(caught.exception))
+
+
 class LiveServerTests(Features):
     """10.1: the live dashboard serves a local record: the main page with the Record pane, and one topic's view at /read/<N>. The
     only test of this round that starts a server: in this process, on a free loopback port, stopped with addCleanup first."""
