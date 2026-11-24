@@ -18,6 +18,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 
 TOPIC_COLOR = "0e8a16"
 
@@ -81,6 +82,8 @@ def main(argv=None):
 
     config = recortex.load_config()
     repo = recortex.resolve_repo(args.repo, config)
+    records = record_store.for_repo(repo, config)
+    records.require("label-catalog")
     profiles = [p.strip() for p in args.profile.split(",") if p.strip()] if args.profile else \
         list(config.get("profiles") or [])
     topics = args.topic or config.get("topics", [])
@@ -91,8 +94,7 @@ def main(argv=None):
     elif args.dry_run:
         existing_list = None
     else:
-        existing_list = json.loads(recortex.gh(
-            ["label", "list", "--repo", repo, "--json", "name,color,description", "--limit", "1000"]))
+        existing_list = records.list_labels("name,color,description")
     existing = None if existing_list is None else {l["name"].lower(): l for l in existing_list}
 
     print(recortex.describe(config, repo))
@@ -106,23 +108,23 @@ def main(argv=None):
         name, color, description = label["name"], label["color"].lower(), label.get("description", "")
         current = existing.get(name.lower()) if existing is not None else None
         if current is None:
-            command = ["label", "create", name, "--repo", repo, "--color", color, "--description", description]
+            op = ("create_label", name)
             created += 1
         elif current.get("color", "").lower() == color and (current.get("description") or "") == description:
             same += 1
             continue
         elif args.update:
-            command = ["label", "edit", current["name"], "--repo", repo, "--color", color, "--description", description]
+            op = ("edit_label", current["name"])
             updated += 1
         else:
             differ += 1
             print("differs, left alone: %s (use --update to change color or description)" % name)
             continue
         if args.dry_run:
-            print("would run: " + recortex.show_command(command))
+            print("would run: " + records.show(op[0], op[1], color, description))
         else:
-            recortex.gh(command)
-            print("ran: " + recortex.show_command(command))
+            getattr(records, op[0])(op[1], color, description)
+            print("ran: " + records.show(op[0], op[1], color, description))
 
     verb = "would create" if args.dry_run else "created"
     print("%s %d, %s %d, already correct %d, different and left alone %d"
