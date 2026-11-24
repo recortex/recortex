@@ -1188,7 +1188,10 @@ def local_record_lines(repo, config):
     except (storage.StorageError, OSError):
         pass
     for path, reason in named[:UNREAD_NAMED]:
-        lines.append("  not read: %s (%s)" % (path, reason))
+        # a file name is a stranger's text: it is printed only when it is made of plain characters
+        shown = path if re.fullmatch(r"[A-Za-z0-9._ ()/+-]{1,200}", path) else "(a name with characters recortex does not print)"
+        why = reason if re.fullmatch(r"[A-Za-z0-9 :,._-]{1,60}", str(reason)) else "not a file recortex reads"
+        lines.append("  not read: %s (%s)" % (shown, why))
     if len(named) > UNREAD_NAMED:
         lines.append("  and %d more not read" % (len(named) - UNREAD_NAMED))
     return lines, problems
