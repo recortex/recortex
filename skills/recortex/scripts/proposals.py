@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import index  # noqa: E402
 import recortex  # noqa: E402
 import record_format  # noqa: E402
+import record_store  # noqa: E402
 import storage  # noqa: E402
 import versions  # noqa: E402
 import write  # noqa: E402
@@ -62,7 +63,7 @@ LINES = {
 def live_comment(repo, cid):
     """{"login", "node"} of a comment read live, or None."""
     try:
-        data = json.loads(recortex.gh(["api", "repos/%s/issues/comments/%d" % (repo, cid)], timeout=60))
+        data = record_store.for_repo(repo).read_entry(cid, timeout=60)
     except (recortex.GhError, ValueError):
         return None
     login = (data.get("user") or {}).get("login") if isinstance(data, dict) else None
@@ -76,7 +77,7 @@ def live_comment(repo, cid):
 def never_edited(repo, cid, live):
     """True when the comment's edit history, read live, holds nothing but (at most) the entry of its creation."""
     try:
-        raw = recortex.gh(["api", "graphql", "-f", "query=" + index.comment_edits_query({cid: (live["node"], None)})], timeout=60)
+        raw = record_store.for_repo(repo).histories({cid: (live["node"], None)}, timeout=60)
         node = (json.loads(raw).get("data") or {}).get("c%d" % cid)
     except (recortex.GhError, ValueError):
         return False
@@ -369,7 +370,8 @@ def close_proposal(repo, pull):
     if state is None or state["merged"] or state["state"] != "open":
         return   # a merged or closed pull request is left as it is
     try:
-        recortex.gh(["issue", "comment", str(pull), "--repo", repo, "--body-file", "-"], stdin=CLOSED_COMMENT)
+        record_store.for_repo(repo).github(["issue", "comment", str(pull), "--repo", repo, "--body-file", "-"],
+                                           stdin=CLOSED_COMMENT)
         versions.api(repo, "PATCH", "pulls/%d" % pull, {"state": "closed"})
         SAY("approvals: pull request #%d was closed with a fixed comment" % pull)
     except (recortex.GhError, versions.GitError):
