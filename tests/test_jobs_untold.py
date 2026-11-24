@@ -57,7 +57,8 @@ class UntoldBox(tt.TaskBox):
             out[name] = done.stdout
         built = self.tool("mind.py", gh="false")
         self.assertEqual(0, built.returncode, built.stdout + built.stderr)
-        out["mind page"] = recortex.read_text(os.path.join(self.data, "private", self.slug(), "mind.html"))
+        # the reader shows what is not told, shut under its mark: the page's other views must not
+        out["mind page"] = ts.outside_reader(recortex.read_text(os.path.join(self.data, "private", self.slug(), "mind.html")))
         for event in ("SessionStart", "UserPromptSubmit"):
             done = self.hook(event)
             out["hook " + event] = done.stdout + done.stderr

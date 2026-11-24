@@ -860,7 +860,7 @@ class TodoPageTests(TodoBox):
         page = self.page()
         entries = [dict(attrs)["data-nav"] for tag, attrs in ts.PageReader(page).elements
                    if tag == "a" and "data-nav" in dict(attrs)]
-        self.assertEqual(["now", "project-map", "work", "history", "outputs"], entries)
+        self.assertEqual(["now", "project-map", "work", "history", "record", "outputs"], entries)
         self.assertIn('<a href="#work" data-nav="work">Work</a>', page)
         self.assertIn('<section class="view" id="todo"', page)
 
