@@ -29,7 +29,7 @@ SEALED_TABLE = "CREATE TABLE IF NOT EXISTS local_sealed(key TEXT PRIMARY KEY)"
 SKIPPED = (".git", ".gitignore", ".gitattributes", "README.md", ".DS_Store", "desktop.ini", "Thumbs.db", ".stfolder", ".stignore",
            ".dropbox", ".dropbox.cache")
 MAX_FILES = 50000
-MAX_IN_FOLDER = 5000
+MAX_IN_FOLDER = local_store.MAX_IN_FOLDER
 CLOCK_EVERY = 100
 VERSION_SEQ = 10 ** 10      # the timeline rows of a topic's earlier texts, by the number of the version file
 MARK_SEQ = 5000             # the topic file's own rows: a change outside recortex is one edit and one rename

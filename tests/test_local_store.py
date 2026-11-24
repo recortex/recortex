@@ -1056,7 +1056,7 @@ class Hardening(local_record.LocalSandbox):
                 if make == "file":
                     self.write(path, b"not a record file at all")
                 else:
-                    os.mkdir(path)
+                    os.mkdir(path, 0o700)   # a folder of the record that others can write is refused, which is not what this is about
                 before = self.tree()
                 self.store.create_issue(title, ["final-record"], body="b")
                 self.assertIn(expected, self.files("topics"))
@@ -1135,11 +1135,64 @@ class Hardening(local_record.LocalSandbox):
         store = self.store
         os.remove(self.topic_path("task"))   # the highest topic, #4; its entry stays in its folder
         self.assertEqual("#5", store.create_issue("After the one that is gone", [], body="b"))
-        # the newest file that reads and is sealed names it; a planted newer file that is not sealed names nothing
-        folder = os.path.join(self.folder, "topics", self.slug("speed"))
-        self.write(os.path.join(folder, "2099-01-01T0000Z-aaaaaaaaaaaaaaaa.md"), b"---\nrecortex: 1\nkind: entry\ntopic: 900\nbroken")
-        os.remove(self.topic_path("speed"))
+        os.remove(self.topic_path("speed"))   # #3: a remembered number keeps itself out of use and never moves the counter
         self.assertEqual("#6", store.create_issue("And after the second one", [], body="b"))
+
+    def test_a_remembered_number_is_kept_out_of_use_and_never_moves_the_counter(self):
+        os.remove(self.topic_path("task"))   # #4 is gone, and a folder that remembers #900 is there too
+        task = self.entry_path("task", 0)
+        relpath = "topics/gone-nine-hundred/" + os.path.basename(task)
+        parsed = self.local_store.parse_file(self.read(task), "topics/%s/%s" % (self.slug("task"), os.path.basename(task)), self.record_id)
+        os.mkdir(os.path.join(self.folder, "topics", "gone-nine-hundred"), 0o700)
+        self.write(os.path.join(self.folder, relpath),
+                   self.local_store.render(parsed.kind, dict(parsed.front, topic=900), parsed.body, relpath, self.record_id))
+        self.assertEqual("#5", self.store.create_issue("Next", [], body="b"))   # #4 is kept; #900 moves nothing
+        self.assertEqual("#6", self.store.create_issue("And next", [], body="b"))
+
+    def test_a_folder_is_consulted_only_when_its_topic_file_is_missing(self):
+        folder = os.path.join(self.folder, "topics", self.slug("speed"))   # its topic file is there
+        os.chmod(folder, 0o777)   # a folder that cannot be listed safely
+        self.assertEqual("#5", self.store.create_issue("Made", [], body="b"))
+        os.chmod(folder, 0o700)
+
+    def test_many_planted_newer_names_do_not_hide_the_older_sealed_file_that_names_the_topic(self):
+        os.remove(self.topic_path("task"))
+        folder = os.path.join(self.folder, "topics", self.slug("task"))
+        for number in range(30):   # more than any short look would reach; none of them is sealed
+            self.write(os.path.join(folder, "2099-01-%02dT%02d00Z-%s.md" % (1 + number % 28, number % 24, ("abcdefghijklmnopqrstuvwxyz234567"[number] * 16))),
+                       b"---\nrecortex: 1\nkind: entry\ntopic: 900\nbroken")
+        self.assertEqual("#5", self.store.create_issue("After the planted names", [], body="b"))   # #4 is kept; 900 moves nothing
+
+    def test_a_folder_that_cannot_be_listed_or_read_safely_refuses_a_new_topic_and_so_does_a_limit_reached(self):
+        store = self.store
+        before = self.tree()
+        os.remove(self.topic_path("task"))
+        folder = os.path.join(self.folder, "topics", self.slug("task"))
+        os.chmod(folder, 0o777)   # a folder that others can write is not listed
+        with self.assertRaises(self.record_store.RecordFolderError) as caught:
+            store.create_issue("Not made", [], body="b")
+        self.assertEqual(self.local_store.UNREADABLE_TOPIC, str(caught.exception))
+        self.assertEqual("unreadable", caught.exception.kind)
+        os.chmod(folder, 0o700)
+        names_ = sorted(os.listdir(folder))
+        self.assertTrue(names_)
+        for name in names_:   # no file of the folder reads safely: none can name the topic
+            os.chmod(os.path.join(folder, name), 0o666)
+        with self.assertRaises(self.record_store.RecordFolderError):
+            store.create_issue("Not made", [], body="b")
+        for name in names_:
+            os.chmod(os.path.join(folder, name), 0o600)
+        self.assertEqual("#5", store.create_issue("Made", [], body="b"))
+        # the look goes as far as a sync reads (MAX_IN_FOLDER); a folder with more names than that and no sealed file among them is refused
+        os.remove(self.topic_path("speed"))
+        speed = os.path.join(self.folder, "topics", self.slug("speed"))
+        for name in os.listdir(speed):
+            path = os.path.join(speed, name)
+            self.write(path, b"---\nrecortex: 1\nkind: entry\ntopic: 3\nbroken")
+        with mock.patch.object(self.local_store, "MAX_IN_FOLDER", 1):
+            self.write(os.path.join(speed, "2099-01-01T0000Z-aaaaaaaaaaaaaaaa.md"), b"---\nrecortex: 1\nkind: entry\ntopic: 3\nbroken")
+            with self.assertRaises(self.record_store.RecordFolderError):
+                store.create_issue("Not made either", [], body="b")
 
     def alone(self, number):
         """The topic file of `number` with nothing else of it in the record: its folder (the earlier text it was made with) is gone."""
