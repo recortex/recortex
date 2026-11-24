@@ -920,7 +920,10 @@ class Folder(Act):
     def parse(self, args, ctx):
         if args.values:
             raise ActError("acts: folder takes no value.")
-        return self._values(ctx)
+        values = self._values(ctx)
+        if ctx.config.get("place") == "project":   # a record inside the project: what is known of its repository, as `inproject` says it
+            values["state"] = record_store.project_visibility(ctx.root)
+        return values
 
     def from_command(self, words, ctx):
         call = setup_call(words)
@@ -936,7 +939,8 @@ class Folder(Act):
                 "Use the record at its new place?" % values["id"])
 
     def options(self, values):
-        return [option("Use the record there", "This machine then reads and writes the record at that folder.", "yes",
+        said = " " + InProject.STATES[values["state"]] if values.get("state") in InProject.STATES else ""
+        return [option("Use the record there", "This machine then reads and writes the record at that folder." + said, "yes",
                        [("setup.py", "record-folder", "--yes")]),
                 option("Leave it unused", "Nothing changes; the record stays unread until you say.", "no")]
 

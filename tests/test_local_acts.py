@@ -721,6 +721,14 @@ class FolderTests(LocalActsBox):
         self.assertTrue(self.said("folder", values))                             # and the grant is still there, unused
         self.assertTrue(acts.allowed("folder", values))
 
+    def test_a_record_in_its_own_folder_says_nothing_of_a_repository_and_asks_none(self):
+        self.unbind()
+        with mock.patch.object(record_store, "project_visibility", side_effect=AssertionError("asked")):
+            code, printed = self.ask_main("folder", "--json")
+        self.assertEqual(0, code, printed)
+        description = json.loads(printed)["options"][0]["description"]
+        self.assertEqual("This machine then reads and writes the record at that folder.", description)
+
     def test_a_project_with_no_local_record_has_nothing_to_approve(self):
         with open(os.path.join(self.project, ".recortex.json"), "w") as handle:
             json.dump({"repo": base.REPO, "hub": 1}, handle)
@@ -730,6 +738,23 @@ class FolderTests(LocalActsBox):
 
 class FolderInProjectTests(LocalActsBox):
     place = "project"
+
+    def test_the_question_of_a_record_inside_the_project_says_what_is_known_of_its_repository_in_the_option_and_not_the_question(self):
+        asked = {}
+        for state in ("public", "private", "unknown"):
+            with mock.patch.object(record_store, "project_visibility", return_value=state) as seen:
+                code, printed = self.ask_main("folder", "--json")
+            self.assertEqual(0, code, printed)
+            body = json.loads(printed)
+            asked[state] = body
+            self.assertEqual(1, seen.call_count)
+            self.assertIn(acts.InProject.STATES[state], body["options"][0]["description"])
+            self.assertRegex(body["options"][0]["description"], acts.DESCRIPTION)
+        self.assertEqual({asked["public"]["question"]}, {body["question"] for body in asked.values()})   # one text: a grant is matched on it
+        self.assertEqual([item["label"] for item in asked["public"]["options"]], [item["label"] for item in asked["private"]["options"]])
+        # and the command that carries the answer asks no one: its values carry no state
+        values = acts.ACTS["folder"].from_command(["python3", "setup.py", "record-folder", "--yes"], acts.Context())
+        self.assertNotIn("state", values)
 
     def test_a_copy_of_the_project_is_a_new_checkout_that_the_user_approves_separately(self):
         moved = os.path.join(self.base, "moved-project")
