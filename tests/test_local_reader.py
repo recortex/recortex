@@ -156,6 +156,36 @@ class ViewTests(Reader):
         self.assertEqual(len(capped), text.count("The full text of this topic is in the live dashboard."))
 
 
+    def test_a_capped_topic_whose_text_is_not_told_shows_its_mark_and_no_text(self):
+        self.damage("changed-body")
+        path = self.topic_path("speed")
+        relpath = os.path.relpath(path, self.folder).replace(os.sep, "/")
+        parsed = self.local_store.parse_file(self.read(path), relpath, self.record_id)
+        self.write(path, self.local_store.render(parsed.kind, parsed.front, parsed.body, relpath, self.record_id,
+                                                 self.local_store.Sealing(b"another machine's key")))
+        original = self.mind_model.CAP_READER
+        self.mind_model.CAP_READER = 1
+        try:
+            model = self.build()
+        finally:
+            self.mind_model.CAP_READER = original
+        marked = [t for t in model["reader"]["topics"] if t.get("capped") and t.get("body_mark")]
+        self.assertTrue(marked, "no topic with a text that is not told was capped")
+        text, _ = self.mind.finish(model, self.config, self.repo)
+        for topic in marked:
+            self.assertIsNone(topic["first"])
+            view = self.view_of(text, topic["n"])
+            self.assertIn(topic["body_mark"], view)
+            self.assertNotIn("lenient quoting", view)
+            self.assertNotIn("The reader runs at the speed", view)
+            self.assertNotRegex(view, r"readtext")
+            self.assertIn("The full text of this topic is in the live dashboard.", view)
+
+    def view_of(self, page, number):
+        start = page.index('<section class="view" id="read-%d"' % number)
+        return page[start:page.index("</section>", start) + 10]
+
+
 class NothingElseTests(Reader):
     def test_no_file_address_no_path_and_no_file_name_is_in_the_page(self):
         self.damage("changed-entry")

@@ -117,7 +117,8 @@ class ReaderMixin:
         from mind_model import CAP_FIRST_LINES, CAP_TEXT   # the caps live beside the page's other caps
         body = row["body"] or ""
         if topic["capped"]:
-            topic["first"] = self.doc(body, set(), cap=CAP_FIRST_LINES)
+            # the first lines of a text that is not told are not told either: the capped view says the mark and nothing of the text
+            topic["first"] = None if topic.get("body_mark") else self.doc(body, set(), cap=CAP_FIRST_LINES)
             topic["entries"], topic["versions"], topic["edits"] = [], [], []
             return
         topic["body"] = self.doc(body, set(), cap=CAP_TEXT) if body.strip() else None

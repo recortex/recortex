@@ -3553,6 +3553,7 @@ class Page:
         if topic.get("capped"):
             return E("section", {"class": "view", "id": ident, "aria-labelledby": ident + "-h"}, trail,
                      E("h2", {"id": ident + "-h"}, title), E("p", {"class": "chips"}, *chips),
+                     E("p", {"class": "markword"}, text_of(topic.get("body_mark"))) if topic.get("body_mark") else
                      E("div", {"class": "readtext"}, self.blocks(topic.get("first"))),
                      E("p", {"class": "quiet"}, "The full text of this topic is in the live dashboard."))
         parts, contents = [], []
