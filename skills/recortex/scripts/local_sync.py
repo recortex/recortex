@@ -20,6 +20,10 @@ import recortex
 import storage
 
 TABLE = ("CREATE TABLE IF NOT EXISTS local_files(path TEXT PRIMARY KEY, mtime INTEGER, size INTEGER, state TEXT, number INTEGER)")
+# What this machine's seal once held for, kept apart from the marks so that no later state of a path, no deletion and no new name clears it:
+# a key for the path, for the entry's id and for the topic's number. An entry that was sealed here and now carries another key id was changed
+# outside recortex, and is never taken back as written on another machine (store.adopt). It lives in the index and goes with `--rebuild`.
+SEALED_TABLE = "CREATE TABLE IF NOT EXISTS local_sealed(key TEXT PRIMARY KEY)"
 SKIPPED = (".git", ".gitignore", ".gitattributes", "README.md", ".DS_Store", "desktop.ini", "Thumbs.db", ".stfolder", ".stignore",
            ".dropbox", ".dropbox.cache")
 MAX_FILES = 50000
@@ -76,6 +80,7 @@ def run(db, repo, hub, rebuild, clock, timeline_cap=None):
     store = record_store.for_repo(repo)
     store.record = store.read_record()
     db.execute(TABLE)
+    db.execute(SEALED_TABLE)
     db.commit()
     wipe = rebuild or index.get_meta(db, "record_path") != store.folder or index.get_meta(db, "store") != "local"
     if wipe:
@@ -154,11 +159,13 @@ def run(db, repo, hub, rebuild, clock, timeline_cap=None):
     removed = False
     try:
         if wipe:
-            for table in ("issues", "comments", "timeline", "parents", "pull_merge", "local_files") + index.EDIT_TABLES \
+            for table in ("issues", "comments", "timeline", "parents", "pull_merge", "local_files", "local_sealed") + index.EDIT_TABLES \
                     + index.DERIVED + index.MIND:
                 db.execute("DELETE FROM %s" % table)
             marks = {}
             full = True
+        if store.record.get("state") == "sealed":   # record.json, sealed here: written after a wipe, which is what this goes with
+            db.execute("INSERT OR IGNORE INTO local_sealed VALUES (?)", ("path:" + local_store.RECORD_FILE,))
         if complete:
             for relpath, mark in marks.items():
                 if relpath not in scanned:
@@ -184,6 +191,9 @@ def run(db, repo, hub, rebuild, clock, timeline_cap=None):
             if gone and gone[0] in ("issue", "comment") and gone != now_row:
                 removed = True   # the file now holds another row (a renumbered topic) or none of its old kind
             db.execute("INSERT OR REPLACE INTO local_files VALUES (?,?,?,?,?)", (relpath, mtime, size, parsed.state, number))
+            if parsed.state == "sealed":
+                for key in local_store.LocalStore.seal_keys(relpath, parsed):
+                    db.execute("INSERT OR IGNORE INTO local_sealed VALUES (?)", (key,))
             summary[{"hub": "issues", "topic": "issues", "entry": "comments", "body": "timelines"}[parsed.kind]] += 1
         for number in sorted(touched_versions):
             rebuild_versions(db, store, number)

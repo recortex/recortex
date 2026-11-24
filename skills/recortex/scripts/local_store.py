@@ -864,25 +864,43 @@ class LocalStore:
     def _digest(self, relpaths):
         return self._digest_of([(relpath, self._bytes(relpath)) for relpath in relpaths])
 
+    NO_INDEX = ("recortex: this machine's index of the record cannot be read, so it is not known which files were sealed here; "
+                "nothing was taken back.")
+
+    @staticmethod
+    def seal_keys(relpath, parsed):
+        """The keys under which the index remembers that this machine's seal held for a file: its path, an entry's id, a topic's number."""
+        keys = {"path:" + relpath}
+        if getattr(parsed, "entry_id", None):
+            keys.add("id:" + str(parsed.entry_id))
+        if parsed.kind in ("hub", "topic"):
+            keys.add("number:%d" % (1 if parsed.kind == "hub" else parsed.number))
+        return keys
+
     def _sealed_marks(self):
-        """The paths whose mark in the index, at the last sync, was `sealed`: files this machine's own seal held for. A file of
-        them that now carries another key was changed outside recortex, and is not one that was written on another machine."""
+        """The keys of everything this machine's seal has held for, as the index remembers it (local_sync.SEALED_TABLE: set when a file
+        is seen sealed, cleared by nothing but a rebuild). A file that now carries another key and has one of these keys was changed
+        outside recortex, and is not one that was written on another machine. An index that cannot be read refuses: it is never an
+        empty answer."""
         try:
             import index
             db = index.connect(self.repo, create=False)
-            if db is None:
-                return set()
-            try:
-                return {row[0] for row in db.execute("SELECT path FROM local_files WHERE state = 'sealed'")}
-            finally:
-                db.close()
-        except Exception:  # noqa: BLE001 - no index, or one that cannot be read: nothing is known, so nothing is left out
-            return set()
+        except Exception:  # noqa: BLE001
+            raise Refused(self.NO_INDEX)
+        if db is None:
+            raise Refused(self.NO_INDEX)
+        try:
+            return {row[0] for row in db.execute("SELECT key FROM local_sealed")}
+        except Exception:  # noqa: BLE001 - a table that is not there, a file that is not an index
+            raise Refused(self.NO_INDEX)
+        finally:
+            db.close()
 
-    def _foreign_paths(self):
-        """The files that are foreign now (a seal this machine cannot check) and were not sealed here at the last sync."""
-        sealed = self._sealed_marks()
-        return [relpath for relpath, parsed in self._files() if parsed.state == "foreign" and relpath not in sealed]
+    def _foreign_paths(self, sealed=None):
+        """The files that are foreign now (a seal this machine cannot check) and have never been seen sealed here."""
+        sealed = self._sealed_marks() if sealed is None else sealed
+        return [relpath for relpath, parsed in self._files()
+                if parsed.state == "foreign" and not (self.seal_keys(relpath, parsed) & sealed)]
 
     def adopt_plan(self, mode, number=0):
         """The values of an adopt question: for `mode` "topic" the topic whose text was changed outside recortex (how many lines
@@ -903,15 +921,18 @@ class LocalStore:
                     "labels": len(parsed.front.get("labels") or []), "state": parsed.front.get("state") or "open",
                     "digest": self._digest([relpath])}
         self.record = self.read_record()
-        paths = self._foreign_paths()
+        sealed = self._sealed_marks()
+        paths = self._foreign_paths(sealed)
         kinds = {relpath: parsed.kind for relpath, parsed in self._files()}
-        if self.record["state"] == "foreign":
+        record = self.record["state"] == "foreign" and ("path:" + RECORD_FILE) not in sealed
+        if record:
             paths.append(RECORD_FILE)
         if not paths:
             raise Refused("recortex: nothing in this record carries a seal that was written on another machine.")
         return {"mode": "foreign", "topic": 0, "lines": 0, "digest": self._digest(paths),
                 "entries": sum(1 for relpath in paths if kinds.get(relpath) == "entry"),
-                "topics": sum(1 for relpath in paths if kinds.get(relpath) in ("hub", "topic"))}
+                "topics": sum(1 for relpath in paths if kinds.get(relpath) in ("hub", "topic")),
+                "versions": sum(1 for relpath in paths if kinds.get(relpath) == "body"), "record": 1 if record else 0}
 
     def adopt(self, mode, number, expected):
         """Seal what the user took back, in one pass over the bytes the question was bound to. Each file is read once; its
@@ -925,8 +946,9 @@ class LocalStore:
                 relpath, _ = self.topic(number)
                 paths = [relpath]
             else:
-                paths = self._foreign_paths()
-                if self.read_record()["state"] == "foreign":
+                sealed = self._sealed_marks()
+                paths = self._foreign_paths(sealed)
+                if self.read_record()["state"] == "foreign" and ("path:" + RECORD_FILE) not in sealed:
                     paths.append(RECORD_FILE)
             read = {path: self._bytes(path) for path in paths}
             if not read or self._digest_of(read.items()) != expected:
@@ -950,7 +972,7 @@ class LocalStore:
                 if relpath == RECORD_FILE:
                     continue
                 parsed = parse_file(data, relpath, self.record_id)
-                if parsed.state != "foreign":
+                if parsed.state != "foreign" or self.seal_keys(relpath, parsed) & sealed:   # the bytes just read, not the listing
                     raise Refused("recortex: the files changed since the question was asked; nothing was sealed.")
                 made[relpath] = checked(parsed.kind, parsed.front, parsed.body, relpath, self.record_id)
             record_data = None

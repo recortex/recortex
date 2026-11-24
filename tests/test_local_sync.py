@@ -315,6 +315,8 @@ class MarkTests(Box):
         finally:
             db.close()
         self.assertNotIn("local_files", names)
+        self.assertNotIn("local_sealed", names)   # what is only a local record's is in its index alone, and not in index.SCHEMA
+        self.assertNotIn("local_sealed", self.index.SCHEMA)
 
 
 class NotReadTests(Box):

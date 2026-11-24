@@ -157,13 +157,14 @@ class ActTableTests(LocalActsBox):
         self.assertEqual("recortex: topic #3 of the local record was changed outside recortex (4 lines of its text differ from the "
                          "last version recortex wrote; it has 2 labels and is open). Take the text, the title and the labels as they "
                          "are now as yours?", acts.ACTS["adopt"].text(topic))
-        token = acts.ACTS["adopt"].value(topic)[:8]
+        token = acts.ACTS["adopt"].value(topic)[:16]
         self.assertEqual(["Take topic #3 as mine " + token, "Leave it as it is"], acts.ACTS["adopt"].labels(topic))
-        foreign = {"mode": "foreign", "topic": 0, "lines": 0, "entries": 2, "topics": 1, "digest": "0" * 64}
-        self.assertEqual("recortex: 2 entries and 1 topics of this record carry a seal this machine cannot check (they were written on "
-                         "another machine, or here before the key changed). Seal them as yours on this machine?",
-                         acts.ACTS["adopt"].text(foreign))
-        token = acts.ACTS["adopt"].value(foreign)[:8]
+        foreign = {"mode": "foreign", "topic": 0, "lines": 0, "entries": 2, "topics": 1, "versions": 3, "record": 0, "digest": "0" * 64}
+        self.assertEqual("recortex: 2 entries, 1 topics and 3 earlier versions of a text of this record carry a seal this machine "
+                         "cannot check (they were written on another machine, or here before the key changed). Seal them as yours on "
+                         "this machine?", acts.ACTS["adopt"].text(foreign))
+        self.assertIn("check, and so does the record's own file (they were", acts.ACTS["adopt"].text(dict(foreign, record=1)))
+        token = acts.ACTS["adopt"].value(foreign)[:16]
         self.assertEqual(["Seal them as mine " + token, "Leave them as they are"], acts.ACTS["adopt"].labels(foreign))
 
     def test_no_question_prints_a_path_or_a_text_of_the_record(self):
@@ -721,11 +722,13 @@ class AdoptTests(LocalActsBox):
         self.write(path, self.read(path).replace(b"strict quoting", b"lenient quoting", 1))
         return path
 
-    def foreign_file(self, path):
+    def foreign_file(self, path, sync=True):
         relpath = os.path.relpath(path, self.folder_path).replace(os.sep, "/")
         parsed = local_store.parse_file(self.read(path), relpath, LOCAL_ID)
         data = local_store.render(parsed.kind, parsed.front, parsed.body, relpath, LOCAL_ID, local_store.Sealing(b"another key"))
         self.write(path, data)
+        if sync:
+            self.sync()   # what this machine knows of the files: this one was never seen sealed, so it was written elsewhere
         return relpath
 
     def entries_of(self, key):
@@ -791,8 +794,9 @@ class AdoptTests(LocalActsBox):
 
     def test_foreign_files_are_counted_and_sealed_by_rewriting_only_their_seal_line(self):
         entry = self.entry_of("reader")
-        self.foreign_file(entry)
-        self.foreign_file(self.path_of("speed"))
+        self.foreign_file(entry, sync=False)
+        self.foreign_file(self.path_of("speed"), sync=False)
+        self.sync()
         plan = self.store.adopt_plan("foreign")
         self.assertEqual((1, 1), (plan["entries"], plan["topics"]))
         entry_before, topic_before = self.read(entry), self.read(self.path_of("speed"))
@@ -839,8 +843,9 @@ class AdoptTests(LocalActsBox):
         record["seal"] = {"key": other.key_id, "mac": other.json_mac(plain)}
         self.write(path, (json.dumps(record, sort_keys=True, indent=1) + "\n").encode())
         self.assertEqual("foreign", self.store.read_record()["state"])
+        self.sync()
         plan = self.store.adopt_plan("foreign")
-        self.assertEqual((0, 0), (plan["entries"], plan["topics"]))
+        self.assertEqual((0, 0, 0, 1), (plan["entries"], plan["topics"], plan["versions"], plan["record"]))   # its own file is counted
         code, printed = self.take("--foreign")
         self.assertEqual(0, code, printed)
         self.assertEqual("sealed", self.store.record["state"])
@@ -867,7 +872,7 @@ class AdoptTests(LocalActsBox):
         command = self.command_for("adopt", "--topic", str(number), "--yes")
         found = acts.asks(command, self.project)
         self.assertEqual(["adopt"], [item["kind"] for item in found])
-        self.assertEqual("Take topic #%d as mine %s" % (number, acts.ACTS["adopt"].value(values)[:8]), found[0]["label"])
+        self.assertEqual("Take topic #%d as mine %s" % (number, acts.ACTS["adopt"].value(values)[:16]), found[0]["label"])
         self.yes("adopt", values)
         self.assertIsNone(self.hook(command))
         self.assertTrue(self.said("adopt", values))
@@ -964,6 +969,102 @@ class AdoptTests(LocalActsBox):
         self.assertIn("nothing in this record carries a seal that was written on another machine", str(caught.exception))
         with self.assertRaises(SystemExit):   # no plan: the command says so and stops
             self.refused_adopt("--foreign")
+
+    def rewritten_under_another_key(self, path):
+        """The seal line of a file replaced by one with another key id: all that anyone who can write the folder needs to do."""
+        relpath = os.path.relpath(path, self.folder_path).replace(os.sep, "/")
+        parsed = local_store.parse_file(self.read(path), relpath, LOCAL_ID)
+        self.write(path, local_store.render(parsed.kind, parsed.front, parsed.body, relpath, LOCAL_ID,
+                                            local_store.Sealing(b"a key that is not this machine's")))
+
+    def test_what_this_machine_sealed_stays_remembered_through_later_syncs_a_deletion_and_a_new_name(self):
+        entry = self.entry_of("reader")
+        self.sync()   # seen sealed
+        self.rewritten_under_another_key(entry)
+        self.sync()
+        self.sync()   # the mark of the path is now foreign: it no longer says that the file was sealed here
+        with self.assertRaises(record_store.StoreError):
+            self.store.adopt_plan("foreign")
+        with self.assertRaises(SystemExit):   # no plan: the command says so and stops
+            self.refused_adopt("--foreign")
+        # deleted and written again under the same name, and moved to another name with the same entry id
+        data = self.read(entry)
+        os.remove(entry)
+        self.sync()
+        with open(entry, "wb") as handle:
+            handle.write(data)
+        os.chmod(entry, 0o600)
+        self.sync()
+        with self.assertRaises(record_store.StoreError):
+            self.store.adopt_plan("foreign")
+        moved = os.path.join(os.path.dirname(entry), "2026-11-24T1000Z-" + os.path.basename(entry).rsplit("-", 1)[1])
+        os.rename(entry, moved)
+        self.sync()
+        with self.assertRaises(record_store.StoreError):
+            self.store.adopt_plan("foreign")
+
+    def test_a_topic_this_machine_sealed_and_that_now_carries_another_key_is_not_adoptable_either(self):
+        path = self.path_of("speed")
+        self.sync()
+        self.rewritten_under_another_key(path)
+        self.sync()
+        self.sync()
+        with self.assertRaises(record_store.StoreError):
+            self.store.adopt_plan("foreign")
+        keys = local_store.LocalStore.seal_keys("topics/read-speed.md", local_store.parse_file(self.read(path), "topics/read-speed.md", LOCAL_ID))
+        self.assertEqual({"path:topics/read-speed.md", "number:%d" % self.numbers["speed"]}, keys)
+
+    def test_an_index_that_cannot_be_read_refuses_and_is_never_an_empty_answer(self):
+        self.foreign_file(self.entry_of("reader"))   # adoptable: never seen sealed
+        self.assertEqual(1, self.store.adopt_plan("foreign")["entries"])
+        import index
+        for patch in (mock.patch.object(index, "connect", return_value=None),
+                      mock.patch.object(index, "connect", side_effect=storage.StorageError("x", "owner"))):
+            with patch, self.assertRaises(record_store.StoreError) as caught:
+                self.store.adopt_plan("foreign")
+            self.assertIn("cannot be read", str(caught.exception))
+            with patch, self.assertRaises(record_store.StoreError):
+                self.store.adopt("foreign", 0, "0" * 64)
+        db = index.connect(LOCAL, create=False)
+        db.execute("DROP TABLE local_sealed")
+        db.commit()
+        db.close()
+        with self.assertRaises(record_store.StoreError) as caught:
+            self.store.adopt_plan("foreign")
+        self.assertIn("cannot be read", str(caught.exception))
+
+    def test_a_rebuild_forgets_what_was_sealed_here_and_that_is_a_known_limit(self):
+        entry = self.entry_of("reader")
+        self.sync()
+        self.rewritten_under_another_key(entry)
+        self.sync()
+        with self.assertRaises(record_store.StoreError):
+            self.store.adopt_plan("foreign")
+        done = subprocess.run([sys.executable, os.path.join(SCRIPTS, "index.py"), "sync", "--rebuild"], capture_output=True, text=True,
+                              cwd=self.project, input="")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertEqual(1, self.store.adopt_plan("foreign")["entries"])   # what the page says: the flag does not survive a rebuild
+
+    def test_the_plan_counts_earlier_versions_of_a_text_and_the_records_own_file(self):
+        number = self.numbers["reader"]
+        self.store.edit_body(number, body="A second text.\n")
+        folder = os.path.join(self.folder_path, "topics", os.path.basename(self.path_of("reader"))[:-3])
+        version = next(os.path.join(folder, name) for name in sorted(os.listdir(folder))
+                       if b"\nkind: body\n" in self.read(os.path.join(folder, name)))
+        self.foreign_file(version, sync=False)
+        path = os.path.join(self.folder_path, "record.json")
+        record = json.loads(self.read(path))
+        plain = {k: v for k, v in record.items() if k != "seal"}
+        other = local_store.Sealing(b"another key")
+        record["seal"] = {"key": other.key_id, "mac": other.json_mac(plain)}
+        self.write(path, (json.dumps(record, sort_keys=True, indent=1) + "\n").encode())
+        self.sync()
+        plan = self.store.adopt_plan("foreign")
+        self.assertEqual((0, 0, 1, 1), (plan["entries"], plan["topics"], plan["versions"], plan["record"]))
+        text = acts.ACTS["adopt"].text(plan)
+        self.assertIn("0 entries, 0 topics and 1 earlier versions of a text", text)
+        self.assertIn("and so does the record's own file", text)
+        self.assertEqual(2, self.store.adopt("foreign", 0, plan["digest"]))
 
     def test_a_file_changed_between_the_check_and_the_seal_is_refused(self):
         number = self.numbers["reader"]

@@ -991,14 +991,15 @@ class Adopt(Act):
             return ("recortex: topic #%d of the local record was changed outside recortex (%d lines of its text differ from the last "
                     "version recortex wrote; it has %d labels and is %s). Take the text, the title and the labels as they are now as "
                     "yours?" % (values["topic"], values["lines"], values["labels"], values["state"]))
-        return ("recortex: %d entries and %d topics of this record carry a seal this machine cannot check (they were written on "
-                "another machine, or here before the key changed). Seal them as yours on this machine?"
-                % (values["entries"], values["topics"]))
+        return ("recortex: %d entries, %d topics and %d earlier versions of a text of this record carry a seal this machine cannot "
+                "check%s (they were written on another machine, or here before the key changed). Seal them as yours on this machine?"
+                % (values["entries"], values["topics"], values["versions"],
+                   ", and so does the record's own file" if values["record"] else ""))
 
     def options(self, values):
         # the yes label carries a token of the bytes asked about, so that an answer is an answer to those bytes and no others: a file
         # that changed since, with the same counts, makes a label that the user never chose
-        token = self.value(values)[:8]
+        token = self.value(values)[:16]   # 64 bits: not a prefix that can be searched for a second set of files
         if values["mode"] == "topic":
             return [option("Take topic #%d as mine %s" % (values["topic"], token), "recortex seals the text, the title and the labels "
                            "as they are now, and keeps the last version it wrote.", "yes",
