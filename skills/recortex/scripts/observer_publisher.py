@@ -24,6 +24,7 @@ import observer_holds
 import observer_runtime
 from observer_store import Store, StoreError, candidate_hash, exact_words  # noqa: F401 (exact_words: the worker's)
 import observer_store
+import record_store
 import recortex
 import record_format
 
@@ -592,7 +593,8 @@ def _run_open_task(store, event, config):
         result = tasks.open_task(repo, folder, config=config)
     if not result.get("ok") or type(result.get("issue")) is not int or type(result.get("comment")) is not int:
         raise PublishError("task_failed")
-    receipt = _check_remote(repo, event, _remote_comment(repo, result["comment"]), issue=result["issue"])
+    receipt = _check_remote(repo, event, _remote_comment(repo, result["comment"], config), issue=result["issue"],
+                            config=config)
     receipt["issue"] = result["issue"]
     return receipt
 
@@ -675,8 +677,8 @@ def _bound(event, store):
         raise PublishError("review_changed")
 
 
-def _account(repo):
-    me = recortex.gh(["api", "user", "--hostname", "github.com", "--jq", ".login"]).strip()
+def _account(repo, config=None):
+    me = record_store.for_repo(repo, config).whoami(host=True)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", me) or me.lower() not in recortex.allowed_users(repo):
         raise PublishError("account_not_allowed")
     return me.lower()
@@ -715,19 +717,20 @@ def _hold(store, event, main_session=False):
         raise PublishError(reason)
 
 
-def _remote_comment(repo, comment_id):
-    data = json.loads(recortex.gh(["api", "repos/%s/issues/comments/%d" % (repo, int(comment_id))]))
+def _remote_comment(repo, comment_id, config=None):
+    data = record_store.for_repo(repo, config).read_entry(int(comment_id))
     if not isinstance(data, dict):
         raise PublishError("invalid_receipt")
     return data
 
 
-def _check_remote(repo, event, data, issue=None):
+def _check_remote(repo, event, data, issue=None, config=None):
     cid = data.get("id")
     if isinstance(cid, bool) or not isinstance(cid, int) or cid < 1:
         raise PublishError("invalid_receipt")
     issue = issue or event["candidate"]["issue"]
-    expected = "https://api.github.com/repos/%s/issues/%d" % (repo, issue)
+    records = record_store.for_repo(repo, config)
+    expected = records.api_issue(issue)
     if data.get("issue_url", "").lower() != expected.lower():
         raise PublishError("wrong_target")
     if (data.get("user") or {}).get("login", "").lower() != event["account"]:
@@ -738,14 +741,13 @@ def _check_remote(repo, event, data, issue=None):
         raise PublishError("remote_edited")
     if recortex.normalize(data.get("body") or "") != recortex.normalize(event["body"]):
         raise PublishError("remote_changed")
-    return {"comment_id": cid, "url": "https://github.com/%s/issues/%d#issuecomment-%d" % (repo, issue, cid),
+    return {"comment_id": cid, "url": records.address(issue, cid),
             "payload_hash": event["payload_hash"], "account": event["account"]}
 
 
-def _find_remote(repo, event, issue=None):
+def _find_remote(repo, event, issue=None, config=None):
     number = issue or event["candidate"]["issue"]
-    rows = recortex.parse_json_stream(recortex.gh(
-        ["api", "--paginate", "repos/%s/issues/%d/comments?per_page=100" % (repo, number)]))
+    rows = recortex.parse_json_stream(record_store.for_repo(repo, config).list_entries(number))
     found = []
     for row in rows:
         if not isinstance(row, dict):
@@ -777,12 +779,12 @@ def _reconcile_locked(store, event, config=None):
         # adopts a comment an earlier run posted and did not finish reading back.
         return _send_task(store, event, config if config is not None else {})
     try:
-        found = _find_remote(store.repo, event, _issue_of(store, event))
+        found = _find_remote(store.repo, event, _issue_of(store, event), config)
         if found is None:
             return _uncertain(store, event["eventkey"], "remote_not_found")
         # Verify the individual comment, not only a potentially stale listing.
-        receipt = _check_remote(store.repo, event, _remote_comment(store.repo, found["id"]),
-                                issue=_issue_of(store, event))
+        receipt = _check_remote(store.repo, event, _remote_comment(store.repo, found["id"], config),
+                                issue=_issue_of(store, event), config=config)
         store.transition(event["eventkey"], "verified", receipt=receipt)
         _after_verified(store, event, receipt)
         return {"eventkey": event["eventkey"], "state": "verified", "receipt": receipt}
@@ -793,11 +795,13 @@ def _reconcile_locked(store, event, config=None):
 def _dry_run(repo, store, event, config):
     """What publish would send, without network and without writing: the command and the hash of the body composed now."""
     candidate = event["candidate"]
-    command = _task_command(repo, event) if opens_task(candidate) else _command(repo, event, _issue_of(store, event))
+    records = record_store.for_repo(repo, config)
     note = ("a task from the frozen reviewed steps memory, which is then its first comment" if opens_task(candidate)
             else "frozen reviewed body from stdin")
+    shown = (records.show("create_issue", candidate["task_title"], [], note=note) if opens_task(candidate)
+             else records.show("post_entry", _issue_of(store, event) or candidate["issue"], note=note))
     out = {"eventkey": event["eventkey"], "state": event["state"], "dry_run": True,
-           "command": recortex.show_command(command, note), "payload_hash": event["payload_hash"]}
+           "command": shown, "payload_hash": event["payload_hash"]}
     if opens_task(candidate):
         problem = title_problem(candidate["task_title"], repo, config)
         if problem:
@@ -863,14 +867,14 @@ def publish(repo, eventkey, config, dry_run=False, main_session=False):
             if problem:
                 raise PublishError(problem)   # the title is the model's text too: nothing is created
             _hold(store, event, main_session)
-            me = _account(repo)
+            me = _account(repo, config)
             issue = candidate["topic"] if opens else _issue_of(store, event)
             if opens and not issue and not task_rules_todo(candidate["task_title"]):
                 raise PublishError("invalid_target")   # a task with no topic is the standing "To do" list only
             # Target existence and draft rules are checked on the live record before sending.
             record = None
             if issue:
-                target = json.loads(recortex.gh(["api", "repos/%s/issues/%d" % (repo, issue)]))
+                target = record_store.for_repo(repo, config).read_issue(issue)
                 if not isinstance(target, dict) or target.get("pull_request"):
                     raise PublishError("invalid_target")
                 record = lookup.github(repo, issue)
@@ -884,7 +888,7 @@ def publish(repo, eventkey, config, dry_run=False, main_session=False):
                 raise PublishError("lint_failed")
             settings = _gate(store, config, main_session)
             _hold(store, event, main_session)
-            if _account(repo) != me:
+            if _account(repo, config) != me:
                 raise PublishError("account_changed")
             if not main_session:
                 if opens and _tasks_full(store, settings):
@@ -903,19 +907,20 @@ def publish(repo, eventkey, config, dry_run=False, main_session=False):
                 _hold(store, event, main_session)
                 return _send_task(store, event, config)
             try:
-                prior = _find_remote(repo, event, issue)
+                prior = _find_remote(repo, event, issue, config)
                 if prior is not None:
-                    return _reconcile_locked(store, event)
+                    return _reconcile_locked(store, event, config)
                 _gate(store, config, main_session)
                 _hold(store, event, main_session)
-                if _account(repo) != event["account"]:
+                if _account(repo, config) != event["account"]:
                     raise PublishError("account_changed")
-                output = recortex.gh(_command(repo, event, issue), stdin=event["body"])
-                match = re.search(r"https://github\.com/" + re.escape(repo) + r"/issues/" +
-                                  str(issue) + r"#issuecomment-([0-9]+)", output)
-                if not match:
+                records = record_store.for_repo(repo, config)
+                output = records.post_entry(issue or event["candidate"]["issue"], body=event["body"])
+                posted = records.posted_id(output, issue or event["candidate"]["issue"])
+                if not posted:
                     return _uncertain(store, eventkey, "receipt_missing")
-                receipt = _check_remote(repo, event, _remote_comment(repo, int(match.group(1))), issue=issue)
+                receipt = _check_remote(repo, event, _remote_comment(repo, int(posted), config), issue=issue,
+                                        config=config)
                 store.transition(eventkey, "verified", receipt=receipt)
                 _after_verified(store, event, receipt)
                 return {"eventkey": eventkey, "state": "verified", "receipt": receipt}
@@ -939,8 +944,8 @@ def reconcile(repo, eventkey, config, dry_run=False):
             raise PublishError("missing_event")
         if dry_run:
             return {"eventkey": eventkey, "state": event["state"], "dry_run": True,
-                    "command": recortex.show_command(["api", "--paginate", "repos/%s/issues/%d/comments?per_page=100" %
-                                                       (repo, _issue_of(store, event) or event["candidate"]["issue"])])}
+                    "command": record_store.for_repo(repo, config).show(
+                        "list_entries", _issue_of(store, event) or event["candidate"]["issue"])}
         with store.publication_lock():
             # A pause stops new writes, not read-only receipt reconciliation.
             if repo.lower() not in recortex.trusted_repos():
