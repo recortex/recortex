@@ -11,7 +11,7 @@ What it allows (spec 12, the owner's decision D10):
            repository must be the record's own repository or the project's code repository. The path is checked part
            by part. A tag, or a short commit, is resolved to its full commit, and the commit is what gets fetched and
            cached; a branch name is never a version, so it is refused.
-  Fetch    only here, and only when the caller says so (mind.py with --sync or --figures): through recortex.gh(),
+  Fetch    only here, and only when the caller says so (mind.py with --sync or --figures): through record_store.github(),
            `gh api repos/<owner>/<repo>/contents/<path>?ref=<commit>` with the raw media type, under one time budget.
            Each picture is at most 5 MB and all of them at most 40 MB.
   Cache    <index folder>/figures/<commit>/<sha256 of the path>, in private folders (storage.py), mode 0600, written
@@ -37,6 +37,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import record_format  # noqa: E402
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import storage  # noqa: E402
 
 MAX_IMAGE = 5 * 1024 * 1024
@@ -261,14 +262,14 @@ class Stop(Exception):
 
 
 def call(args, deadline, binary=False):
-    """gh through recortex.gh() within what is left of the budget. Raises Stop("timeout") when nothing is left or
+    """gh through record_store.github() within what is left of the budget. Raises Stop("timeout") when nothing is left or
     gh is too slow, Stop("not-found") for a 404 and Stop("fetch-failed") for any other failure; no text of gh or of
     GitHub is kept."""
     left = deadline - time.monotonic()
     if left <= 0:
         raise Stop("timeout")
     try:
-        return recortex.gh(args, timeout=max(1, int(left + 0.999)), binary=binary)
+        return record_store.github(args, timeout=max(1, int(left + 0.999)), binary=binary)
     except recortex.GhTimeout:
         raise Stop("timeout")
     except recortex.GhError as error:

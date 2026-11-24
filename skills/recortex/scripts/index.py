@@ -70,6 +70,7 @@ import names  # noqa: E402
 import plan_rules  # noqa: E402
 import project_map  # noqa: E402
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import record_format  # noqa: E402
 import storage  # noqa: E402
 import task_rules  # noqa: E402
@@ -614,12 +615,13 @@ def run_sync(repo, hub, rebuild, timeout, deadline, timeline_cap):
     rebuild that cannot reach GitHub leaves the index as it was.
     """
     clock = Deadline(deadline)
+    store = record_store.for_repo(repo)
 
     def call(args):
         if clock.passed():
             raise DeadlineReached("deadline reached before %s" % " ".join(args[:2]))
         try:
-            return recortex.gh(args, timeout=clock.left(timeout))
+            return store.github(args, timeout=clock.left(timeout))
         except recortex.GhError:
             if clock.passed():
                 raise DeadlineReached("deadline reached during %s" % " ".join(args[:2]))
@@ -1290,8 +1292,7 @@ def read_resume(db, repo, hub, timeout):
             values["resume_note"] = ("hub %s has no resume comment among its newest %d comments. Post one with "
                                      "resume_block.py update" % (where, recortex.COMMENTS_READ))
     else:
-        url = chosen["url"] if re.fullmatch(r"https://github\.com/[\w./#-]+", chosen["url"], re.ASCII) \
-            else "(link not shown)"
+        url = record_store.safe_address_of(repo, chosen["url"]) or "(link not shown)"
         created = chosen["created"] if re.fullmatch(r"[0-9T:Z-]+", chosen["created"], re.ASCII) else "unknown"
         # Only a block that passed the trust, author and never-edited checks just now is kept.
         values = {"resume": recortex.extract_resume_block(chosen["body"]).strip(), "resume_read_at": now_utc(),

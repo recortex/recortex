@@ -73,7 +73,7 @@ def show(args, config):
                   "Post one with resume_block.py update." % (where, recortex.COMMENTS_READ))
         return 0
 
-    url = chosen["url"] if re.fullmatch(r"https://github\.com/[\w./#-]+", chosen["url"], re.ASCII) else "(not shown)"
+    url = record_store.safe_address_of(repo, chosen["url"]) or "(not shown)"
     created = chosen["created"] if re.fullmatch(r"[0-9T:Z-]+", chosen["created"], re.ASCII) else "unknown"
     lines = [
         BEGIN,

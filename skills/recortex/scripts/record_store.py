@@ -29,6 +29,7 @@ NOT_AGREE = "recortex: the project file's record name and its kind of record do 
 UNKNOWN_KIND = "recortex: the project file names a kind of record this version does not know."
 ONLY_ITS_OWN = ("recortex: this project keeps a local record, so a record named another way is refused; nothing was "
                 "read or written.")
+NO_SERVER = "recortex: a local record makes no call to a server."
 NO_LOCAL = "recortex: a local record cannot be opened here; nothing was read."
 
 
@@ -135,6 +136,15 @@ def address_of(repo, issue, entry=None):
     return base if entry is None else "%s#issuecomment-%d" % (base, entry)
 
 
+def safe_address_of(repo, text):
+    """`text` when it is a whole address of the record's kind that may be printed (GitHub: letters, digits and ./#- after
+    github.com/; local: `#N` or `#N/ID`), else None. ASCII only."""
+    if not isinstance(text, str):
+        return None
+    pattern = r"#[0-9]{1,9}(?:/[0-9]{10,19})?" if is_local(repo) else r"https://github\.com/[\w./#-]+"
+    return text if re.fullmatch(pattern, text, re.ASCII) else None
+
+
 def api_issue_of(repo, issue):
     """The address of a topic as an entry's `issue_url` names it (what the stores' reads carry)."""
     return ("local:%s/issues/%d" if is_local(repo) else "https://api.github.com/repos/%s/issues/%d") % (repo, issue)
@@ -161,7 +171,7 @@ class GithubStore:
         return None
 
     def github(self, args, stdin=None, timeout=60, errors=None, binary=False):
-        """The raw call: recortex.gh with the same arguments."""
+        """The raw call, for what only GitHub has: recortex.gh with the same arguments."""
         return recortex.gh(args, stdin=stdin, timeout=timeout, errors=errors, binary=binary)
 
     # ------------------------------------------------------------ the argument lists
@@ -376,7 +386,7 @@ class GithubStore:
         return None if match is None else (int(match[1]), int(match[2] or 0))
 
     def safe_address(self, text):
-        return text if isinstance(text, str) and re.fullmatch(r"https://github\.com/[\w./#-]+", text) else None
+        return safe_address_of(self.repo, text)
 
     def is_missing(self, error):
         return recortex.not_found(error)
@@ -421,6 +431,16 @@ def for_repo(repo, config=None):
 def _open_local(repo, config):
     """The LocalStore of the configuration's record (local_store.py)."""
     raise StoreError(NO_LOCAL)
+
+
+def github(args, stdin=None, timeout=60, errors=None, binary=False):
+    """The raw call for code that has no repository at hand (a GraphQL query, a picture): recortex.gh, refused in a project that
+    keeps a local record. The features that call it (the board, sub-issues, the page's pictures) stop at their entry points
+    first, and this is the second lock."""
+    used = _config_used(None)
+    if isinstance(used, dict) and kind_of(used) == "local":
+        raise Unsupported(NO_SERVER)
+    return recortex.gh(args, stdin=stdin, timeout=timeout, errors=errors, binary=binary)
 
 
 def for_config(config):

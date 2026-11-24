@@ -3,6 +3,7 @@ that no script builds a `gh` argument list of its own. Offline: a recording stan
 
 import json
 import os
+import re
 import sys
 import unittest
 from unittest import mock
@@ -250,8 +251,12 @@ class ReadBackTests(Box):
         good = "https://github.com/octo-org/octo-repo/issues/5#issuecomment-9"
         self.assertEqual(good, self.store.safe_address(good))
         for bad in (good + " x", "http://github.com/a/b", "https://evil.example/https://github.com/a", "", None, 5,
-                    "https://github.com/a b"):
+                    "https://github.com/a b", "https://github.com/a/b\u00e9", "https://github.com/a/\u0661"):
             self.assertIsNone(self.store.safe_address(bad), bad)
+        self.assertEqual("#5/4242424242", record_store.safe_address_of(LOCAL, "#5/4242424242"))
+        self.assertEqual("#5", record_store.safe_address_of(LOCAL, "#5"))
+        for bad in (good, "#5/12", "#5 ", "file:///x", "#x", "#1234567890"):
+            self.assertIsNone(record_store.safe_address_of(LOCAL, bad), bad)
 
     def test_a_missing_issue_is_gh_saying_not_found(self):
         self.assertTrue(self.store.is_missing(recortex.GhError("gh api failed (exit 1): Not Found (HTTP 404)")))
@@ -428,6 +433,22 @@ class KindOfTests(unittest.TestCase):
                     record_store.kind_of(config)
                 self.assertEqual(line, str(caught.exception))
                 self.assertIsInstance(caught.exception, record_store.ConfigRefused)
+
+
+class NoDirectGhTests(unittest.TestCase):
+    def test_gh_is_called_only_from_the_store_and_the_base_module(self):
+        """Every `gh` call of the plugin is made by record_store.py or recortex.py (where gh() is defined): a script that
+        builds a gh argument list of its own would reach a local record's name too."""
+        found = []
+        for name in sorted(os.listdir(SCRIPTS)):
+            if not name.endswith(".py") or name in ("record_store.py", "recortex.py"):
+                continue
+            with open(os.path.join(SCRIPTS, name), encoding="utf-8") as handle:
+                for number, line in enumerate(handle, 1):
+                    code = line.split("#", 1)[0]
+                    if re.search(r"(?<![A-Za-z0-9_])recortex\.gh\(|(?<![A-Za-z0-9_.])gh\(", code) and '"""' not in code:
+                        found.append("%s:%d: %s" % (name, number, line.strip()[:90]))
+        self.assertEqual([], found)
 
 
 if __name__ == "__main__":

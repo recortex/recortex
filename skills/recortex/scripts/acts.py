@@ -37,6 +37,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 
 ASK = ("recortex: this is done on the user's answer. Run acts.py ask %s, ask the question it prints word for word with its "
        "options, and run this command again after a yes.")
@@ -719,7 +720,7 @@ class Publish(Act):
                 raise ActError(publish.NO_PUSH % to)
             exists = True
             try:
-                recortex.gh(["api", "repos/%s/branches/%s" % (to, branch)])
+                record_store.for_repo(to).github(["api", "repos/%s/branches/%s" % (to, branch)])
             except recortex.GhError as error:
                 if not publish.missing(error):
                     raise

@@ -8,7 +8,7 @@ own status name found by exact option name ("other" for any other column), and t
 and never print. Project and field ids are read from GitHub at run time and checked against GH_ID before they are
 put into a query.
 
-Every call goes through recortex.gh(). A failure is a BoardError with a fixed reason code (REASONS); the text of an
+Every call goes through record_store.github(). A failure is a BoardError with a fixed reason code (REASONS); the text of an
 error from GitHub is never shown.
 
 The approval, kept on the user's side (<configuration top>/private/board-approvals.json, through storage.py), ties
@@ -24,6 +24,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import storage  # noqa: E402
 
 STATUSES = ("To triage", "Todo", "In Progress", "Waiting for a yes", "Blocked", "Done", "Set aside")
@@ -145,7 +146,7 @@ def record_approval(repo, owner, number):
 def graphql(query, timeout=60):
     """The `data` of one GraphQL operation, through `gh api graphql`. Raises BoardError."""
     try:
-        text = recortex.gh(["api", "graphql", "-f", "query=" + query], timeout=timeout)
+        text = record_store.github(["api", "graphql", "-f", "query=" + query], timeout=timeout)
     except recortex.GhError as error:
         raise BoardError(classify(str(error)))
     try:

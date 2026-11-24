@@ -7,7 +7,7 @@ the text as files, in Manubot's layout (paper_layout.py), one commit per change,
 difference between any two and the names (tags). Nothing is read from the branch into the record except through the
 checked paths: a restore (the file's hash must be the "after" value of a told text change) and a merged proposal
 (write.py). Nothing is cloned and the project's working tree is never touched: every write is an API call through
-`recortex.gh()` (the git data endpoints), the head is read, one tree and one commit are posted, and the branch is moved
+the record store's raw call (the git data endpoints), the head is read, one tree and one commit are posted, and the branch is moved
 forward without force. A head that moved meanwhile is read again and the commit is made once more.
 
 The writing mode is the consent: versions are kept exactly when the mode of this machine is review or autonomous, and
@@ -44,6 +44,7 @@ import index  # noqa: E402
 import names  # noqa: E402
 import paper_layout  # noqa: E402
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import record_format  # noqa: E402
 import storage  # noqa: E402
 import write_rules  # noqa: E402
@@ -96,14 +97,15 @@ def say(text):
 # ---------------------------------------------------------------- GitHub
 
 def api(repo, method, path, payload=None, raw=False):
-    """One call to the REST API through recortex.gh(): parsed JSON, or the bytes of a file with raw=True."""
+    """One call to the REST API through the record store's raw call: parsed JSON, or the bytes of a file with raw=True."""
     args = ["api", "-X", method, "repos/%s/%s" % (repo, path)]
     if raw:
         args += ["-H", "Accept: application/vnd.github.raw+json"]
     if payload is not None:
         args += ["--input", "-"]
     try:
-        out = recortex.gh(args, stdin=json.dumps(payload) if payload is not None else None, timeout=60, binary=raw)
+        out = record_store.for_repo(repo).github(args, stdin=json.dumps(payload) if payload is not None else None, timeout=60,
+                                                 binary=raw)
     except recortex.GhError as error:
         found = re.search(r"HTTP ([0-9]{3})", str(error))
         raise GitError(int(found.group(1)) if found else 0, str(error))
@@ -119,7 +121,7 @@ def api(repo, method, path, payload=None, raw=False):
 
 def can_push(repo):
     try:
-        out = recortex.gh(["api", "repos/%s" % repo, "--jq", ".permissions.push"], timeout=30)
+        out = record_store.for_repo(repo).github(["api", "repos/%s" % repo, "--jq", ".permissions.push"], timeout=30)
     except (recortex.GhError, recortex.GhMissing, recortex.GhTimeout):
         return False
     return out.strip() == "true"

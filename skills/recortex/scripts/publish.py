@@ -34,6 +34,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import storage  # noqa: E402
 
 BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}")
@@ -155,9 +156,14 @@ def checked_target(to, branch, path):
             and not branch.endswith(("/", ".lock")) and "//" not in branch and PATH.fullmatch(path) is not None)
 
 
+def github(repo, args, **kwargs):
+    """One raw call about the repository `repo` (the target of a page, or the record's own repository): the record store's."""
+    return record_store.for_repo(repo).github(args, **kwargs)
+
+
 def read_repository(name):
     """(private, may_push) of a repository as GitHub says it; private is None when that could not be read."""
-    data = json.loads(recortex.gh(["api", "repos/%s" % name]))
+    data = json.loads(github(name, ["api", "repos/%s" % name]))
     private = data.get("private") if isinstance(data, dict) and isinstance(data.get("private"), bool) else None
     permissions = data.get("permissions") if isinstance(data, dict) else None
     push = permissions.get("push") if isinstance(permissions, dict) else None
@@ -190,7 +196,7 @@ def pages_state(to, branch):
     ("other", None) when it serves another branch or folder. The address is kept only when it is of the form of PAGES_ADDRESS;
     nothing else of GitHub's answer is kept. Raises what gh raises for a failure that is not a 404."""
     try:
-        data = json.loads(recortex.gh(["api", "repos/%s/pages" % to]))
+        data = json.loads(github(to, ["api", "repos/%s/pages" % to]))
     except recortex.GhError as error:
         if missing(error):
             return "off", None
@@ -206,8 +212,8 @@ def create_branch_with_page(to, branch, path, data):
     """One commit with no parent that holds the page and an empty .nojekyll, made through GitHub's git data calls, and the branch
     that points at it. Raises recortex.GhError for a refusal; the caller says one fixed line."""
     def post(what, body):
-        return json.loads(recortex.gh(["api", "-X", "POST", "repos/%s/git/%s" % (to, what), "--input", "-"],
-                                      stdin=json.dumps(body), timeout=120))
+        return json.loads(github(to, ["api", "-X", "POST", "repos/%s/git/%s" % (to, what), "--input", "-"],
+                                 stdin=json.dumps(body), timeout=120))
     page = post("blobs", {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"})["sha"]
     empty = post("blobs", {"content": "", "encoding": "utf-8"})["sha"]
     tree = post("trees", {"tree": [{"path": path, "mode": "100644", "type": "blob", "sha": page},
@@ -315,6 +321,7 @@ def run(args):
     if config is None:
         print("publish: " + line.split(": ", 1)[1])
         return 1
+    record_store.for_repo(record, config).require("pages")
     if args.list:
         return listing(record)
     if not args.to or not args.branch:
@@ -356,14 +363,14 @@ def run(args):
             return 1
         branch_exists, sha = True, None
         try:
-            recortex.gh(["api", "repos/%s/branches/%s" % (args.to, args.branch)])
+            github(args.to, ["api", "repos/%s/branches/%s" % (args.to, args.branch)])
         except recortex.GhError as error:
             if not missing(error):
                 raise
             branch_exists = False
         if branch_exists:
             try:
-                found = json.loads(recortex.gh(["api", "repos/%s/contents/%s?ref=%s" % (args.to, args.path, args.branch)]))
+                found = json.loads(github(args.to, ["api", "repos/%s/contents/%s?ref=%s" % (args.to, args.path, args.branch)]))
                 if isinstance(found, dict) and isinstance(found.get("sha"), str) and re.fullmatch(r"[0-9a-f]{40}", found["sha"]):
                     sha = found["sha"]
                 elif isinstance(found, dict) and found.get("type") == "file":
@@ -457,7 +464,7 @@ def run(args):
             return 1
     try:
         if branch_exists:
-            recortex.gh(command, stdin=json.dumps(body), timeout=120)
+            github(args.to, command, stdin=json.dumps(body), timeout=120)
         else:
             create_branch_with_page(args.to, args.branch, args.path, data)
     except recortex.GhTimeout:   # the write may have landed after gh gave up waiting
@@ -471,7 +478,7 @@ def run(args):
         print(NOT_SENT)
         return 1
     try:
-        back = json.loads(recortex.gh(["api", "repos/%s/contents/%s?ref=%s" % (args.to, args.path, args.branch)]))
+        back = json.loads(github(args.to, ["api", "repos/%s/contents/%s?ref=%s" % (args.to, args.path, args.branch)]))
         stored = back.get("sha") if isinstance(back, dict) else None
     except (recortex.GhError, ValueError, TypeError):
         stored = None
@@ -482,8 +489,8 @@ def run(args):
     refused = False
     if switches:
         try:
-            recortex.gh(["api", "-X", "POST", "repos/%s/pages" % args.to, "--input", "-"],
-                        stdin=json.dumps({"source": {"branch": args.branch, "path": "/"}}), timeout=60)
+            github(args.to, ["api", "-X", "POST", "repos/%s/pages" % args.to, "--input", "-"],
+                   stdin=json.dumps({"source": {"branch": args.branch, "path": "/"}}), timeout=60)
         except recortex.GhError:   # never a failed publish: the page is on the branch
             refused = True
             print(PAGES_REFUSED % args.to)

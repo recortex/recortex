@@ -2,7 +2,7 @@
 
 Python 3 standard library only. Read-only. One class, two sources, no state besides a cache for one run:
 
-  lookup.github(repo, number)  reads GitHub through recortex.gh(); what GitHub cannot answer in one call (the
+  lookup.github(repo, number)  reads the record through the record store; what it cannot answer in one call (the
                                topic issue of an active task, words and thread openings already explained) comes
                                from the local index when it is current, and is UNKNOWN otherwise
   lookup.local(repo, number)   reads the local index only, with no network; raises Unavailable when there is no
