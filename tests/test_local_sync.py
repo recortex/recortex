@@ -382,13 +382,19 @@ class NotReadTests(Box):
 
     def test_two_files_with_one_topic_number_stop_the_sync_before_anything_is_stored(self):
         self.sync()
-        before = self.tables(("issues", "comments", "local_files", "meta"))
+        def stored():   # the one mark a stop leaves is local_sealed_ok: the index says that its last sync did not finish
+            found = self.tables(("issues", "comments", "local_files", "meta"))
+            found["meta"] = [row for row in found["meta"] if row[0] != "local_sealed_ok"]
+            return found
+        before = stored()
+        self.assertEqual("1", self.meta("local_sealed_ok"))
         self.damage("duplicate-number")
         with self.assertRaises(self.local_sync.SyncStop) as caught:
             self.sync()
         self.assertEqual(self.local_sync.DUPLICATE, str(caught.exception))
         self.assertEqual("duplicate", caught.exception.kind)
-        self.assertEqual(before, self.tables(("issues", "comments", "local_files", "meta")))
+        self.assertEqual(before, stored())
+        self.assertEqual("0", self.meta("local_sealed_ok"))
 
     def test_two_entries_with_one_number_stop_the_sync_too(self):
         self.sync()
@@ -425,12 +431,14 @@ class NotReadTests(Box):
         with self.assertRaises(self.storage.StorageError) as caught:
             self.storage.scan_record_folder(self.folder, os.path.relpath(folder, self.folder))
         self.assertEqual("permissions", caught.exception.kind)
-        db_before = self.everything()
+        def told():
+            return [line for line in self.everything().splitlines() if "local_sealed_ok" not in line]
+        db_before = told()
         try:
             self.sync()
         except (self.record_store.StoreError, self.storage.StorageError) as error:
             self.assertEqual("permissions", error.kind)
-        self.assertEqual(db_before, self.everything())   # nothing of that folder was added to what the index tells
+        self.assertEqual(db_before, told())   # nothing of that folder was added to what the index tells
         os.chmod(folder, 0o700)
         with mock.patch.object(self.storage, "_uid", return_value=os.getuid() + 1):
             with self.assertRaises(self.storage.StorageError) as caught:

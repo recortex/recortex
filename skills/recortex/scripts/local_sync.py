@@ -22,7 +22,9 @@ import storage
 TABLE = ("CREATE TABLE IF NOT EXISTS local_files(path TEXT PRIMARY KEY, mtime INTEGER, size INTEGER, state TEXT, number INTEGER)")
 # What this machine's seal once held for, kept apart from the marks so that no later state of a path, no deletion and no new name clears it:
 # a key for the path, for the entry's id and for the topic's number. An entry that was sealed here and now carries another key id was changed
-# outside recortex, and is never taken back as written on another machine (store.adopt). It lives in the index and goes with `--rebuild`.
+# outside recortex, and is never taken back as written on another machine (store.adopt). It lives in the index, survives a `--rebuild` of the
+# same record, and is lost only with the index file; `local_sealed_ok` says that the last sync finished, so that a table that a stopped or a
+# partial sync left is never taken for the whole.
 SEALED_TABLE = "CREATE TABLE IF NOT EXISTS local_sealed(key TEXT PRIMARY KEY)"
 SKIPPED = (".git", ".gitignore", ".gitattributes", "README.md", ".DS_Store", "desktop.ini", "Thumbs.db", ".stfolder", ".stignore",
            ".dropbox", ".dropbox.cache")
@@ -80,7 +82,10 @@ def run(db, repo, hub, rebuild, clock, timeline_cap=None):
     store = record_store.for_repo(repo)
     store.record = store.read_record()
     db.execute(TABLE)
-    db.execute(SEALED_TABLE)
+    if index.get_meta(db, "local_record_id") not in (None, "", store.record_id):   # an index that held another record: its memory is not this one's
+        db.execute(SEALED_TABLE)
+        db.execute("DELETE FROM local_sealed")
+    index.set_meta(db, "local_sealed_ok", "0")   # until this sync has finished; a stop leaves it so
     db.commit()
     wipe = rebuild or index.get_meta(db, "record_path") != store.folder or index.get_meta(db, "store") != "local"
     if wipe:
@@ -159,12 +164,13 @@ def run(db, repo, hub, rebuild, clock, timeline_cap=None):
     removed = False
     try:
         if wipe:
-            for table in ("issues", "comments", "timeline", "parents", "pull_merge", "local_files", "local_sealed") + index.EDIT_TABLES \
+            for table in ("issues", "comments", "timeline", "parents", "pull_merge", "local_files") + index.EDIT_TABLES \
                     + index.DERIVED + index.MIND:
                 db.execute("DELETE FROM %s" % table)
             marks = {}
             full = True
-        if store.record.get("state") == "sealed":   # record.json, sealed here: written after a wipe, which is what this goes with
+        db.execute(SEALED_TABLE)   # made and filled in the transaction of this sync
+        if store.record.get("state") == "sealed":
             db.execute("INSERT OR IGNORE INTO local_sealed VALUES (?)", ("path:" + local_store.RECORD_FILE,))
         if complete:
             for relpath, mark in marks.items():
@@ -191,7 +197,7 @@ def run(db, repo, hub, rebuild, clock, timeline_cap=None):
             if gone and gone[0] in ("issue", "comment") and gone != now_row:
                 removed = True   # the file now holds another row (a renumbered topic) or none of its old kind
             db.execute("INSERT OR REPLACE INTO local_files VALUES (?,?,?,?,?)", (relpath, mtime, size, parsed.state, number))
-            if parsed.state == "sealed":
+            if parsed.state == "sealed" or getattr(parsed, "own_seal", False):   # the file's own seal, whatever its topic's state attributes
                 for key in local_store.LocalStore.seal_keys(relpath, parsed):
                     db.execute("INSERT OR IGNORE INTO local_sealed VALUES (?)", (key,))
             summary[{"hub": "issues", "topic": "issues", "entry": "comments", "body": "timelines"}[parsed.kind]] += 1
@@ -209,6 +215,7 @@ def run(db, repo, hub, rebuild, clock, timeline_cap=None):
         index.set_meta(db, "local_unknown", json.dumps(sorted({why for _, why in unknown})))
     index.set_meta(db, "record_path", store.folder)
     index.set_meta(db, "store", "local")
+    index.set_meta(db, "local_record_id", store.record_id)
     newest_issue = db.execute("SELECT MAX(updated_at) AS at FROM issues").fetchone()["at"] or ""
     newest_comment = db.execute("SELECT MAX(updated_at) AS at FROM comments").fetchone()["at"] or ""
     index.set_meta(db, "issues_newest", newest_issue)
@@ -236,6 +243,7 @@ def run(db, repo, hub, rebuild, clock, timeline_cap=None):
     else:
         index.set_meta(db, "partial_at", index.now_utc())
     index.set_meta(db, "sync_complete", "1" if complete else "0")
+    index.set_meta(db, "local_sealed_ok", "1" if complete else "0")
     summary["complete"] = complete
     db.commit()
     index.plan_step(db, repo)

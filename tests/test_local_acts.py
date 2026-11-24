@@ -1077,7 +1077,7 @@ class AdoptTests(LocalActsBox):
             self.store.adopt_plan("foreign")
         self.assertIn("cannot be read", str(caught.exception))
 
-    def test_a_rebuild_forgets_what_was_sealed_here_and_that_is_a_known_limit(self):
+    def test_a_rebuild_keeps_what_was_sealed_here_and_only_the_loss_of_the_index_file_forgets_it(self):
         entry = self.entry_of("reader")
         self.sync()
         self.rewritten_under_another_key(entry)
@@ -1087,7 +1087,53 @@ class AdoptTests(LocalActsBox):
         done = subprocess.run([sys.executable, os.path.join(SCRIPTS, "index.py"), "sync", "--rebuild"], capture_output=True, text=True,
                               cwd=self.project, input="")
         self.assertEqual(0, done.returncode, done.stdout + done.stderr)
-        self.assertEqual(1, self.store.adopt_plan("foreign")["entries"])   # what the page says: the flag does not survive a rebuild
+        with self.assertRaises(record_store.StoreError):   # the rebuild keeps the memory of the same record
+            self.store.adopt_plan("foreign")
+        import index
+        os.chmod(index.index_path(LOCAL), 0o600)
+        os.rename(index.index_path(LOCAL), index.index_path(LOCAL) + ".lost")   # the index file itself is gone
+        self.sync()
+        self.assertEqual(1, self.store.adopt_plan("foreign")["entries"])   # the limit: nothing is known of what was sealed before
+
+    def test_an_entry_whose_own_seal_holds_is_remembered_even_when_its_topic_could_not_be_read_at_the_first_sync(self):
+        topic = self.path_of("reader")
+        good = self.read(topic)
+        self.write(topic, b"half of a topic")   # the topic does not read: the entries under it are attributed as changed
+        entry = self.entry_of("reader")
+        self.sync()   # the entry's own MAC holds, though its folder's topic does not read
+        self.rewritten_under_another_key(entry)
+        self.write(topic, good)   # the topic reads again
+        self.sync()
+        with self.assertRaises(record_store.StoreError) as caught:
+            self.store.adopt_plan("foreign")
+        self.assertIn("nothing in this record carries a seal that was written on another machine", str(caught.exception))
+
+    def test_an_index_whose_last_sync_stopped_or_that_holds_another_folder_refuses(self):
+        self.foreign_file(self.entry_of("speed"))   # adoptable, and the index says so
+        self.assertEqual(1, self.store.adopt_plan("foreign")["entries"])
+        import index
+        topic = self.path_of("speed")
+        relpath = "topics/zz-copy.md"
+        copy = os.path.join(self.folder_path, relpath)
+        parsed = local_store.parse_file(self.read(topic), "topics/read-speed.md", LOCAL_ID)
+        with open(copy, "wb") as handle:   # two topic files that carry one number: the sync stops before it stores anything
+            handle.write(local_store.render(parsed.kind, parsed.front, parsed.body, relpath, LOCAL_ID))
+        os.chmod(copy, 0o600)
+        done = subprocess.run([sys.executable, os.path.join(SCRIPTS, "index.py"), "sync"], capture_output=True, text=True,
+                              cwd=self.project, input="")
+        self.assertNotEqual(0, done.returncode)
+        with self.assertRaises(record_store.StoreError) as caught:
+            self.store.adopt_plan("foreign")
+        self.assertIn("cannot be read", str(caught.exception))
+        os.remove(copy)
+        self.sync()
+        self.assertEqual(1, self.store.adopt_plan("foreign")["entries"])   # a sync that finished makes it whole again
+        db = index.connect(LOCAL, create=False)   # an index of another folder is no memory of this one
+        index.set_meta(db, "record_path", "/somewhere/else")
+        db.commit()
+        db.close()
+        with self.assertRaises(record_store.StoreError):
+            self.store.adopt_plan("foreign")
 
     def test_the_plan_counts_earlier_versions_of_a_text_and_the_records_own_file(self):
         number = self.numbers["reader"]

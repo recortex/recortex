@@ -890,7 +890,13 @@ class LocalStore:
         if db is None:
             raise Refused(self.NO_INDEX)
         try:
+            # only a whole table is a memory: the index says that it holds this folder's record and that its last sync finished
+            if (index.get_meta(db, "store") != "local" or index.get_meta(db, "record_path") != self.folder
+                    or index.get_meta(db, "local_record_id") != self.record_id or index.get_meta(db, "local_sealed_ok") != "1"):
+                raise Refused(self.NO_INDEX)
             return {row[0] for row in db.execute("SELECT key FROM local_sealed")}
+        except Refused:
+            raise
         except Exception:  # noqa: BLE001 - a table that is not there, a file that is not an index
             raise Refused(self.NO_INDEX)
         finally:
