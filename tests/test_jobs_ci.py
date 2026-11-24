@@ -279,13 +279,13 @@ class ContributingCiTests(unittest.TestCase):
         text = read("CONTRIBUTING.md")
         paragraph = text.split("[CI](.github/workflows/tests.yml)", 1)[1].split("\n\n", 1)[0]
         for needed in ("tests/ci_shards.py", "python tests/ci_shards.py run", "python tests/ci_shards.py check",
-                       "tests/test_jobs_ci.py", "45 minutes", "seven shards", "the local batches"):
+                       "tests/test_jobs_ci.py", "45 minutes", "eight shards", "the local batches"):
             self.assertIn(needed, paragraph, needed)
         for name, _ in ci_shards.SHARDS:
             self.assertIn("`%s`" % name, paragraph, name)
         self.assertIn("a new `test_*.py` file or a new class in `tests/test_scripts.py` goes into a command of a shard",
                       paragraph)
-        self.assertEqual(7, len(ci_shards.SHARDS))   # "seven shards" above
+        self.assertEqual(8, len(ci_shards.SHARDS))   # "eight shards" above
         self.assertNotIn("which CI uses", text)
 
 

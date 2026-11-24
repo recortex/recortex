@@ -23,7 +23,7 @@ jobs:
       matrix:
         python: ['3.8', '3.14']
         # The commands of each shard are in tests/ci_shards.py; a test checks that this list names every shard there.
-        shard: [scripts-1, scripts-2, write, versions, page, jobs-1, jobs-2]
+        shard: [scripts-1, scripts-2, write, versions, page, jobs-1, jobs-2, local]
         include:
           - python: '3.8'
             os: ubuntu-22.04

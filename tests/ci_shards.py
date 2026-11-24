@@ -53,7 +53,7 @@ def files(pattern):
 
 
 # Each shard is (name, commands). The lines of CONTRIBUTING.md, in its order, are the commands; about 2,850 seconds
-# in all, so seven shards of 340 to 470 seconds each. Notes: the command's measured seconds, idle.
+# in all, so seven shards of 340 to 470 seconds each, and the eighth, the local record, which holds only its own tests. Notes: the command's measured seconds, idle.
 SHARDS = [
     ("scripts-1", [
         classes("LintTests", "HelperTests", "WorkingFolderTests", "LabelTests", "CreateIssuesTests", "PostVerifiedTests",
@@ -96,6 +96,10 @@ SHARDS = [
     ("jobs-2", [
         files("test_jobs_[km-r]*.py"),                                                                # 145
         files("test_jobs_[s-z]*.py"),                                                                 # 194
+    ]),
+    ("local", [
+        files("test_local_*.py"),
+        files("test_record_store.py"),
     ]),
 ]
 
