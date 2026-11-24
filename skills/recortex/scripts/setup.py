@@ -1575,6 +1575,16 @@ def local_config_problem(existing):
     return None
 
 
+def shown_config(config, existing, answers):
+    """The project file as a run prints it, for a GitHub record and a local one alike: a field sheet that this run does not write is
+    not printed (it may be text nobody approved on this machine), and a placeholder with its state stands in its place."""
+    shown = dict(config)
+    if "fields" in shown and not (answers["fields"] is not None and "fields" not in existing):
+        shown["fields"] = "(field guidance: %s; see setup.py fields show)" % field_sheet.state(
+            {"fields": config["fields"]}, answers["repo"])["state"]
+    return shown
+
+
 def make_record(place, path, project_folder, record_id, answers, config):
     """The record folder (checked by the rules of its place, so nothing is written when the place is refused), its record.json,
     for a record inside the project the `.gitattributes` that keeps a sync tool or git from changing line endings (never a
@@ -1661,7 +1671,7 @@ def apply_local(answers, root, dry, drafts):
         for line in notices(repo, answers["fields"]["sensitive"], True, place):
             print(line)
     print("config (%s):" % os.path.basename(config_path))
-    print(json.dumps(config, indent=2))
+    print(json.dumps(shown_config(config, existing, answers), indent=2))
     write_text(config_path, json.dumps(config, indent=2) + "\n", dry, "the project's setup", root)
     if made:
         print(made)
@@ -1854,12 +1864,7 @@ def apply(answers, root, dry, drafts):
 
     labels = setup_labels.wanted_labels(config["profiles"], config["topics"])  # checked before anything is written
     print("config (%s):" % os.path.basename(config_path))
-    shown = dict(config)
-    if "fields" in shown and not (answers["fields"] is not None and "fields" not in existing):
-        # a sheet this run does not write is not printed: it may be text nobody approved on this machine
-        shown["fields"] = "(field guidance: %s; see setup.py fields show)" % field_sheet.state(
-            {"fields": config["fields"]}, answers["repo"])["state"]
-    print(json.dumps(shown, indent=2))
+    print(json.dumps(shown_config(config, existing, answers), indent=2))
     write_text(config_path, json.dumps(config, indent=2) + "\n", dry, "the project's setup", root)
     if answers["fields"] is not None:
         record_fields(answers["repo"], answers["fields"], dry)

@@ -264,6 +264,17 @@ class ApplyLocalTests(Fresh):
         self.assertEqual([], os.listdir(path))
         self.assertEqual([], self.storage.record_bindings())
 
+    def test_a_project_file_with_a_field_sheet_is_printed_as_the_placeholder_not_as_its_text(self):
+        import test_scripts as ts
+        marker = "MARKER-WORDS"
+        sheet = dict(ts.model_sheet("engineering"), words="the project's %s names for rigs" % marker, form=1)
+        with open(os.path.join(self.project, ".recortex.json"), "w") as handle:
+            json.dump({"profiles": ["software"], "fields": sheet}, handle)
+        done = self.apply("--dry-run")
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertRegex(done.stdout, r'"fields": "\(field guidance: [a-z]+; see setup.py fields show\)"')
+        self.assertNotIn(marker, done.stdout)   # a sheet that this run does not write may be text nobody approved on this machine
+
     def test_a_chosen_folder_that_holds_anything_is_not_written_into(self):
         path = os.path.join(self.outside, "not-empty")
         os.mkdir(path, 0o700)

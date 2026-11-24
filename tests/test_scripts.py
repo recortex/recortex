@@ -7933,7 +7933,9 @@ class EditHistoryTests(MindSandbox):
         built = self.tool("mind.py", gh="false")
         self.assertEqual(0, built.returncode, built.stdout + built.stderr)
         page = recortex.read_text(os.path.join(self.data, "private", "octo-org__octo-repo", "mind.html"))
-        self.assertEqual(2, page.count("Changed on GitHub after it was posted.</p>"))
+        note = "Changed on GitHub after it was posted.</p>"
+        self.assertEqual(2, outside_reader(page).count(note))   # the page's own views tell it for the two memories
+        self.assertEqual(2, page.count(note) - outside_reader(page).count(note))   # and so does the reader, in each memory's own view
         self.assertNotIn("was changed on GitHub after it was posted, so it is not told", page)
 
     def test_a_memory_that_anyone_else_edited_is_left_out(self):

@@ -17,17 +17,17 @@ keeps findings, decisions, failures and deliverable text in GitHub issues or in 
 
 ## What you get
 
-- A session that starts from the last recorded state: a short brief opens each session and subagent.
-- A record you can read on GitHub. One pinned hub, one issue per topic, and a dated memory for each result, decision, failure, idea and question.
+- A short brief opens each session and subagent from the last recorded state.
+- A record you can read on GitHub: a pinned hub, an issue per topic, and a dated memory for each result, decision, failure, idea and question.
 - Weigh options with `/recortex:guide`. Trace changed decisions with `/recortex:impact`.
-- Open `/recortex:dashboard` to resume work, trace decisions, and read deliverables offline. Use `/recortex:map` to browse and edit the project hierarchy.
+- Open `/recortex:dashboard` to resume work, trace decisions and read deliverables offline; `/recortex:map` edits the project hierarchy.
 - It asks before it acts. What is yours to decide comes as one question.
 - Compile the paper or release notes from topic bodies.
 - The paper's plan, text and versions, written in the mode you choose; a paragraph you wrote is never changed.
-- Helpers that know your field, from a short field sheet of what counts as proof.
+- Helpers that know your field, from a short sheet of what counts as proof.
 - A board. Sub-issues and a private Projects board follow the record.
 - Tasks with checkmarks: an approved plan becomes numbered steps, checked off as the agent reports them.
-- An optional observer. It follows the session in the background, keeps the record and the task list, and drafts the paper's text only for your yes. [Controls and limits](skills/recortex/references/observer.md).
+- An optional observer. It follows the session, keeps the record and the task list, and drafts the paper's text only for your yes. [Controls and limits](skills/recortex/references/observer.md).
 
 ## Where the record lives
 
@@ -35,7 +35,7 @@ The record is GitHub issues, or a folder of Markdown files on your machine that 
 
 ## Quick start
 
-You need Claude Code and Python 3.8 or newer; for GitHub issues also the GitHub CLI `gh`, signed in.
+You need Claude Code and Python 3.8 or newer; for GitHub issues also the GitHub CLI `gh`, signed in. Setup checks `gh` first and says what to run if it is missing or signed out.
 
 1. Install the plugin.
 
@@ -44,13 +44,13 @@ You need Claude Code and Python 3.8 or newer; for GitHub issues also the GitHub 
    claude plugin install recortex@recortex
    ```
 
-2. Open Claude Code in your project and say: "Set up the record for this project." Setup asks where to keep the record, then a few multiple-choice questions, including whether to trust it (a session sees nothing from the record until you do), and confirms a summary. Nothing is written before that.
+2. Open Claude Code in your project and say: "Set up the record for this project." Setup asks where to keep the record, then a few multiple-choice questions, including whether to trust the repository or the folder (a session sees nothing from the record until you do), and confirms a summary. Nothing is written before that.
 
 3. Say "open my dashboard" to browse the project. For a manuscript, choose Outputs → Read the manuscript. Say "pause here" to save a handoff.
 
-Months into a project, or coming from another tracker? See [Starting from existing work](docs/existing-work.md).
+Months in, or coming from another tracker? See [Starting from existing work](docs/existing-work.md).
 
-Other commands include `/recortex:record`, `/recortex:ask`, `/recortex:todo`, `/recortex:status` and `/recortex:usage`. `@agent-recortex:ask` answers project history questions from the record.
+More commands: `/recortex:record`, `/recortex:ask`, `/recortex:todo`, `/recortex:status` and `/recortex:usage`. `@agent-recortex:ask` answers history questions from the record.
 
 ## A short story
 
