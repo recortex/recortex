@@ -554,6 +554,31 @@ class GoneRowsTests(Box):
         self.assertEqual([], self.rows("SELECT * FROM sections WHERE issue = 3"))
         self.assertTrue(self.rows("SELECT * FROM sections WHERE issue = 8"))
 
+    def test_a_topic_row_that_comes_back_finds_the_tampered_version_again_in_any_order_of_syncs(self):
+        folder = os.path.join(self.folder, "topics", self.slug("reader"))
+        versions = [os.path.join(folder, name) for name in sorted(os.listdir(folder))
+                    if b"\nkind: body\n" in self.read(os.path.join(folder, name))]
+        self.assertEqual(2, len(versions))
+        self.write(versions[1], self.read(versions[1]).replace(b"stray quote", b"stray apostrophe"))
+        self.sync()
+        tables = ("issues", "comments", "events", "timeline", "labels", "sections", "local_files")
+        kept = self.tables(tables)
+        self.assertIn((2, "edited", None), [(r[0], r[1], r[2]) for r in self.rows("SELECT issue, event, actor FROM timeline")])
+        path = self.topic_path("reader")
+        saved = self.read(path)
+        self.make_unread(path, "unread")
+        self.sync()
+        self.assertEqual([], self.rows("SELECT * FROM timeline WHERE issue = 2"))
+        self.write(path, saved)   # the sealed topic file comes back
+        self.sync()
+        rows = [(r[0], r[1], r[2]) for r in self.rows("SELECT issue, event, actor FROM timeline WHERE issue = 2")]
+        self.assertIn((2, "edited", None), rows)   # the tampered version is found again
+        self.assertFalse(self.index.body_told(self.db(), 2, {"local--record"}))
+        again = self.tables(tables)
+        self.sync(rebuild=True)
+        self.assertEqual(again, self.tables(tables))   # the same as a rebuild
+        self.assertEqual(kept["timeline"], again["timeline"])
+
     def test_a_reader_of_events_takes_only_rows_whose_comment_still_exists(self):
         self.sync()
         cid = self.entries["reader"][0]

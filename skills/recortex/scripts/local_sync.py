@@ -339,6 +339,7 @@ def store_file(db, store, relpath, parsed, mtime, changed_issues, changed_commen
             db.execute("INSERT OR REPLACE INTO timeline(issue, seq, event, at, actor, detail) VALUES (?,?,?,?,?,?)",
                        (number, MARK_SEQ + 1, "renamed", at, actor, ""))
         changed_issues.add(number)
+        touched_versions.add(number)   # a topic row that comes back finds its earlier texts again, whatever the order of the syncs
         return number
     entry_no = local_store.entry_number(parsed.entry_id)
     if parsed.kind == "body":
