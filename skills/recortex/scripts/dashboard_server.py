@@ -281,9 +281,18 @@ def ping(state, root, seconds=PING_SECONDS, stop=False, probe=False):
         return "stale", ""
 
 
+def may_start():
+    """False in a test run (RECORTEX_TESTING=1) unless a test that is about the server asks for one with RECORTEX_TEST_SERVE=1:
+    a server that a test's hook started would stay up for 24 hours after the test."""
+    return names.env("TESTING") != "1" or names.env("TEST_SERVE") == "1"
+
+
 def start():
     """Start `dashboard_action.py serve` detached, as the sync is started: its own session, no standard streams, the user's home
-    as its folder, and neither the project's folder nor its configuration in its environment. Never waits for it."""
+    as its folder, and neither the project's folder nor its configuration in its environment. Never waits for it. Refuses to
+    start one in a test run that did not ask for it (may_start)."""
+    if not may_start():
+        raise OSError("a test run starts no live dashboard server")
     environment = {key: value for key, value in os.environ.items() if key not in ("CLAUDE_PROJECT_DIR", names.ENV_PREFIX + "CONFIG")}
     subprocess.Popen([sys.executable, os.path.join(HERE, "dashboard_action.py"), "serve"], cwd=os.path.expanduser("~"),
                      env=environment, start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -291,7 +300,7 @@ def start():
 
 
 def ensure(root, seconds=PING_SECONDS):
-    """For the session-start hook: "off" (the user switched it off), "running" (a server of ours answered and knows the project now), "started" (none answered, one is starting) or "failed" (it
+    """For the session-start hook: "off" (the user switched it off, or a test run that did not ask for a server), "running" (a server of ours answered and knows the project now), "started" (none answered, one is starting) or "failed" (it
     could not be started). A server of another version is stopped and replaced. Never raises, never waits for the child."""
     try:
         if not enabled():
@@ -303,6 +312,8 @@ def ensure(root, seconds=PING_SECONDS):
                 return "running"
             if answer == "other version":
                 ping(state, root, seconds, stop=True)
+        if not may_start():
+            return "off"   # a test run: no detached server (RECORTEX_TEST_SERVE=1 for a test about the server)
         start()
         return "started"
     except (OSError, ValueError, storage.StorageError, subprocess.SubprocessError):

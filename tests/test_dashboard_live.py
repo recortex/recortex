@@ -45,7 +45,8 @@ class LiveBox(tj.TaskBox):
     def setUp(self):
         super().setUp()
         self.in_process(extra={"CLAUDE_PROJECT_DIR": self.project, "SSH_CONNECTION": None, "SSH_CLIENT": None, "SSH_TTY": None,
-                               "TERM_PROGRAM": None, "VSCODE_IPC_HOOK_CLI": None, "RECORTEX_DASHBOARD": None})
+                               "TERM_PROGRAM": None, "VSCODE_IPC_HOOK_CLI": None, "RECORTEX_DASHBOARD": None,
+                               "RECORTEX_TEST_SERVE": "1"})   # these tests are about the server: only here may a test start one
         self.server = action.Server(("127.0.0.1", 0), action.Handler, MOUNT, VIEW, CHANGE)
         self.server.register(self.project)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)

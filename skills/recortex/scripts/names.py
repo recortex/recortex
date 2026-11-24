@@ -33,8 +33,10 @@ TASK_REMINDERS = "task-reminders.json"
 # The plugin's environment variables, without the prefix. The three before the last are read only by the tests.
 # LINK_PAUSE is the seconds create_issues.py waits after each sub-issue link it writes (default 1, at most 10);
 # the tests set it to 0. SETUP_QUESTIONS set to 0, off, no or false switches the hook's line about the setup questions off.
+# TEST_SERVE is read only under TESTING=1: the hook starts no live dashboard server in a test run unless a test that is about
+# the server sets it to 1 (dashboard_server.may_start).
 VARIABLES = ("GH", "CONFIG", "TRUSTED_FILE", "TRUSTED_REPOS", "HOOK_TIMEOUT", "DISCOVERY", "SYNC_PAGE",
-             "DATA_HOME", "TESTING", "TEST_KEEP", "LINK_PAUSE", "NOTICE", "SETUP_QUESTIONS", "DASHBOARD")
+             "DATA_HOME", "TESTING", "TEST_KEEP", "LINK_PAUSE", "NOTICE", "SETUP_QUESTIONS", "DASHBOARD", "TEST_SERVE")
 
 
 def env(name, default=None):
