@@ -275,5 +275,68 @@ class RegistrationTests(unittest.TestCase):
         self.assertIn("A hook stops any other command", text)
 
 
+class HeredocTests(unittest.TestCase):
+    """The guard reads the commands that run, not the text of a note that is being written (1.9.0, 18.3). A heredoc that goes to a
+    plain text sink is not read; one that goes to a shell or an interpreter is code, and is."""
+
+    HELPER = "set" + "sid"
+    BODY = "note: %s python3 %s status" % (HELPER, OBSERVER)
+
+    def denied(self, command):
+        return pretool_guard.terminal_decision(call(command, agent=None)) is not None
+
+    def test_a_note_written_with_cat_or_tee_or_a_commit_or_a_body_file_is_not_read(self):
+        for first in ("cat >> notes.md", "cat > notes.md", "tee notes.md", "tee -a a.md b.md", "git commit -F -",
+                      "gh issue comment 5 --body-file -", "post_verified.py comment --body-file -"):
+            for opener in ("<<EOF", "<<'EOF'", '<<"EOF"'):
+                command = "%s %s\n%s\nEOF" % (first, opener, self.BODY)
+                with self.subTest(command=command[:50]):
+                    self.assertFalse(self.denied(command))
+        self.assertFalse(self.denied("cat >> notes.md <<-EOF\n\t%s\n\tEOF" % self.BODY))   # <<- strips the tabs of the end word
+
+    def test_the_same_text_for_a_shell_or_an_interpreter_is_still_denied(self):
+        for first in ("bash", "sh", "zsh", "dash", "python3 -", "python -", "perl", "node", "env bash", "sudo bash", "xargs",
+                      "ssh host", "tmux", "script -q"):
+            command = "%s <<EOF\n%s\nEOF" % (first, self.BODY)
+            with self.subTest(first=first):
+                self.assertTrue(self.denied(command), command)
+
+    def test_a_pipe_a_list_or_a_substitution_keeps_the_text(self):
+        for command in ("cat <<EOF | bash\n%s\nEOF" % self.BODY, "cat > f <<EOF && bash f\n%s\nEOF" % self.BODY,
+                        "cat > f <<EOF $(true)\n%s\nEOF" % self.BODY, "cat > f <<EOF `true`\n%s\nEOF" % self.BODY,
+                        "cat <<EOF > >(bash)\n%s\nEOF" % self.BODY, "cat f <<EOF > g\n%s\nEOF" % self.BODY,
+                        "tee <<EOF\n%s\nEOF" % self.BODY):   # tee with no file writes to the screen only; it is no note taking
+            with self.subTest(command=command[:40]):
+                self.assertTrue(self.denied(command), command)
+
+    def test_a_heredoc_with_no_end_word_keeps_its_whole_text(self):
+        self.assertTrue(self.denied("cat >> notes.md <<EOF\n%s\n" % self.BODY))
+        self.assertTrue(self.denied("cat >> notes.md <<EOF\n%s\nEOFX" % self.BODY))
+
+    def test_two_heredocs_one_for_cat_and_one_for_a_shell_are_denied(self):
+        command = "cat >> notes.md <<EOF\n%s\nEOF\nbash <<EOF\n%s\nEOF" % (self.BODY, self.BODY)
+        self.assertTrue(self.denied(command))
+        self.assertFalse(self.denied("cat >> a.md <<EOF\n%s\nEOF\ncat >> b.md <<EOF\n%s\nEOF" % (self.BODY, self.BODY)))
+
+    def test_a_command_after_the_heredoc_is_still_read(self):
+        command = "cat >> notes.md <<EOF\nplain text\nEOF\n%s python3 %s status" % (self.HELPER, OBSERVER)
+        self.assertTrue(self.denied(command))
+
+    def test_the_decision_of_the_hook_follows_the_same_rule(self):
+        note = "cat >> notes.md <<EOF\n%s\nEOF" % self.BODY
+        self.assertIsNone(pretool_guard.decide(json.dumps(call(note, agent=None))))
+        code = "bash <<EOF\n%s\nEOF" % self.BODY
+        out = pretool_guard.decide(json.dumps(call(code, agent=None)))
+        self.assertEqual(pretool_guard.TERMINAL_DENIAL, out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_dropping_a_body_changes_nothing_else_of_the_command(self):
+        command = "echo before\ncat >> notes.md <<EOF\nthe body\nEOF\necho after"
+        self.assertEqual("echo before\ncat >> notes.md <<EOF\nEOF\necho after", pretool_guard.without_text_heredocs(command))
+        self.assertEqual("echo no heredoc", pretool_guard.without_text_heredocs("echo no heredoc"))
+        code = "bash <<EOF\nthe code\nEOF"
+        self.assertEqual(code, pretool_guard.without_text_heredocs(code))
+        self.assertEqual("cat <<< here string", pretool_guard.without_text_heredocs("cat <<< here string"))
+
+
 if __name__ == "__main__":
     unittest.main()

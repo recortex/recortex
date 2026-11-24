@@ -157,12 +157,78 @@ def keys_decision(data):
     return None
 
 
+HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*(?:'([A-Za-z0-9_]+)'|\"([A-Za-z0-9_]+)\"|([A-Za-z0-9_]+))")
+# What may not receive a heredoc as plain text: a shell or an interpreter runs it, and so do the programs that start one.
+CODE_RECEIVERS = ("bash", "sh", "zsh", "dash", "ksh", "python", "python3", "perl", "node", "ruby", "env", "xargs", "sudo", "ssh",
+                  "tmux", "script", "eval", "exec")
+
+
+def plain_text_sink(line):
+    """True when the command of this line, which holds a heredoc, only writes the text down: `cat > f`, `cat >> f`, `tee` with
+    files, `git commit -F -` or a command with `--body-file -` that is no shell or interpreter. A pipe, a list, a substitution or
+    any other word that makes the text run keeps it: False."""
+    if "$(" in line or "`" in line or "<(" in line:
+        return False
+    plain = HEREDOC.sub(" ", line)
+    try:
+        lexer = shlex.shlex(plain, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        words = list(lexer)
+    except ValueError:
+        return False
+    if not words or any(set(word) <= set(";&|(){}<") for word in words if word not in (">", ">>")):
+        return False
+    first = os.path.basename(words[0])
+    if first in CODE_RECEIVERS:
+        return False
+    if first == "cat":
+        rest = words[1:]
+        return bool(rest) and len(rest) % 2 == 0 and all(
+            rest[i] in (">", ">>") and rest[i + 1] not in (">", ">>") for i in range(0, len(rest), 2))
+    if any(word in (">", ">>") for word in words):
+        return False
+    if first == "tee":
+        return bool([word for word in words[1:] if not word.startswith("-")])
+    if first == "git" and len(words) > 2 and words[1] == "commit":
+        return any(words[i] == "-F" and words[i + 1] == "-" for i in range(len(words) - 1)) or "--file=-" in words
+    return any(words[i] == "--body-file" and words[i + 1] == "-" for i in range(len(words) - 1)) or "--body-file=-" in words
+
+
+def without_text_heredocs(command):
+    """The command with the body of every heredoc dropped that goes to a plain text sink (plain_text_sink), so that words in
+    a note that is being written are not read as commands. The body of a heredoc for a shell or an interpreter is code and
+    stays; so does the whole rest of a command whose heredoc has no end word. The end word's line stays."""
+    lines = command.split("\n")
+    out, position = [], 0
+    while position < len(lines):
+        line = lines[position]
+        out.append(line)
+        position += 1
+        found = list(HEREDOC.finditer(line))
+        if not found:
+            continue
+        sink = plain_text_sink(line)
+        for match in found:
+            word = match.group(2) or match.group(3) or match.group(4)
+            strip = match.group(1) == "-"
+            end = next((n for n in range(position, len(lines)) if (lines[n].lstrip("\t") if strip else lines[n]) == word), None)
+            if end is None:
+                break   # no end word: the whole rest of the text stays
+            if not sink:
+                out.extend(lines[position:end])
+            position = end   # a text body is dropped; the end word's line is read next
+    return "\n".join(out)
+
+
 def terminal_decision(data):
     """The denial for a Bash call that runs observer.py, setup.py, publish.py or acts.py through a pseudo-terminal helper, a
-    program that hides where it runs, or a command that names CLAUDECODE; else None."""
+    program that hides where it runs, or a command that names CLAUDECODE; else None. The text of a heredoc that only writes a
+    note down is not part of what runs and is not read."""
     tool_input = data.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if data.get("tool_name") in ("Bash", "bash") and isinstance(command, str):
+        command = without_text_heredocs(command)
         for text in (command, QUOTES.sub("", command)):   # a quote or a backslash inside a name changes nothing
             if USERS_COMMAND.search(text):
                 if PTY_HELPER.search(text) or OBSERVER_UNDER_CLAUDE.search(text):
