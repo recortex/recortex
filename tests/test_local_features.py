@@ -258,6 +258,66 @@ class PaperTests(Features):
         self.assertIn("sections", self.ok("mind.py", "--paper"))
 
 
+class LiveServerTests(Features):
+    """10.1: the live dashboard serves a local record: the main page with the Record pane, and one topic's view at /read/<N>. The
+    only test of this round that starts a server: in this process, on a free loopback port, stopped with addCleanup first."""
+
+    MOUNT, VIEW, CHANGE = "a" * 32, "b" * 32, "c" * 32
+
+    def setUp(self):
+        super().setUp()
+        import http.client
+        import threading
+        import dashboard_action as action
+        import dashboard_server
+        self.http, self.dashboard_server = http.client, dashboard_server
+        os.environ["RECORTEX_TEST_SERVE"] = "1"
+        self.addCleanup(os.environ.pop, "RECORTEX_TEST_SERVE", None)
+        self.ok("index.py", "sync")
+        self.server = action.Server(("127.0.0.1", 0), action.Handler, self.MOUNT, self.VIEW, self.CHANGE)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+        self.addCleanup(self.stop)   # registered before the first start, so the server is stopped whatever an assertion does
+        self.server.register(self.project)
+        self.thread.start()
+        self.ident = dashboard_server.project_id(self.project)
+
+    def stop(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(5)
+        self.assertFalse(self.thread.is_alive())
+
+    def get(self, path, cookie=True):
+        port = self.server.server_port
+        headers = {"Host": "127.0.0.1:%d" % port}
+        if cookie:
+            headers["Cookie"] = "recortex_view=%s" % self.VIEW
+        connection = self.http.HTTPConnection("127.0.0.1", port, timeout=20)
+        try:
+            connection.request("GET", "/%s/p/%s%s" % (self.MOUNT, self.ident, path), headers=headers)
+            answer = connection.getresponse()
+            return answer.status, answer.read().decode("utf-8")
+        finally:
+            connection.close()
+
+    def test_the_main_page_holds_the_pane_and_a_topics_view_is_served_whole(self):
+        status, page = self.get("/snapshot")
+        self.assertEqual(200, status)
+        self.assertIn('id="record"', page)
+        self.assertNotRegex(page, r'<section class="view" id="read-[0-9]+"')
+        number = self.numbers["reader"]
+        self.assertRegex(page, r'href="/%s/p/%s/read/%d"' % (self.MOUNT, self.ident, number))
+        status, view = self.get("/read/%d" % number)
+        self.assertEqual(200, status)
+        self.assertIn('data-start="read-%d"' % number, view)
+        self.assertIn("strict quoting", view)
+        self.assertNotIn("file:", view)
+        self.assertNotIn(self.folder, view)
+        self.assertEqual(403, self.get("/read/%d" % number, cookie=False)[0])
+        self.assertEqual(404, self.get("/read/999")[0])
+        self.assertEqual(404, self.get("/read/0")[0])
+
+
 class PageTests(Features):
     """10.1: the dashboard's page of a local record."""
 
