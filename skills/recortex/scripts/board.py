@@ -38,6 +38,7 @@ import board_api  # noqa: E402
 import board_rules  # noqa: E402
 import index  # noqa: E402
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 
 STATUS_NAMES = board_api.STATUSES
 
@@ -478,6 +479,10 @@ def main(argv=None):
             p.add_argument("--dry-run", action="store_true", help="say what would be done; write nothing")
             p.add_argument("--yes", action="store_true", help="the user chose a board and agreed")
     args = parser.parse_args(argv)
+    off = record_store.off_line_of_project("board")
+    if off:
+        print(off)
+        return 0
     if args.command == "setup" and not args.dry_run and not args.yes:
         sys.exit("error: pass --dry-run to see the steps, or --yes once the user agreed")
     try:

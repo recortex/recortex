@@ -293,6 +293,13 @@ def offer(config, record, path):
     does nothing by itself: where the page can go is checked, and asked once more, with the place named, before anything is
     sent. The second option shows the path of the built file. `path` is that file."""
     import acts
+    if record_store.is_local(record):
+        body = {"id": "publish", "header": "Page", "form": "choice",
+                "question": "recortex: keep the page of this project as a file? Nothing is sent anywhere.",
+                "options": [{"label": "Save the page as a file", "description": "Nothing is sent. The file: %s" % path,
+                             "answer": "yes", "run": []},
+                            {"label": "Not now", "description": "The file stays where it is built.", "answer": "no", "run": []}]}
+        return acts.question_lines(body, bare_no=True)
     rows = read_receipts(record)
     shown = "Nothing is sent. The file: %s" % path
     if rows:

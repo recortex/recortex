@@ -254,7 +254,10 @@ def load(need_mode=False):
 
 
 def kept_here(repo):
-    """True when this machine's mode is review or autonomous (a mode that cannot be read, or none chosen, is off)."""
+    """True when this machine's mode is review or autonomous (a mode that cannot be read, or none chosen, is off). Never for a
+    local record: its versions are the body files of the topic's folder, and no branch is kept."""
+    if record_store.is_local(repo):
+        return False
     return writing.read(repo)["mode"] in ("review", "autonomous")
 
 
@@ -1364,6 +1367,10 @@ def main(argv=None):
     p.add_argument("--dry-run", action="store_true", help="run every check and say what would be written; write nothing")
     p.set_defaults(run=commit_command)
     args = parser.parse_args(argv)
+    off = record_store.off_line_of_project("versions-branch")
+    if off:
+        print(off)   # every command, the doctor's too: a local record keeps its versions in the topic's folder
+        return 0
     return args.run(args)
 
 

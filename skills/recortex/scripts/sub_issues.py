@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import board_api  # noqa: E402
 import index  # noqa: E402
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 
 BATCH = 40
 LIMIT = 60   # links one `apply` writes at most; the rest waits for the next run
@@ -170,6 +171,10 @@ def main(argv=None, result=None):
             p.add_argument("--limit", type=int, default=LIMIT, metavar="N",
                            help="links written at most in one run (default %d); run again for the rest" % LIMIT)
     args = parser.parse_args(argv)
+    off = record_store.off_line_of_project("sub-issues")
+    if off:
+        print(off)
+        return 0
     config = recortex.load_config()
     repo = recortex.resolve_repo(args.repo, config)
     hub = recortex.resolve_hub(args.hub, config)

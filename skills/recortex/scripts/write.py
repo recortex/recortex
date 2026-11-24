@@ -37,6 +37,7 @@ import index  # noqa: E402
 import lint_drafts  # noqa: E402
 import recortex  # noqa: E402
 import record_format  # noqa: E402
+import record_store  # noqa: E402
 import storage  # noqa: E402
 import writing  # noqa: E402
 import write_rules  # noqa: E402
@@ -645,7 +646,9 @@ def apply_command(args):
         steps = [] if done.get("body") else [recortex.show_command(
             ["issue", "edit", str(issue), "--repo", repo, "--body-file", os.path.join(args.dir, "draft.md")],
             "%d characters, only while the body is still base.md; a backup is kept first" % len(files["draft.md"]))]
-        if "version" not in done:
+        if "version" not in done and record_store.is_local(repo):
+            steps.append("no version commit: a local record keeps the earlier text of #%d in the topic's folder" % issue)
+        elif "version" not in done:
             steps.append("the version commit of #%d to the branch %s (versions.commit), when this machine keeps versions" % (
                 issue, versions_branch()))
         if "memory" not in done:

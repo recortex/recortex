@@ -148,6 +148,10 @@ def proposal_text(heading, changed, why, pull, base, text, moment, config=None):
 
 
 def propose_command(args):
+    off = record_store.off_line_of_project("pull-requests")
+    if off:
+        print(off)
+        return 0
     config, repo, hub, plan, allowed, mode = write.load(args)
     if mode != "review":
         sys.exit("write: a proposal on GitHub is for review mode; in autonomous mode the text is written without asking")
@@ -304,6 +308,10 @@ def evaluate(config, repo, hub, plan, allowed, db, state, cid, issue, author):
 
 
 def approvals_command(args):
+    off = record_store.off_line_of_project("pull-requests")
+    if off:
+        print(off)
+        return 0
     config, repo, hub, plan, allowed, mode = write.load(args)
     write.fresh(repo, hub)
     db = write.open_index(repo)

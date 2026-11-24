@@ -248,8 +248,11 @@ def setup_command(args):
             say("would run: " + records.show("create_label", LABEL[0], LABEL[1], LABEL[2], note="only when the label is missing"))
         say("would run: " + records.show("create_issue", title, [LABEL[0]], body_file=body_file,
                                          note="%d characters" % len(body)))
-        say("would link the new issue under hub #%d as a sub-issue, and write \"plans\": {\"%s\": <number>} into %s"
-            % (hub, profile, config.get("_path") or "the project file"))
+        if records.supports("sub-issues"):
+            say("would link the new issue under hub #%d as a sub-issue, and write \"plans\": {\"%s\": <number>} into %s"
+                % (hub, profile, config.get("_path") or "the project file"))
+        else:
+            say("would write \"plans\": {\"%s\": <number>} into %s" % (profile, config.get("_path") or "the project file"))
         say("dry run: nothing was written")
         return 0
     if records.supports("label-catalog"):

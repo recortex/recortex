@@ -708,6 +708,8 @@ class Publish(Act):
         import publish
         if args.values or ctx.repo is None:
             raise ActError("acts: publish takes no value; say another place with --to, --branch and --path.")
+        if record_store.is_local(ctx.repo):
+            raise ActError(record_store.OFF["pages"])
         record = ctx.repo
         rows = publish.read_receipts(record)
         newest = rows[-1] if rows else None

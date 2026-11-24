@@ -243,4 +243,4 @@ class LocalSandbox(unittest.TestCase):
         environment = dict(os.environ)
         environment.update(env or {})
         return subprocess.run([sys.executable, os.path.join(SCRIPTS, script)] + list(args), capture_output=True, text=True,
-                              env=environment, cwd=self.project, input=stdin, timeout=240)
+                              env=environment, cwd=self.project, input="" if stdin is None else stdin, timeout=240)   # never the test's own stdin

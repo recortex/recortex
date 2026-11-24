@@ -227,13 +227,24 @@ def project_visibility(root):
         return "unknown"
     seen = {}
     for repo in named[:REMOTE_LIMIT]:
-        answer = GithubStore(repo).visibility()
+        answer = GithubStore(repo).visibility(host=True)
         seen[repo] = {"false": "public", "true": "private"}.get(answer, "unknown")
         if seen[repo] == "public":
             return "public"
     if None not in repos and len(named) <= REMOTE_LIMIT and all(state == "private" for state in seen.values()):
         return "private"
     return "unknown"
+
+
+def off_line_of_project(feature):
+    """At the entry point of a script that only a GitHub record has: the fixed line of OFF for `feature` when the project's
+    configuration names a local record, else None (the script goes on as it always did). Reads the project file alone."""
+    try:
+        config = recortex.load_config()
+    except (OSError, ValueError, SystemExit):
+        return None
+    repo = config.get("repo") if isinstance(config, dict) else None
+    return OFF.get(feature) if is_local(repo) else None
 
 
 def words_for(repo):
@@ -430,10 +441,12 @@ class GithubStore:
         return bool(json.loads(recortex.gh(["issue", "view", str(number), "--repo", self.repo, "--json", "isPinned"]))
                     .get("isPinned"))
 
-    def visibility(self, timeout=30):
-        """"true" (private), "false" (public) or "" (not read)."""
+    def visibility(self, timeout=30, host=False):
+        """"true" (private), "false" (public) or "" (not read). With `host` the call names github.com, so that a GH_HOST of
+        another server cannot answer for a repository of github.com."""
+        args = ["api", "repos/%s" % self.repo] + (["--hostname", "github.com"] if host else []) + ["--jq", ".private"]
         try:
-            return recortex.gh(["api", "repos/%s" % self.repo, "--jq", ".private"], timeout=timeout).strip()
+            return recortex.gh(args, timeout=timeout).strip()
         except recortex.GhError:
             return ""
 

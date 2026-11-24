@@ -192,9 +192,11 @@ class InProjectStateTests(LocalActsBox):
         super().setUp()
         subprocess.run(["git", "-C", self.project, "init", "-q", "."], check=True)
         self.asked = []
+        self.real_visibility = record_store.GithubStore.visibility
         self.visibility = {"octo-org/octo-repo": "true", "octo-org/octo-pages": "false"}
 
-        def visibility(store, timeout=30):
+        def visibility(store, timeout=30, host=False):
+            self.assertTrue(host, "the check of a remote names github.com")
             self.asked.append(store.repo)
             return self.visibility.get(store.repo, "")
         for patch in (mock.patch.object(record_store.GithubStore, "visibility", visibility),
@@ -269,6 +271,22 @@ class InProjectStateTests(LocalActsBox):
         self.assertEqual("public", self.state())
         self.git("config", "remote.origin.pushurl", "https://evil.example/github.com/octo-org/octo-repo")
         self.assertEqual("unknown", self.state())   # a private url with a push url elsewhere is not known to be private
+
+    def test_the_host_is_pinned_so_that_another_server_cannot_answer_for_github(self):
+        self.remote("origin", self.PRIVATE_URL)
+        calls = []
+
+        def gh(args, **kwargs):
+            calls.append(list(args))
+            return "true\n"
+        with mock.patch.dict(os.environ, {"GH_HOST": "ghe.example"}), mock.patch.object(record_store.GithubStore, "visibility",
+                                                                                       self.real_visibility), \
+                mock.patch.object(record_store.recortex, "gh", gh):
+            self.assertEqual("private", self.state())
+            self.assertEqual([["api", "repos/octo-org/octo-repo", "--hostname", "github.com", "--jq", ".private"]], calls)
+            calls.clear()
+            record_store.GithubStore("octo-org/octo-repo").visibility()   # the other call sites keep today's argument list
+            self.assertEqual([["api", "repos/octo-org/octo-repo", "--jq", ".private"]], calls)
 
     def test_without_a_ready_gh_or_a_remote_nothing_is_asked_and_it_is_unknown(self):
         self.assertEqual("unknown", self.state())

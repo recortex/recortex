@@ -131,7 +131,7 @@ class RecordQuestionTests(Fresh):
         self.git("remote", "add", "origin", "git@github.com:octo-org/octo-repo.git")
         calls = []
 
-        def visibility(store, timeout=30):
+        def visibility(store, timeout=30, host=False):
             calls.append(store.repo)
             return answer[0]
         for state, value in (("private", "true"), ("public", "false"), ("unknown", "")):

@@ -64,6 +64,7 @@ REASONS = {
     "fetch-failed": "the picture could not be fetched",
     "timeout": "the pictures were not fetched in the time allowed",
     "offline": "the picture is not in the local copy, and this build did not fetch",
+    "local-record": "a local record keeps no pictures of its own",
 }
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -337,6 +338,9 @@ def load(wanted_items, record_repo, code_repo, fetch, budget_seconds=60):
     images maps each picture that may be embedded to its bytes, checked as above; reasons maps every other wanted
     item to a code of REASONS. With fetch False nothing is fetched and the cache alone answers. With it True,
     GitHub is asked only for what the cache lacks, within `budget_seconds` in all. Never raises for odd input."""
+    if record_store.is_local(record_repo):   # no repository to fetch from: every picture falls back as one that cannot be embedded
+        return {}, {tuple(item): "local-record" for item in wanted_items if isinstance(item, (list, tuple)) and len(item) == 3
+                    and all(isinstance(part, str) for part in item)}
     images, reasons, total = {}, {}, 0
     deadline = time.monotonic() + max(0.0, float(budget_seconds) if isinstance(budget_seconds, (int, float)) else 0.0)
     resolved = {}
