@@ -1864,7 +1864,7 @@ class TextPageTests(WritingBox):
         item["edits"] = [{"at": "2026-12-04T10:00:00Z", "by": "hubot"}, {"at": item["created_at"], "by": "octocat"}]
         item["last_edited_at"] = item["updated_at"] = "2026-12-04T10:00:00Z"
         self.save(data)
-        said = self.said(self.page())
+        said = self.said(ts.outside_reader(self.page()))   # the reader shows what is not told, shut under its mark
         self.assertNotIn("OUTSIDER", said)
         self.assertNotIn("You changed it by hand after that.", said)   # the body is not told, so it is not judged
         self.assertIn("The text of this thread is not shown here", said)

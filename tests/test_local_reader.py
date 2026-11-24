@@ -186,6 +186,22 @@ class ViewTests(Reader):
         return page[start:page.index("</section>", start) + 10]
 
 
+    def test_a_text_change_shows_no_body_hash_and_no_version_commit(self):
+        number = self.numbers["reader"]
+        commit, digest = "cd4b2c3972b0365122dad15e3bb07650a6cd5724", "0123456789abcdef" * 4
+        self.store.post_entry(number, body="<!-- ghim:event type=text at=2026-11-24T10:00:00Z -->\n### Text: 2026-11-24 10:00 UTC - the reader's "
+                              "text\n\n**In plain words, we changed the text to say that:** the text of the reader is shorter\n\n"
+                              "**Section:** Changed\n\n**What changed:** a sentence\n\n**Why:** the author asked\n\n**Approved:** in the chat\n\n"
+                              "**Kept from the author:** nothing\n\n**Body:** before sha256 `none`; after sha256 `%s`\n\n"
+                              "**Version:** `%s`\n" % (digest, commit))
+        page = self.page()
+        view = self.view(page, number)
+        self.assertIn("the text of the reader is shorter", view)
+        self.assertNotIn(commit, page)
+        self.assertNotIn(digest, page)
+        self.assertNotRegex(page, r"[0-9a-f]{40}")
+
+
 class NothingElseTests(Reader):
     def test_no_file_address_no_path_and_no_file_name_is_in_the_page(self):
         self.damage("changed-entry")

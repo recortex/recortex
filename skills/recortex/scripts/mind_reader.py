@@ -20,6 +20,7 @@ UNREAD = "recortex: %d files in the record folder were not read (a sync tool's c
 TIME = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}:[0-9]{2})")
 KIND = re.compile(r"[a-z]{1,20}")
 MARKER = re.compile(r"\A[ \t]*<!--[^\n]*-->[ \t]*\n")   # the event marker of a memory is not text of the reader
+HIDDEN = re.compile(r"(?m)^\*\*(?:Body|Version):\*\*.*\n?")   # a text change's body hash and version commit: the page never draws them
 
 
 def stamp_text(value):
@@ -128,7 +129,7 @@ class ReaderMixin:
             number = topic["n"]
             item = {"id": entry["id"], "at": stamp_text(entry["created_at"]), "mark": mark,
                     "kind": kind if isinstance(kind, str) and KIND.fullmatch(kind) else None,
-                    "doc": self.doc(MARKER.sub("", entry["body"] or ""), set(), cap=CAP_TEXT),
+                    "doc": self.doc(self.entry_text(entry["body"], kind), set(), cap=CAP_TEXT),
                     "note": bool(not mark and entry["id"] in edited and not local)}
             if local:
                 item["address"] = "#%d/%d" % (number, entry["id"])
@@ -139,6 +140,13 @@ class ReaderMixin:
         else:
             topic["edits"] = [stamp_text(at) for (at,) in self.db.execute(
                 "SELECT at FROM timeline WHERE issue = ? AND event = 'edited' ORDER BY at DESC, seq DESC LIMIT 50", (topic["n"],))]
+
+    @staticmethod
+    def entry_text(text, kind):
+        """An entry's text as the reader shows it: without its event marker, and for a text change without the hash of the body and the
+        commit of the version, which the page draws nowhere."""
+        text = MARKER.sub("", text or "")
+        return HIDDEN.sub("", text) if kind == "text" else text
 
     def local_versions(self, number):
         """The earlier texts of a local topic, newest first, each with its mark: the body files of its folder, read through the
