@@ -23,6 +23,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import record_format  # noqa: E402
 
 
@@ -43,7 +44,8 @@ class Lookup:
 
     def __init__(self, repo, number, online, db=None):
         self.repo, self.number, self.online, self.db = repo, number, online, db
-        self.source = "GitHub" if online else "the local index"
+        self.store = record_store.for_repo(repo) if online else None
+        self.source = self.store.words["name"] if online else "the local index"
         trusted = recortex.trusted_repos()
         self.trusted = repo.lower() in trusted
         self.allowed = recortex.allowed_users(repo, trusted) if self.trusted else set()
@@ -159,9 +161,9 @@ class Lookup:
                     "issue": row["issue"], "author": row["author"] or "",
                     "edited": self._edited(cid, row["created_at"], row["updated_at"])}
         try:
-            data = json.loads(recortex.gh(["api", "repos/%s/issues/comments/%d" % (self.repo, cid)]))
+            data = self.store.read_entry(cid)
         except recortex.GhError as error:
-            if recortex.not_found(error):
+            if self.store.is_missing(error):
                 return None
             raise
         except ValueError:
@@ -192,7 +194,7 @@ class Lookup:
             count = self.db.execute("SELECT COUNT(*) AS n FROM steps WHERE comment = ?", (cid,)).fetchone()["n"]
         else:
             try:
-                data = json.loads(recortex.gh(["api", "repos/%s/issues/comments/%d" % (self.repo, cid)]))
+                data = self.store.read_entry(cid)
             except ValueError:
                 raise recortex.GhError("GitHub's answer for comment %d could not be read" % cid)
             count = len(record_format.steps_list((data or {}).get("body") or "")) if isinstance(data, dict) else 0
