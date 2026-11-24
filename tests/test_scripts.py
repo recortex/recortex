@@ -8827,7 +8827,7 @@ class MindModelTests(MindSandbox):
                                                   model["open"]["holds"]))
         self.assertEqual([9100], [p["id"] for p in model["pauses"]])
         text = self.page()
-        self.assertNotIn("MARK-LEFT", text)
+        self.assertNotIn("MARK-LEFT", outside_reader(text))
         self.assertIn("The last pause is not told here", text)
         self.assertNotIn("No pause has been recorded yet", text)
         self.ready()  # the sync chooses the pause again, for the list as it is now
@@ -8929,7 +8929,7 @@ class MindModelTests(MindSandbox):
         text = self.page()
         self.assertIn("Opened by <span class=\"people\">an account</span> on April 5, 2026; still open.", text)
         for mark in ("MARK-LOGIN", "MARK-TITLE", "MARK-LABEL"):
-            self.assertNotIn(mark, text)
+            self.assertNotIn(mark, outside_reader(text))
 
     def test_a_large_table_many_words_and_many_threads_are_cut_at_their_caps(self):
         """The three caps that no test holds."""
@@ -9072,6 +9072,12 @@ class PageReader(__import__("html.parser").parser.HTMLParser):
 
     def handle_pi(self, data):
         self.declarations.append(data)
+
+
+def outside_reader(text):
+    """The page without the reader's pane and views (1.9.0). The reader shows what is not told, shut under a mark that says why;
+    every other view of the page must not, and the assertions about what the page leaves out look at the page without the reader."""
+    return re.sub(r'<section class="view" id="record".*?</main>', "</main>", text, flags=re.S)
 
 
 def page_problems(text, marker=None):
@@ -9273,7 +9279,7 @@ class MindPageTests(MindSandbox):
         self.assertIn("https://github.com/octo-org/octo-repo/blob/9c3e1ab/octo_repo/reader.py#L41-L59", hrefs)
         self.assertIn("https://github.com/octo-org/octo-repo/pull/2", hrefs)
         self.assertIn("https://github.com/octo-org/octo-repo/blob/4f2a9c1/bench/out/run-0304/read-time.png", hrefs)
-        words = " ".join("".join(page.texts).split())
+        words = " ".join("".join(PageReader(outside_reader(text)).texts).split())
         for said in ("On March 6, remembering an open quote from one line to the next broke files with mixed line "
                      "endings: 4 of 6 failed, so on March 7 we decided to rewrite the reader",
                      "We last paused on March 4.", "Do not tag 0.3.0 until the project lead says so.",
@@ -9325,10 +9331,11 @@ class MindPageTests(MindSandbox):
         self.assertEqual([], page_problems(text))
         page = PageReader(text)
         views = [dict(attrs)["id"] for tag, attrs in page.elements if tag == "section" and "view" in dict(attrs).get("class", "")]
-        self.assertEqual(["now", "project-map", "history", "text", "threads", "settled", "lessons", "open", "todo", "map", "ask", "usage"], views)
+        self.assertEqual(["now", "project-map", "history", "text", "threads", "settled", "lessons", "open", "todo", "map", "ask", "usage",
+                          "record"], [v for v in views if not v.startswith("read-")])   # the reader's pane, then a view for each topic
         navs = [dict(attrs)["data-nav"] for tag, attrs in page.elements if "data-nav" in dict(attrs)]
-        self.assertEqual(["now", "project-map", "work", "history", "outputs"], navs)
-        words = self.words_of(text)
+        self.assertEqual(["now", "project-map", "work", "history", "record", "outputs"], navs)
+        words = self.words_of(outside_reader(text))
         for said in ("Outputs", "The report", "How to read this page", "Current understanding",
                      "The record keeps one current version of each part; it is not marked draft or final.",
                      "What we hold today: the decisions, findings and corrections that nothing recorded later replaces "
@@ -9382,7 +9389,7 @@ class MindPageTests(MindSandbox):
         self.assertIn('<code class="tex">\\begin{pmatrix} 1 \\end{pmatrix}</code>', text)
         self.assertIn('<pre class="tex">\\href{x}{y}</pre>', text)
         self.assertIn("$5 and $10", self.words_of(text))
-        self.assertEqual(1, self.words_of(text).count("A formula the page cannot draw is shown as it was written."))
+        self.assertEqual(1, self.words_of(outside_reader(text)).count("A formula the page cannot draw is shown as it was written."))
 
     def test_a_pause_is_a_divider_with_what_came_next_and_no_state(self):
         text = self.ms_page()
@@ -10180,7 +10187,7 @@ class MindPageTests(MindSandbox):
                       'rel="noopener noreferrer">Open it on GitHub</a>', text)
         self.assertNotIn("Every memory of the record by your allowed accounts is told here.", words)
         for absent in ("MARK-OTHER", "make the lenient mode warn", "which stops at a stray quote and names"):
-            self.assertNotIn(absent, text)  # 9107's plain line and its fold, and ghost's idea
+            self.assertNotIn(absent, outside_reader(text))  # 9107's plain line and its fold, and ghost's idea
         self.assertIn("” to mean octo-repo's rule that a quote character inside an unquoted field", words)
         self.assertEqual([], page_problems(text))
 
@@ -10222,7 +10229,7 @@ class MindPageTests(MindSandbox):
         self.assertEqual([], page_problems(text))
         words = " ".join("".join(PageReader(text).texts).split())
         self.assertIn("later that changedan earlier memory that is not told here", words)
-        self.assertNotIn("MARK-GONE", text)
+        self.assertNotIn("MARK-GONE", outside_reader(text))
         self.assertNotIn('"#m-9600"', text)
         mind, model = self.mind(), self.model()
         told = {m["id"]: m for m in model["memories"]}

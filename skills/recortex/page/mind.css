@@ -788,3 +788,15 @@ html:not(.js) .impact-copy{display:none}
   .history-content .meta{margin:0}
   .history-filters .history-controls{grid-template-columns:repeat(3,minmax(0,1fr))}
 }
+/* the reader: one view for each topic, with its text, its earlier texts and its entries (1.9.0) */
+.recordlist{width:100%;border-collapse:collapse;margin:14px 0}.recordlist th,.recordlist td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--rule);vertical-align:top;font-size:15px}
+.recordlist th{font-size:12.5px;color:var(--quiet);font-weight:600}.recordlist .chip{margin-left:4px}
+.trail{font-size:13.5px;color:var(--quiet);margin:0 0 4px}.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 14px}
+.readbody{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:28px;align-items:start}.readcontents{order:2;position:sticky;top:16px;display:flex;flex-direction:column;gap:6px;font-size:14px;border-left:2px solid var(--rule);padding-left:12px}
+.readparts{order:1;min-width:0}.readpart{margin:0 0 30px}.readpart h3{margin:0 0 10px}.readtext{max-width:70ch}
+.readentry{border:1px solid var(--rule);border-radius:10px;padding:8px 14px;margin:10px 0}.readentry summary,.readfold summary,.readold summary{cursor:pointer;font-weight:600;font-size:14.5px}
+.readentry.folded,.readfold{border:1px dashed var(--rule);border-radius:10px;padding:8px 14px;margin:10px 0}
+.markword,.markwhy{color:var(--wrong,#b3261e);font-weight:600;font-size:13.5px}.markwhy{margin:10px 0 0}
+.kindword{color:var(--thread)}.entryend{margin:10px 0 0;font-size:13.5px;color:var(--quiet)}.entryaddress{user-select:all}
+.readold{margin:8px 0;padding:4px 0}
+@media (max-width:860px){.readbody{grid-template-columns:minmax(0,1fr)}.readcontents{order:1;position:static;flex-direction:row;flex-wrap:wrap;border-left:0;padding-left:0}}

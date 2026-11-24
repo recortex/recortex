@@ -61,6 +61,7 @@ POSTS = ("/api/preview", "/api/commit", "/api/reconcile", "/api/refresh", "/api/
          "/api/suggestions/feedback", "/api/impact/preview", "/api/impact/commit", "/api/impact/resume",
          "/api/impact/apply", "/api/stop")   # every address that changes anything: each needs the change key
 PROJECT_PATH = re.compile(r"/p/([0-9a-f]{16})(/.*)?")
+READ_PATH = re.compile(r"/read/([1-9][0-9]{0,8})")   # one topic's view of the reader (mind_reader.py); the number is checked here
 STOPPED = {"stopped": "The live dashboard was stopped.",
            "idle": "The live dashboard stopped 24 hours after the last session.",
            "interrupted": "The live dashboard was interrupted."}
@@ -542,7 +543,9 @@ class Actions:
                 raise ActionError("suggestion_missing", 404)
         return result
 
-    def project_model(self):
+    def project_model(self, reader=None):
+        """The model of the page. The live dashboard's main page holds the reader's list of topics alone ("rows"); one topic's view
+        is built when it is asked for (`reader` is its number)."""
         import mind_model
         allowed = self.authority()
         db = index.connect(self.repo, create=False)
@@ -552,9 +555,24 @@ class Actions:
             if not index.mind_ready(db):
                 raise ActionError("index_unavailable")
             return mind_model.build(db, self.repo, allowed, tasks.now().date(),
-                                     recortex.shipped_profiles(self.config.get("profiles")), self.config)
+                                     recortex.shipped_profiles(self.config.get("profiles")), self.config, reader)
         finally:
             db.close()
+
+    def read_page(self, base, interactive, number):
+        """The page of one topic of the reader, in the live dashboard's shell, built from the index alone. Raises
+        ActionError("not_found", 404) for a topic the index does not hold."""
+        import mind
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+            raise ActionError("not_found", 404)
+        model = self.project_model(number)
+        if not any(isinstance(t, dict) and t.get("n") == number and "entries" in t for t in (model.get("reader") or {}).get("topics", [])):
+            raise ActionError("not_found", 404)
+        model["interactive_actions"] = bool(interactive)
+        model["interactive_base"] = base
+        model["live"] = True
+        model["usage"], model["acts"] = None, []
+        return mind.render(model, {})
 
     def snapshot(self, base="", interactive=True, live=False):
         """Render authenticated project context; never change the standalone export. `interactive` False is the view-only page
@@ -565,7 +583,7 @@ class Actions:
         if self.impact_dirty:
             self.sync()
             self.impact_dirty = False
-        model = self.project_model()
+        model = self.project_model("rows" if live else "all")
         if self.map_edited:
             model["project_map"] = self.map_state()["state"]
         model["interactive_actions"] = bool(interactive)
@@ -623,7 +641,7 @@ def authorized(method, path, headers, view, change):
     POST."""
     if not origin_ok(headers):
         return None
-    if not (path.startswith("/api/") or path == "/snapshot"):
+    if not (path.startswith("/api/") or path == "/snapshot" or path.startswith("/read/")):
         return "open"
     level = None
     for name, key, rank in (("recortex_change", change, "change"), ("recortex_view", view, "view")):
@@ -796,6 +814,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                     policy="frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
             if method == "GET" and path == "/api/changed":
                 return self.respond(200, canonical({"mark": self.server.mark_of(project)}))
+            if method == "GET" and path.startswith("/read/"):
+                found = READ_PATH.fullmatch(path)
+                if found is None:
+                    raise ActionError("not_found", 404)
+                return self.respond(200, self.server.read_of(project, level, int(found.group(1))), "text/html; charset=utf-8",
+                                    policy="frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
             pages = {"/map-editor": "dashboard_map.html", "/suggestions": "dashboard_suggestions.html",
                      "/impact-review": "dashboard_impact.html"}
             if method == "GET" and path in pages:
@@ -914,6 +938,8 @@ class Server(http.server.HTTPServer):
                 self.actions.pop(ident, None)
                 self.pages.pop((ident, "view"), None)
                 self.pages.pop((ident, "change"), None)
+                for stale in [k for k in self.pages if len(k) == 3 and k[0] == ident]:   # the views of its topics
+                    self.pages.pop(stale, None)
         made = Actions()
         self.actions[ident] = made
         return made
@@ -947,6 +973,19 @@ class Server(http.server.HTTPServer):
             except OSError:
                 seen.append([0, 0])
         return hashlib.sha256(canonical(seen).encode("utf-8")).hexdigest()[:16]
+
+    def read_of(self, ident, level, number):
+        """One topic's page for a level, built while the mark of the record and the allowed accounts are the same."""
+        key = (self.mark_of(ident), tuple(sorted(recortex.allowed_users(self.actions_now.repo))))
+        kept = self.pages.get((ident, level, number))
+        if kept is not None and kept[0] == key:
+            return kept[1]
+        page = self.actions_now.read_page("/%s/p/%s" % (self.mount, ident), level == "change", number)
+        self.pages[(ident, level, number)] = (key, page)
+        if len(self.pages) > 200:   # a page for every topic asked for is kept, up to a bound
+            for old in [k for k in self.pages if len(k) == 3][:100]:
+                self.pages.pop(old, None)
+        return page
 
     def snapshot_of(self, ident, level):
         """The page of a project for a level: built once for each mark, and served again while the mark is the same. The view-only

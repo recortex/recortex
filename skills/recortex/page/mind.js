@@ -24,7 +24,7 @@
       if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
     });
     $$('[data-nav]').forEach(function (a) {
-      var on = a.getAttribute('data-nav') === (AREAS[id] || id);
+      var on = a.getAttribute('data-nav') === (AREAS[id] || (/^read-[0-9]+$/.test(id) ? 'record' : id));
       a.classList.toggle('on', on);
       if (on) { a.setAttribute('aria-current', 'page'); } else { a.removeAttribute('aria-current'); }
     });
@@ -224,7 +224,8 @@
     var was = root.getAttribute('data-view');
     var previousStory = was === 'threads' && $('.thread.on');
     if (was && !previousStory) { kept[was] = window.scrollY; }
-    var h = location.hash.slice(1) || 'now';
+    var start = root.getAttribute('data-start') || '';   // the live server's route for one topic opens that topic's view
+    var h = location.hash.slice(1) || (/^read-[0-9]+$/.test(start) ? start : 'now');
     if (/^m-[0-9]+$/.test(h)) {
       if (!views.some(function (v) { return v.classList.contains('on'); })) { show('now'); }
       openMem(h.slice(2), true);
@@ -379,7 +380,9 @@
     if (cite) {
       event.preventDefault();
       var issue = cite.getAttribute('data-issue') || '';
-      if (ISSUE.test(issue)) { openBox(document.getElementById(issue), 'An issue on GitHub'); }
+      var reading = ISSUE.test(issue) ? document.getElementById('read-' + issue.slice(6)) : null;
+      if (reading && reading.classList.contains('view')) { location.hash = '#read-' + issue.slice(6); }   // the whole topic is in the record
+      else if (ISSUE.test(issue)) { openBox(document.getElementById(issue), 'An issue on GitHub'); }
       return;
     }
     var el = event.target.closest && event.target.closest('[data-m]');

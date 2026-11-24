@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import decision_impact  # noqa: E402
 import index  # noqa: E402
 import mind_plan  # noqa: E402
+import mind_reader  # noqa: E402
 import mind_sheet  # noqa: E402
 import mind_text  # noqa: E402
 import project_map  # noqa: E402
@@ -45,6 +46,7 @@ CAP_SECTION = 6000        # characters of a section of a topic body in a field o
 CAP_TEXT = 40000          # characters of a section of a topic body in the view of the text
 CAP_TABLE_ROWS = 40
 CAP_TABLE_COLUMNS = 12
+CAP_READER = 2000000      # characters of the reader's views in the saved page; the newest topics keep theirs, the others a few lines
 CAP_FIRST_LINES = 600     # characters of a cited issue's first lines
 CAP_LINE = 300            # characters of a name, a title, a plain line or a pause line
 
@@ -305,28 +307,32 @@ class Words:
 
 # ---------------------------------------------------------------- the build
 
-def build(db, repo, allowed, today, profiles=(), config=None):
+def build(db, repo, allowed, today, profiles=(), config=None, reader=None):
     """The model of the mind of `repo` (a dict that json.dumps can print), read from the open index `db` in one
     transaction that is rolled back. `allowed` is recortex.allowed_users(repo) and must not be empty; `today` is the
     day of the build (a datetime.date), from which ages are counted; `profiles` is recortex.shipped_profiles of the
     project file's profiles, which give the deliverable's sections. `config` is the project file as the hooks parse it:
-    with it a project that has a plan gets the plan in the model (mind_plan.py); without it the model is what it was."""
+    with it a project that has a plan gets the plan in the model (mind_plan.py); without it the model is what it was. `reader` is
+    what the model holds for the reader of the page (mind_reader.py): None (nothing: the model of the queries), "all" (the views, up
+    to CAP_READER: the saved page), "rows" (the list of topics alone: the live dashboard's main page) or a topic's number (that
+    view only)."""
     if not allowed:
         raise ValueError("the mind is built only for a repository in the user's trusted list")
     began = not db.in_transaction
     if began:
         db.execute("BEGIN")
     try:
-        return Build(db, repo, {name.lower() for name in allowed}, today, list(profiles), config).model()
+        return Build(db, repo, {name.lower() for name in allowed}, today, list(profiles), config, reader).model()
     finally:
         if began and db.in_transaction:
             db.execute("ROLLBACK")
 
 
-class Build(mind_plan.PlanMixin, mind_sheet.SheetMixin):
-    def __init__(self, db, repo, allowed, today, profiles=(), config=None):
+class Build(mind_plan.PlanMixin, mind_sheet.SheetMixin, mind_reader.ReaderMixin):
+    def __init__(self, db, repo, allowed, today, profiles=(), config=None, reader=None):
         self.db, self.repo, self.allowed, self.today, self.profiles = db, repo, allowed, today, list(profiles)
         self.config = config
+        self.reader = reader
         self.cited, self.first_lines = {}, []
 
     def ok(self, author):
@@ -1153,6 +1159,7 @@ class Build(mind_plan.PlanMixin, mind_sheet.SheetMixin):
             "counts": {"memories": len(self.order), "threads": len(self.threads), "words": len(words),
                        "open": sum(1 for m in self.order if m["css"] == "open")},
             "not_told": not_told, "tasks": tasks,
+            "reader": self.reader_model(self.reader, CAP_READER) if self.reader else None,
         }
 
     def tasks_model(self):

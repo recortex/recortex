@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import index  # noqa: E402
 import mind_figures  # noqa: E402
 import mind_model  # noqa: E402
+import mind_reader  # noqa: E402
 import mind_paper  # noqa: E402
 import mind_plan  # noqa: E402
 import mind_versions  # noqa: E402
@@ -495,6 +496,8 @@ class Page:
         self.live = model.get("live") is True   # the live dashboard's page: a view of the record that follows it
         self.action_root = base + "/actions" if model.get("interactive_actions") is True and isinstance(base, str) \
             and (base == "" or re.fullmatch(r"/[0-9a-f]{32}(?:/p/[0-9a-f]{16})?", base)) else None
+        # the live server's own address of this project, where it serves a topic's view (/read/<N>): never built from record text
+        self.live_base = base if self.live and isinstance(base, str) and re.fullmatch(r"/[0-9a-f]{32}/p/[0-9a-f]{16}", base) else None
         self.m = {integer(m.get("id")): m for m in model.get("memories", []) if integer(m.get("id"))}
         self.threads = {integer(t.get("n")): t for t in model.get("threads", [])}
         self.words = {integer(w.get("n")): w for w in model.get("words", []) if integer(w.get("n"))}
@@ -991,7 +994,8 @@ class Page:
                      ". Posted to the record: ", self.history_stamp(memory.get("posted")), ".",
                      " Reconstructed later." if memory.get("reconstructed") else ""),
                    E("a", {"href": address}, "Open the original comment on GitHub")
-                   if address else ""))
+                   if address else "",
+                   " " if address else "", self.record_link(integer(memory.get("issue")), integer(memory.get("id")))))
 
     # ------------------------------------------------------------ the views
 
@@ -3026,8 +3030,8 @@ class Page:
                              E("p", {"class": "quiet"}, "Opened by ", E("span", {"class": "people"}, who),
                                " on %s; %s." % (text_of(issue.get("opened")), state)),
                              E("div", {"class": "why"}, self.blocks(issue.get("first"))) if issue.get("first") else "",
-                             E("p", None, E("a", {"href": address},
-                                            "Open the whole issue on GitHub")) if address else ""))
+                             E("p", None, E("a", {"href": address}, "Open the whole issue on GitHub") if address else "",
+                               " " if address else "", self.record_link(n))))
         return E("div", {"id": "issues", "hidden": "hidden"}, *entries)
 
     def tree_topic(self, entry):
@@ -3451,6 +3455,165 @@ class Page:
             parts += [E("h3", None, "What the observer did in the last 7 days"), E("ul", {"class": "plainlist"}, *acts)]
         return self.view("todo", "What is there to do?", TODO_LEDE, *parts)
 
+    # ------------------------------------------------------------ the reader (1.9.0)
+
+    def reader_data(self):
+        data = self.model.get("reader")
+        return data if isinstance(data, dict) and isinstance(data.get("topics"), list) else None
+
+    def read_href(self, n, entry=None):
+        """Where a topic's view (or one of its entries) is read: inside the page, or at the live server's own route. Never a file
+        address and never a path."""
+        if self.live_base and not self.reader_here(n):
+            return Href("%s/read/%d%s" % (self.live_base, n, "#read-%d-e%d" % (n, entry) if entry else ""))
+        return anchor("read-%d-e%d" % (n, entry) if entry else "read-%d" % n)
+
+    def reader_here(self, n):
+        """True when the view of topic `n` is on this page."""
+        data = self.reader_data()
+        return bool(data) and data.get("mode") == "views" and any(
+            integer(t.get("n")) == n and (t.get("entries") is not None and "entries" in t) for t in data["topics"])
+
+    def reader_has(self, n):
+        data = self.reader_data()
+        return bool(data) and any(integer(t.get("n")) == n for t in data["topics"])
+
+    def record_link(self, n, entry=None, text="Read it in the record"):
+        """The link that opens a topic (or an entry) in the reader, or "" when the record the page tells has no such topic."""
+        if not self.reader_has(n):
+            return ""
+        return E("a", {"href": self.read_href(n, entry)}, text)
+
+    def record_home(self):
+        return Href(self.live_base + "/snapshot#record") if self.live_base else anchor("record")
+
+    def kind_words(self, kind):
+        return "a note" if kind in (None, "other") or not isinstance(kind, str) else kind.capitalize() if kind != "text" else "A text change"
+
+    def record_view(self):
+        """The Record pane: one row for each topic (the hub first), with the counts and the notices above the list."""
+        data = self.reader_data()
+        if not data:
+            return ""
+        topics = sorted((t for t in data["topics"] if isinstance(t, dict) and integer(t.get("n"))),
+                        key=lambda t: (not t.get("hub"), integer(t.get("n"))))
+        counts = data.get("counts") if isinstance(data.get("counts"), dict) else {}
+        folded = integer(counts.get("folded"))
+        line = plural(len(topics), "1 topic", "%d topics") + ", " + plural(integer(counts.get("entries")), "1 entry", "%d entries")
+        if folded:
+            line += ", %d shut under a mark" % folded
+        children = [E("p", {"class": "quiet"}, line + ".")]
+        if folded or any(t.get("body_mark") for t in topics):
+            children.append(E("p", {"class": "quiet"}, "An entry or a text that recortex does not count as your words is shut under a "
+                                                         "mark that says why. Open it to read it."))
+        if data.get("local") and integer(data.get("unread")):
+            children.append(E("p", {"class": "quiet"}, mind_reader.UNREAD % integer(data.get("unread"))))
+        rows = []
+        for topic in topics:
+            n = integer(topic.get("n"))
+            cell = [E("a", {"href": self.read_href(n)}, text_of(topic.get("title")) or "Topic %d" % n)]
+            labels = [E("span", {"class": "chip"}, text_of(label)) for label in topic.get("labels", [])[:6] if text_of(label)]
+            state = "closed on %s" % text_of(topic.get("closed")) if topic.get("state") == "closed" and topic.get("closed") else \
+                text_of(topic.get("state")) or "open"
+            entries = plural(integer(topic.get("count")), "1 entry", "%d entries")
+            if integer(topic.get("folded")):
+                entries += ", %d folded" % integer(topic.get("folded"))
+            rows.append(E("tr", None, E("td", None, "#%d" % n), E("td", None, J(*cell), " ", J(*labels)), E("td", None, state),
+                          E("td", None, entries), E("td", None, text_of(topic.get("updated")))))
+        table = E("table", {"class": "recordlist"},
+                  E("thead", None, E("tr", None, *[E("th", {"scope": "col"}, name) for name in ("Topic", "Title", "State", "Entries",
+                                                                                                "Last change")])),
+                  E("tbody", None, *rows))
+        return self.view("record", "Record", "Every topic of the record, whole: its text, the earlier versions of its text, and "
+                                              "every entry in the order it was written.", *children, table)
+
+    def read_views(self):
+        """The reading views the page holds: every topic's (the saved page), the one that was asked for (the live route), or none."""
+        data = self.reader_data()
+        if not data or data.get("mode") != "views":
+            return ""
+        return J(*[self.read_view(t) for t in data["topics"] if isinstance(t, dict) and integer(t.get("n"))
+                   and (t.get("entries") is not None and "entries" in t)])
+
+    def read_view(self, topic):
+        n = integer(topic.get("n"))
+        ident = "read-%d" % n
+        local = bool((self.reader_data() or {}).get("local"))
+        title = text_of(topic.get("title")) or "Topic %d" % n
+        state = "Closed on %s" % text_of(topic.get("closed")) if topic.get("state") == "closed" and topic.get("closed") else "Open"
+        chips = [E("span", {"class": "chip"}, state)]
+        chips += [E("span", {"class": "chip"}, text_of(label)) for label in topic.get("labels", [])[:12] if text_of(label)]
+        chips.append(E("span", {"class": "chip"}, "Last change " + text_of(topic.get("updated"))))
+        if self.live:
+            chips.append(E("span", {"class": "chip s-open"}, "Live"))
+        address = None if local else github_url("issue", self.repo, n)
+        chips.append(E("span", {"class": "chip"}, "Cite it as #%d" % n) if local else
+                     E("a", {"class": "chip", "href": address}, "Open the whole issue on GitHub") if address else "")
+        trail = E("p", {"class": "trail"}, E("a", {"href": self.record_home()}, "Record"), " / #%d" % n)
+        if topic.get("capped"):
+            return E("section", {"class": "view", "id": ident, "aria-labelledby": ident + "-h"}, trail,
+                     E("h2", {"id": ident + "-h"}, title), E("p", {"class": "chips"}, *chips),
+                     E("div", {"class": "readtext"}, self.blocks(topic.get("first"))),
+                     E("p", {"class": "quiet"}, "The full text of this topic is in the live dashboard."))
+        parts, contents = [], []
+        # the current text
+        body_mark = text_of(topic.get("body_mark"))
+        text = self.blocks(topic.get("body"), cut_to=address, issue=n) if topic.get("body") else E("p", {"class": "quiet"},
+                                                                                                 "This topic has no text yet.")
+        if body_mark:
+            text = E("details", {"class": "readfold"}, E("summary", None, E("span", {"class": "markword"}, body_mark),
+                                                         " Shut. Open it to read it."), E("div", {"class": "readtext"}, text))
+        else:
+            text = E("div", {"class": "readtext"}, text)
+        parts.append(E("section", {"class": "readpart", "id": ident + "-text"}, E("h3", None, "Current text"), text))
+        contents.append((ident + "-text", "Current text"))
+        # the earlier versions of the text
+        versions = [v for v in topic.get("versions", []) if isinstance(v, dict)] if isinstance(topic.get("versions"), list) else []
+        edits = [text_of(at) for at in topic.get("edits", [])] if isinstance(topic.get("edits"), list) else []
+        past = []
+        for version in versions:
+            mark = text_of(version.get("mark"))
+            past.append(E("details", {"class": "readfold" if mark else "readold"},
+                          E("summary", None, text_of(version.get("at")), " ", E("span", {"class": "markword"}, mark) if mark else ""),
+                          E("div", {"class": "readtext"}, self.blocks(version.get("doc")))))
+        if not versions and not local and edits:
+            past.append(E("p", None, "The text was edited on " + ", ".join(edits[:12]) + ("." if len(edits) <= 12 else " and later.")))
+            past.append(E("p", {"class": "quiet"}, "Earlier versions are kept on GitHub.", " ",
+                          E("a", {"href": address}, "Open the whole issue on GitHub") if address else ""))
+        if not past:
+            past.append(E("p", {"class": "quiet"}, "The text has not changed since it was first written."))
+        parts.append(E("section", {"class": "readpart", "id": ident + "-past"}, E("h3", None, "Past versions of the text"), *past))
+        contents.append((ident + "-past", "Past versions of the text"))
+        # the entries, oldest first
+        entries = [e for e in topic.get("entries", []) if isinstance(e, dict) and integer(e.get("id"))]
+        shown = []
+        for entry in entries:
+            cid = integer(entry.get("id"))
+            mark = text_of(entry.get("mark"))
+            kind = self.kind_words(entry.get("kind"))
+            head = E("summary", None, E("span", {"class": "kindword"}, kind), " ", text_of(entry.get("at")), " ",
+                     E("span", {"class": "markword"}, mark) if mark else "")
+            if mark:
+                inner = [E("div", {"class": "readtext"}, self.blocks(entry.get("doc"))), E("p", {"class": "markwhy"}, mark)]
+            else:
+                where = E("code", {"class": "entryaddress"}, text_of(entry.get("address"))) if local and entry.get("address") else (
+                    E("a", {"href": github_url("memory", self.repo, n, cid)}, "Open the original comment on GitHub")
+                    if github_url("memory", self.repo, n, cid) else "")
+                inner = [E("div", {"class": "readtext"}, self.blocks(entry.get("doc"))),
+                         E("p", {"class": "quiet"}, CHANGED_NOTE) if entry.get("note") else "", E("p", {"class": "entryend"}, where)]
+            shown.append(E("details", {"class": "readentry folded" if mark else "readentry", "id": "%s-e%d" % (ident, cid),
+                                       "open": None if mark else "open"}, head, *inner))
+        if not shown:
+            shown.append(E("p", {"class": "quiet"}, "No entry has been written on this topic."))
+        elif local and (topic.get("untold")):
+            shown.append(E("p", {"class": "quiet"}, mind_reader.TAKE_BACK))
+        parts.append(E("section", {"class": "readpart", "id": ident + "-entries"}, E("h3", None, "Entries"), *shown))
+        contents.append((ident + "-entries", "Entries"))
+        side = E("nav", {"class": "readcontents", "aria-label": "Within this area"},
+                 *[E("a", {"href": anchor(target)}, label) for target, label in contents])
+        return E("section", {"class": "view", "id": ident, "aria-labelledby": ident + "-h"}, trail, E("h2", {"id": ident + "-h"}, title),
+                 E("p", {"class": "chips"}, *chips), E("div", {"class": "readbody"}, side, E("div", {"class": "readparts"}, *parts)))
+
     def untold(self):
         """The page's last lines: what is not told, and why."""
         missing, lines = self.model.get("not_told") or {}, []
@@ -3597,8 +3760,9 @@ class Page:
                  E("title", None, "The mind of ", text_of(self.model.get("name"))), Safe("<style>%s</style>" % style))
         logo = E("svg", {"viewBox": "144 144 968 968", "class": "logo", "aria-hidden": "true"},
                  E("path", {"class": "lg-a", "d": icon[0]}), E("path", {"class": "lg-b", "d": icon[1]}))
-        labels = {"now": "Overview", "project-map": "Project Map", "work": "Work", "history": "History", "outputs": "Outputs"}
-        keys = ["now", "project-map", "work", "history"]
+        labels = {"now": "Overview", "project-map": "Project Map", "work": "Work", "history": "History", "record": "Record",
+                  "outputs": "Outputs"}
+        keys = ["now", "project-map", "work", "history"] + (["record"] if self.reader_data() else [])
         if self.model.get("outputs_available", bool(self.outline.get("deliverables") or self.outline.get("other"))):
             keys.append("outputs")
         side = E("nav", {"class": "side fold", "aria-label": "Project areas"}, logo,
@@ -3624,10 +3788,15 @@ class Page:
         output_views = E("nav", {"id": "output-views", "class": "area-links noprint", "aria-label": "Output views"},
                          E("a", {"href": anchor("outputs")}, "Current text and sources"),
                          E("a", {"href": anchor("paper")}, "Read the manuscript")) if self.sheet is not None else ""
-        main = E("main", {"id": "main"}, self.now_view(), self.project_map_view(), self.history_view(), output_views,
-                 self.text_view(), self.sheet_view() if self.sheet is not None else "",
-                 self.threads_view(), self.settled_view(),
-                 self.lessons_view(), self.open_view(), self.todo_view(), self.map_view(), self.ask_view(), self.usage_view())
+        only = (self.reader_data() or {}).get("only")
+        if only:   # the live server's own route for one topic: that view and the pane, not the whole page again
+            main = E("main", {"id": "main"}, self.record_view(), self.read_views())
+        else:
+            main = E("main", {"id": "main"}, self.now_view(), self.project_map_view(), self.history_view(), output_views,
+                     self.text_view(), self.sheet_view() if self.sheet is not None else "",
+                     self.threads_view(), self.settled_view(),
+                     self.lessons_view(), self.open_view(), self.todo_view(), self.map_view(), self.ask_view(), self.usage_view(),
+                     self.record_view(), self.read_views())
         panel = E("aside", {"id": "panel", "class": "panel", "aria-label": "One memory"},
                   E("button", {"type": "button", "id": "close", "class": "close"}, "Close"),
                   E("h2", {"class": "noscript-h"}, "Every memory"),
@@ -3635,7 +3804,8 @@ class Page:
         body = E("body", None, side, main, panel, self.tour(), self.word_store(), self.explain_store(), self.issue_store(),
                  self.word_box(), Safe("<script>%s</script>" % script),
                  Safe("<script>%s</script>" % live) if live is not None else "")
-        return "<!doctype html>\n%s\n<html lang=\"en\">%s%s</html>\n" % (NOTICE, head, body)
+        start = " data-start=\"read-%d\"" % only if isinstance(only, int) and not isinstance(only, bool) and only > 0 else ""
+        return "<!doctype html>\n%s\n<html lang=\"en\"%s>%s%s</html>\n" % (NOTICE, start, head, body)
 
 
 ICON_LINE = re.compile(r"[MCZ0-9 ,-]{1,8000}")
@@ -3780,7 +3950,7 @@ class PageError(ValueError):
     """A page that cannot be built, with one of this module's own fixed lines as its text."""
 
 
-def load_model(config, repo, allowed, early=None):
+def load_model(config, repo, allowed, early=None, reader="all"):
     """(model, None) for the page of `repo`, built from its local index: the index is opened, checked and closed here, and the
     one place that does it for `mind.py` and for `public_text` alike. `early(db)`, when given, runs while the index is open and
     may return a value that ends the work (main's --paper): then (None, that value). Raises PageError with a fixed line when
@@ -3799,7 +3969,7 @@ def load_model(config, repo, allowed, early=None):
             if done is not None:
                 return None, done
         return mind_model.build(db, repo, allowed, datetime.date.today(),
-                                recortex.shipped_profiles(config.get("profiles")), config), None
+                                recortex.shipped_profiles(config.get("profiles")), config, reader), None
     finally:
         db.close()
 
@@ -3809,7 +3979,7 @@ def finish(model, config, repo, fetch=False, public=False):
     of this machine's own numbers: no usage view and no log of what the observer did. The pictures are the ones kept here, and
     only with `fetch` are the missing ones fetched (never for a public page)."""
     if public:
-        model["usage"], model["acts"] = None, []
+        model["usage"], model["acts"], model["reader"] = None, [], None   # the whole text of the record is not for a public page
     else:
         try:
             model["usage"] = usage.report(repo, config)   # numbers and fixed words; the page tells them as they are
@@ -3854,7 +4024,7 @@ def public_text(config, repo, allowed, refuse=None):
     written and no file is read. `counts` holds the numbers of memories and threads. `refuse`, when given, is called with
     model_strings of the built model before any page is made, and a true answer raises PrivateError. Raises PageError with one
     of this module's fixed lines when the page cannot be built."""
-    model, _ = load_model(config, repo, allowed)
+    model, _ = load_model(config, repo, allowed, reader=None)   # the page for the public holds no reader
     model["usage"], model["acts"] = None, []
     if refuse is not None and refuse(model_strings(model)):
         raise PrivateError("the record's own text holds what the project's privacy rules keep off the record")
