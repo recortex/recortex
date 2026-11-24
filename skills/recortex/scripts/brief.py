@@ -465,7 +465,8 @@ class Record:
     def url(self, number):
         issue = self.issues.get(number)
         value = (issue["url"] or "") if issue else ""
-        return value if URL.fullmatch(value) or record_store.safe_address_of(self.repo, value) else ""
+        return value if URL.fullmatch(value) or (record_store.is_local(self.repo)
+                                                  and record_store.safe_address_of(self.repo, value)) else ""
 
     def freshness(self, fresh):
         """fresh: True (just synced), False (sync failed, cached index used) or None (index only, by design)."""
