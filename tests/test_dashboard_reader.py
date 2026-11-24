@@ -117,6 +117,24 @@ class MarkTests(ReaderBox):
         self.assertNotIn(mind_reader.GITHUB_OUTSIDE, part.replace(fold.group(1), "", 1))   # the mark is said once, over the shut text
 
 
+    def test_a_cut_text_of_a_github_topic_goes_on_at_github_and_not_in_the_view_that_is_open(self):
+        import mind_model
+        data = self.repo()
+        data["issues"]["5"]["body"] = "A paragraph that goes on.\n\n" + "\n\n".join(["More of the same words."] * 4000)
+        data["issues"]["5"]["updated_at"] = "2026-04-25T10:00:00Z"
+        self.save(data)
+        self.ready()
+        status, _, text = self.view_page(5)
+        self.assertEqual(200, status, text[:200])
+        part = re.search(r'<section class="readpart" id="read-5-text">(.*?)</section>', self.topic_view(text, 5), re.S).group(1)
+        self.assertGreater(len(data["issues"]["5"]["body"]), mind_model.CAP_TEXT)
+        cut = re.search(r'<p class="quiet">This part is long, so the page stops here\.(.*?)</p>', part, re.S)
+        self.assertTrue(cut, part[-400:])
+        self.assertIn("Read the rest on GitHub.", cut.group(1))
+        self.assertNotRegex(cut.group(1), r'href="[^"]*read[-/]5')   # the view that is open is not where the rest is
+        self.assertEqual(1, len(re.findall(r"<a ", cut.group(1))))
+
+
 class BesideTests(ts.MindSandbox):
     """10.3: a GitHub record's page has the reader's link beside each of its links to an issue or a comment on GitHub."""
 

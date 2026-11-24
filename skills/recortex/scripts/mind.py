@@ -3606,8 +3606,9 @@ class Page:
         parts, contents = [], []
         # the current text
         body_mark = text_of(topic.get("body_mark"))
-        text = self.blocks(topic.get("body"), cut_to=address, issue=n) if topic.get("body") else E("p", {"class": "quiet"},
-                                                                                                 "This topic has no text yet.")
+        # `issue` is left out: a cut text would link to this same view; it goes on at its address (`cut_to`) where it has one
+        text = self.blocks(topic.get("body"), cut_to=address) if topic.get("body") else E("p", {"class": "quiet"},
+                                                                                        "This topic has no text yet.")
         if body_mark:
             text = E("details", {"class": "readfold"}, E("summary", None, E("span", {"class": "markword"}, body_mark),
                                                          " Shut. Open it to read it."), E("div", {"class": "readtext"}, text))
@@ -3653,7 +3654,7 @@ class Page:
                                        "open": None if mark else "open"}, head, *inner))
         if not shown:
             shown.append(E("p", {"class": "quiet"}, "No entry has been written on this topic."))
-        elif local and (topic.get("untold")):
+        if local and topic.get("adopt") is True:
             shown.append(E("p", {"class": "quiet"}, mind_reader.TAKE_BACK))
         parts.append(E("section", {"class": "readpart", "id": ident + "-entries"}, E("h3", None, "Entries"), *shown))
         contents.append((ident + "-entries", "Entries"))

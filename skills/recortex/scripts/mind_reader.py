@@ -90,6 +90,9 @@ class ReaderMixin:
                     body_mark = GITHUB_OUTSIDE if not self.ok(row["author"]) else GITHUB_CHANGED
             topic["body_mark"] = body_mark
             topic["untold"] = bool(body_mark) or folded > 0
+            # only what an adopt question takes back: a topic's text changed outside recortex, or a text or entries written under
+            # another key. An entry that was changed is never taken back, nor is an earlier version of a text.
+            topic["adopt"] = bool(local and (states.get(number) in ("changed", "foreign") or any(mark == LOCAL_FOREIGN for _, mark in listed)))
             wanted = mode == "all" or mode == number
             if wanted:
                 size = len(row["body"] or "") + sum(len(entry["body"] or "") for entry, mark in listed)

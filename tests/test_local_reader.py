@@ -113,13 +113,40 @@ class ViewTests(Reader):
         self.assertNotIn('class="readentry folded" id="read-%d-e%d" open' % (self.numbers["reader"], 0), reader_view)
         self.assertEqual(0, len(re.findall(r'class="readentry folded"[^>]*open', page)))   # never open by itself
 
-    def test_a_topic_with_what_is_not_told_ends_with_the_line_that_says_it_will_be_asked_about(self):
-        self.damage("changed-entry")
+    def test_a_topic_with_entries_under_another_key_ends_with_the_line_that_says_it_will_be_asked_about(self):
+        self.damage("foreign-entry", "speed")
         page = self.page()
-        self.assertIn(self.mind_reader.TAKE_BACK, self.view(page, self.numbers["reader"]))
-        self.assertNotIn(self.mind_reader.TAKE_BACK, self.view(page, self.numbers["speed"]))
+        self.assertIn(self.mind_reader.TAKE_BACK, self.view(page, self.numbers["speed"]))
+        self.assertNotIn(self.mind_reader.TAKE_BACK, self.view(page, self.numbers["reader"]))
         self.assertIsNone(PHRASES.search(self.mind_reader.TAKE_BACK))
         self.assertNotRegex(self.mind_reader.TAKE_BACK, r"(?i)\b(run|command|terminal)\b")
+
+    def test_a_changed_entry_and_a_changed_earlier_version_promise_no_question_for_no_form_takes_them_back(self):
+        self.damage("changed-entry")
+        folder = os.path.join(self.folder, "topics", self.slug("reader"))
+        versions = [name for name in sorted(os.listdir(folder)) if b"\nkind: body\n" in self.read(os.path.join(folder, name))]
+        self.assertTrue(versions)
+        path = os.path.join(folder, versions[0])
+        data = self.read(path)
+        at = data.index(b"\n---\n", 4) + 5
+        self.write(path, data[:at] + b"TAMPERED " + data[at:])   # an earlier text of the topic, changed outside recortex
+        page = self.page()
+        view = self.view(page, self.numbers["reader"])
+        self.assertIn(self.mind_reader.LOCAL_CHANGED, view[view.index('id="read-%d-past"' % self.numbers["reader"]):])   # it is shut under its mark
+        self.assertIn('class="readentry folded"', view)   # and so is the changed entry
+        self.assertNotIn(self.mind_reader.TAKE_BACK, view)
+
+    def test_a_topic_with_a_changed_text_and_no_entry_ends_with_the_line_too(self):
+        address = self.store.create_issue("A topic with no entry", [], body="A lone text with strict quoting.")
+        number = self.store.created_number(address)
+        relpath, _ = self.store.topic(number)
+        path = self.store.path(relpath)
+        self.write(path, self.read(path).replace(b"strict quoting", b"lenient quoting", 1))
+        page = self.page()
+        view = self.view(page, number)
+        self.assertIn("No entry has been written on this topic.", view)
+        self.assertIn(self.mind_reader.LOCAL_CHANGED, view)
+        self.assertIn(self.mind_reader.TAKE_BACK, view)
 
     def test_a_text_changed_outside_recortex_is_shut_under_its_mark(self):
         self.damage("changed-body")
