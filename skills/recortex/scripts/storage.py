@@ -660,6 +660,11 @@ def scan_record_folder(path, sub=""):
         return []
     descriptor = _open_folder_nofollow(full)
     try:
+        info = os.fstat(descriptor)   # a folder of the record is looked at as the record folder is: its owner and its write bits
+        if _uid() is not None and info.st_uid != _uid():
+            raise StorageError("a folder of the record belongs to another user", "owner")
+        if info.st_mode & 0o022:
+            raise StorageError("a folder of the record can be written by group or others", "permissions")
         rows = []
         try:
             use_fd = os.scandir in getattr(os, "supports_fd", ())

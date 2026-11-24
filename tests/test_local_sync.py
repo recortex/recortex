@@ -415,6 +415,27 @@ class NotReadTests(Box):
                 self.sync()
 
 
+    def test_a_topic_folder_that_others_can_write_is_refused_as_the_record_folder_is_and_nothing_is_told_from_it(self):
+        self.sync()
+        folder = next(os.path.join(self.folder, "topics", name) for name in sorted(os.listdir(os.path.join(self.folder, "topics")))
+                      if os.path.isdir(os.path.join(self.folder, "topics", name)))
+        os.chmod(folder, 0o777)
+        with self.assertRaises(self.storage.StorageError) as caught:
+            self.storage.scan_record_folder(self.folder, os.path.relpath(folder, self.folder))
+        self.assertEqual("permissions", caught.exception.kind)
+        db_before = self.everything()
+        try:
+            self.sync()
+        except (self.record_store.StoreError, self.storage.StorageError) as error:
+            self.assertEqual("permissions", error.kind)
+        self.assertEqual(db_before, self.everything())   # nothing of that folder was added to what the index tells
+        os.chmod(folder, 0o700)
+        with mock.patch.object(self.storage, "_uid", return_value=os.getuid() + 1):
+            with self.assertRaises(self.storage.StorageError) as caught:
+                self.storage.scan_record_folder(self.folder, os.path.relpath(folder, self.folder))
+        self.assertEqual("owner", caught.exception.kind)
+
+
 class FolderTests(Box):
     seeded = False
 
