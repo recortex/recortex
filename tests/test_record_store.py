@@ -300,6 +300,107 @@ class WhichStoreTests(unittest.TestCase):
         self.assertTrue(issubclass(record_store.Missing, record_store.StoreError))
 
 
+class ForRepoChecksTheProjectFileTests(unittest.TestCase):
+    """for_repo judges the project file's kind of record before it builds any store, and a project kept in a local record
+    makes no gh call through a stray name (the automatic check of 24 November 2026 on the first version of for_repo)."""
+
+    LOCAL_CONFIG = {"repo": LOCAL, "store": "local", "hub": 1}
+
+    def setUp(self):
+        self.recorder = Recorder("{}")
+        patcher = mock.patch.object(recortex, "gh", self.recorder)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def refused(self, repo, config, line):
+        with self.assertRaises(record_store.ConfigRefused) as caught:
+            record_store.for_repo(repo, config)
+        self.assertEqual(line, str(caught.exception))
+
+    def test_a_local_configuration_refuses_a_github_name_and_no_gh_call_is_made(self):
+        self.refused(REPO, self.LOCAL_CONFIG, record_store.ONLY_ITS_OWN)
+        self.refused("octo-org/octo-repo", self.LOCAL_CONFIG, record_store.ONLY_ITS_OWN)   # a stray --repo
+        self.refused("local--record/k3f5x2m7q4w6z5a2", self.LOCAL_CONFIG, record_store.NOT_AGREE)   # another local record
+        self.refused(None, self.LOCAL_CONFIG, record_store.ONLY_ITS_OWN)
+        with self.assertRaises(record_store.ConfigRefused):
+            record_store.for_config({"repo": REPO, "store": "local"})
+        self.assertEqual([], self.recorder.calls)
+
+    def test_a_local_configuration_makes_no_gh_call_through_the_helpers_either(self):
+        for call in (lambda: recortex.number_exists(REPO, 5), lambda: recortex.read_issue(REPO, 5),
+                     lambda: recortex.read_comment_body(REPO, 9), lambda: recortex.issue_kind(REPO, 5),
+                     lambda: recortex.read_hub_comments(REPO, 4)):
+            with self.project_file(self.LOCAL_CONFIG):
+                with self.assertRaises(record_store.ConfigRefused):
+                    call()
+        self.assertEqual([], self.recorder.calls)
+
+    def project_file(self, config):
+        import contextlib
+        import tempfile
+
+        @contextlib.contextmanager
+        def manage():
+            base = os.path.join(ROOT, ".tmp")
+            os.makedirs(base, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="test-store-", dir=base) as folder:
+                with open(os.path.join(folder, recortex.CONFIG_NAME), "w") as handle:
+                    json.dump(config, handle)
+                with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": folder}):
+                    yield folder
+        return manage()
+
+    def test_an_unknown_store_value_refuses_every_name(self):
+        for value in ("gitlab", 5, ["local"], "LOCAL", ""):
+            for name in (REPO, LOCAL, "octo-org/other"):
+                with self.subTest(store=value, name=name):
+                    with self.assertRaises(record_store.ConfigRefused):
+                        record_store.for_repo(name, {"repo": REPO, "store": value})
+        self.assertEqual([], self.recorder.calls)
+
+    def test_a_disagreeing_file_refuses_every_name_even_a_matching_github_one(self):
+        for config in ({"repo": LOCAL}, {"repo": LOCAL, "store": "github"}, {"repo": REPO, "store": "local"}):
+            for name in (REPO, LOCAL):
+                with self.subTest(config=config, name=name):
+                    with self.assertRaises(record_store.ConfigRefused):
+                        record_store.for_repo(name, config)
+
+    def test_a_github_configuration_or_none_gives_a_github_store_as_before(self):
+        for config in ({"repo": REPO}, {"repo": REPO, "store": "github"}, {}, {"profiles": ["software"]}):
+            with self.subTest(config=config):
+                self.assertEqual("github", record_store.for_repo("octo-org/other", config).kind)
+                self.assertEqual("github", record_store.for_repo(REPO, config).kind)
+                self.refused(LOCAL, config, record_store.NOT_AGREE)
+        with self.project_file({"repo": REPO}):
+            self.assertEqual("github", record_store.for_repo("octo-org/other").kind)
+            self.assertEqual("github", record_store.for_config({"repo": REPO}).kind)
+        with self.project_file({"repo": REPO, "store": "nope"}):
+            with self.assertRaises(record_store.ConfigRefused):
+                record_store.for_repo("octo-org/other")   # the project's own file is judged when none is given
+        base = os.path.join(ROOT, ".tmp")
+        os.makedirs(base, exist_ok=True)
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="test-store-", dir=base) as folder:
+            with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": folder}):
+                self.assertEqual("github", record_store.for_repo(REPO).kind)   # no project file at all
+                with open(os.path.join(folder, recortex.CONFIG_NAME), "w") as handle:
+                    handle.write("{not json")
+                self.assertEqual("github", record_store.for_repo(REPO).kind)   # a file that cannot be read: as before
+                self.refused_loaded(LOCAL)
+        self.assertEqual([], self.recorder.calls)
+
+    def refused_loaded(self, name):
+        with self.assertRaises(record_store.ConfigRefused):
+            record_store.for_repo(name)
+
+    def test_the_check_is_what_refuses(self):
+        """Without the kind_of call a local configuration would hand a GitHub name a GithubStore: the tests above hold that
+        the call is there by showing what comes of it."""
+        with mock.patch.object(record_store, "kind_of", return_value="github"):
+            self.assertEqual("github", record_store.for_repo(REPO, self.LOCAL_CONFIG).kind)   # what the guard prevents
+        self.refused(REPO, self.LOCAL_CONFIG, record_store.ONLY_ITS_OWN)
+
+
 class KindOfTests(unittest.TestCase):
     def test_the_key_and_the_name_must_agree_both_ways(self):
         cases = [

@@ -27,6 +27,9 @@ FIELD_SHAPES = ("mine", "active", "plan", "dated")
 
 NOT_AGREE = "recortex: the project file's record name and its kind of record do not agree; nothing was read."
 UNKNOWN_KIND = "recortex: the project file names a kind of record this version does not know."
+ONLY_ITS_OWN = ("recortex: this project keeps a local record, so a record named another way is refused; nothing was "
+                "read or written.")
+NO_LOCAL = "recortex: a local record cannot be opened here; nothing was read."
 
 
 class StoreError(recortex.GhError):
@@ -55,8 +58,6 @@ WORDS = {
         "unread": "GitHub could not be read",
         "hidden": "%d memories by accounts outside your allowed list are not listed.",
         "changed": "%d memories edited after they were posted and are not listed.",
-        "readback_entry": "gh api repos/%s/issues/comments/<id>",
-        "readback_issue": "gh api repos/%s/issues/%d",
     },
 }
 
@@ -337,6 +338,12 @@ class GithubStore:
             raise recortex.GhError("could not read an issue number from gh output: %r" % output)
         return int(match.group(1))
 
+    def read_back(self, what, number=None):
+        """The words of a dry run's "would read back:" line: "entry" (the comment just posted) or "issue" (a topic's body)."""
+        if what == "entry":
+            return "gh api repos/%s/issues/comments/<id>" % self.repo
+        return "gh api repos/%s/issues/%s" % (self.repo, number)
+
     def address(self, issue, entry=None):
         base = "https://github.com/%s/issues/%d" % (self.repo, issue)
         return base if entry is None else "%s#issuecomment-%d" % (base, entry)
@@ -354,15 +361,44 @@ class GithubStore:
 _STORES = {}
 
 
+def _config_used(config):
+    """The configuration a store is decided by: the given one, else the project's, else None (no project file, or one that
+    cannot be read: the caller that needs it reports that, and a GitHub name then works as it always did)."""
+    if config is not None:
+        return config
+    try:
+        return recortex.load_config()
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
 def for_repo(repo, config=None):
-    """The store of the record named `repo`, one per process and name."""
+    """The store of the record named `repo`, one per process and name.
+
+    Before any store is built, `kind_of` judges the configuration used (the given one, else the project's): a refusal there
+    refuses every name. A local configuration opens its own record and refuses every other name, a GitHub name included, so
+    that a project kept in a local record makes no `gh` call through a stray --repo; a name of a local record opens only
+    when the configuration is local and names that same record. With a GitHub configuration, or none, a GitHub name gives a
+    GithubStore."""
+    used = _config_used(config)
+    kind = kind_of(used) if isinstance(used, dict) else "github"
+    if kind == "local":
+        if repo != used.get("repo"):
+            raise ConfigRefused(NOT_AGREE if is_local(repo) else ONLY_ITS_OWN)
+        return _open_local(repo, used)
     if is_local(repo):
-        raise StoreError(NOT_AGREE)
+        raise ConfigRefused(NOT_AGREE)
     found = _STORES.get(repo)
     if found is None:
         found = _STORES[repo] = GithubStore(repo)
     return found
 
 
+def _open_local(repo, config):
+    """The LocalStore of the configuration's record (local_store.py)."""
+    raise StoreError(NO_LOCAL)
+
+
 def for_config(config):
+    """The store of the project file's own record: for_repo, so it has the same checks."""
     return for_repo(config["repo"], config)
