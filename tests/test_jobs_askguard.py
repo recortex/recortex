@@ -302,9 +302,37 @@ class HeredocTests(unittest.TestCase):
         self.assertFalse(self.denied(self.note("cat >> notes.md <<EOF")))
         self.assertFalse(self.denied(self.note("cat >> notes.md <<EOF", "a note\nwith two lines")))
 
-    def test_two_notes_in_one_command_pass(self):
+    def test_one_heredoc_to_a_command_and_two_are_read_whole(self):
         command = "cat >> a.md <<'EOF'\n%s\nEOF\ncat >> b.md <<'EOF'\n%s\nEOF\n" % (self.BODY, self.BODY)
-        self.assertFalse(self.denied(command))
+        self.assertTrue(self.denied(command))
+        self.assertFalse(self.denied(self.note("cat >> a.md <<'EOF'") + "\n"))   # a final line break is no other line
+
+    def test_a_hook_written_by_one_heredoc_and_run_by_the_commit_of_another_is_read(self):
+        command = ("cat > .git/hooks/pre-commit <<'EOF'\n%s\nEOF\ngit commit -F - <<'EOF'\nmessage\nEOF" % self.BODY)
+        self.assertTrue(self.denied(command))
+        command = ("cat > hook.sh <<'EOF'\nplain\nEOF\ngit commit -F - <<'EOF'\n%s\nEOF" % self.BODY)
+        self.assertTrue(self.denied(command))
+
+    def test_only_a_note_file_is_written(self):
+        for opening in ("cat > .notes.md <<'EOF'", "cat > ../x.md <<'EOF'", "cat > /tmp/x.md <<'EOF'", "cat > run.sh <<'EOF'",
+                        "cat > .git/hooks/pre-commit <<'EOF'", "cat > /dev/tty <<'EOF'", "cat > notes <<'EOF'",
+                        "cat > a/../b.md <<'EOF'", "cat > a/.b.md <<'EOF'", "cat > x.md.sh <<'EOF'", "tee run.sh <<'EOF'",
+                        "tee .bashrc <<'EOF'", "cat <<'EOF' > ~/x.md", "cat <<'EOF' >> /etc/x.txt"):
+            with self.subTest(opening=opening):
+                self.assertTrue(self.denied(self.note(opening)))
+        for opening in ("cat > notes.md <<'EOF'", "cat >> docs/notes.v2.md <<'EOF'", "cat > a_b/c-d.txt <<'EOF'"):
+            with self.subTest(opening=opening):
+                self.assertFalse(self.denied(self.note(opening)))
+
+    def test_gh_is_the_three_built_in_commands_only_and_never_an_alias(self):
+        for opening in ("gh myalias --body-file - <<'EOF'", "gh alias set x --body-file - <<'EOF'", "gh api --body-file - <<'EOF'",
+                        "gh issue view 5 --body-file - <<'EOF'", "gh --body-file - <<'EOF'", "gh issue --body-file - <<'EOF'"):
+            with self.subTest(opening=opening):
+                self.assertTrue(self.denied(self.note(opening)))
+        for opening in ("gh issue comment 5 --body-file - <<'EOF'", "gh pr create --title Plain --body-file - <<'EOF'",
+                        "gh issue edit 5 --repo octo-org/octo-repo --body-file - <<'EOF'"):
+            with self.subTest(opening=opening):
+                self.assertFalse(self.denied(self.note(opening)))
 
     # ---- the seven ways past the first version, and the other shapes that keep the whole text
     def test_an_unquoted_body_is_expanded_by_the_shell_so_it_is_read(self):
@@ -354,6 +382,11 @@ class HeredocTests(unittest.TestCase):
             with self.subTest(later=later):
                 self.assertTrue(self.denied(command))
 
+    def test_the_hook_decision_names_the_denial_for_a_chain(self):
+        command = ("cat > .git/hooks/pre-commit <<'EOF'\n%s\nEOF\ngit commit -F - <<'EOF'\nm\nEOF" % self.BODY)
+        out = pretool_guard.decide(json.dumps(call(command, agent=None)))
+        self.assertEqual(pretool_guard.TERMINAL_DENIAL, out["hookSpecificOutput"]["permissionDecisionReason"])
+
     def test_the_text_for_a_shell_or_an_interpreter_is_still_denied(self):
         for first in ("bash", "sh", "zsh", "dash", "python3 -", "python -", "perl", "node", "env bash", "sudo bash", "xargs",
                       "ssh host", "tmux", "script -q", "cat | bash"):
@@ -379,8 +412,8 @@ class HeredocTests(unittest.TestCase):
         self.assertEqual("cat >> notes.md <<'EOF'\nEOF", pretool_guard.without_text_heredocs(command))
         for same in ("echo no heredoc", "bash <<'EOF'\nthe code\nEOF", "cat <<< here string", "", "cat > f <<EOF\n$x\nEOF"):
             self.assertEqual(same, pretool_guard.without_text_heredocs(same))
-        self.assertEqual("cat >> a.md <<'A'\nA\ntee b.md <<'B'\nB",
-                         pretool_guard.without_text_heredocs("cat >> a.md <<'A'\nx\nA\ntee b.md <<'B'\ny\nB\n"))
+        two = "cat >> a.md <<'A'\nx\nA\ntee b.md <<'B'\ny\nB\n"
+        self.assertEqual(two, pretool_guard.without_text_heredocs(two))   # two heredocs: read whole
 
     def test_each_shape_is_a_whole_line_and_nothing_else(self):
         for line in ("cat > a.md <<'EOF'", "cat <<'EOF' >> a.md", "tee a.md b.md <<'EOF'", "git commit -F - <<'EOF'",
@@ -388,7 +421,8 @@ class HeredocTests(unittest.TestCase):
             self.assertIsNotNone(pretool_guard.sink_opening(line), line)
         for line in ("cat -n a.md <<'EOF'", "cat > -a <<'EOF'", "cat > a.md  <<'EOF'", "cat > a.md <<'EOF' ", "tee <<'EOF'",
                      "git commit -m x -F - <<'EOF'", "git log -F - <<'EOF'", "gh issue comment 5 --body-file x <<'EOF'",
-                     "cat > a.md <<-'EOF'", "cat > a.md <<< x", "cat > ../../a b <<'EOF'"):
+                     "cat > a.md <<-'EOF'", "cat > a.md <<< x", "cat > ../../a b <<'EOF'", "cat > run.sh <<'EOF'",
+                     "gh myalias --body-file - <<'EOF'"):
             self.assertIsNone(pretool_guard.sink_opening(line), line)
 
 

@@ -161,7 +161,9 @@ def keys_decision(data):
 # few plain shapes. A list of bad receivers cannot be made tight (a body is expanded by the shell, a shell can be hidden in a
 # comment, a quote, a pipe or a later line), so anything else is matched as a whole, as before. A denied note costs a retry; a
 # dropped command costs the guard, so a shape in doubt is left out.
-PLAIN_FILE = r"[A-Za-z0-9._/][A-Za-z0-9._/-]*"
+# A note file: a relative path whose every part starts with a letter, a digit or an underscore (no `..`, no dotfile, no `.git/`, no
+# `/dev`), ending in .md or .txt, so that nothing a heredoc writes is a hook, a script or a program.
+PLAIN_FILE = r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:md|txt)"
 END_WORD = r"(?:'([A-Za-z0-9_]+)'|\"([A-Za-z0-9_]+)\"|([A-Za-z0-9_]+))"
 GH_WORD = r"(?:--?[A-Za-z0-9][A-Za-z0-9-]*|[A-Za-z0-9][A-Za-z0-9._/@:=-]*)"
 SINK_SHAPES = tuple(re.compile(shape) for shape in (
@@ -169,7 +171,7 @@ SINK_SHAPES = tuple(re.compile(shape) for shape in (
     r"cat <<%s >>? %s" % (END_WORD, PLAIN_FILE),
     r"tee(?: -a)?(?: %s)+ <<%s" % (PLAIN_FILE, END_WORD),
     r"git commit(?: (?:-a|-q|--allow-empty))* -F - <<%s" % END_WORD,
-    r"gh(?: %s)+ --body-file - <<%s" % (GH_WORD, END_WORD),
+    r"gh (?:issue|pr) (?:create|comment|edit)(?: %s)* --body-file - <<%s" % (GH_WORD, END_WORD),   # gh lets no alias override these
 ))
 
 
@@ -190,7 +192,8 @@ def without_text_heredocs(command):
     """The command with the body of each heredoc dropped, only when the whole command is a note being written: every line that
     is not inside a body is a plain sink opening (sink_opening) or the end word alone, no line ends with a backslash, each
     heredoc has its end line, and the body of an unquoted one holds no `$`, backtick or backslash (the shell would expand
-    it). Else the command is returned as it is, and every word of it is read. The end word's line stays."""
+    it). One heredoc to a command and nothing else: with two, one could write a hook that the other's command runs. Else the
+    command is returned as it is, and every word of it is read. The end word's line stays."""
     lines = command.split("\n")
     if lines and lines[-1] == "":
         lines = lines[:-1]
@@ -208,6 +211,8 @@ def without_text_heredocs(command):
         body = lines[position + 1:end]
         if not quoted and any("$" in line or "`" in line or "\\" in line for line in body):
             return command
+        if end + 1 != len(lines):
+            return command   # one heredoc, and no other line after it
         out += [lines[position], lines[end]]
         position = end + 1
     return "\n".join(out)
