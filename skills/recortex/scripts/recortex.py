@@ -264,6 +264,8 @@ def allowed_users(repo, trusted=None):
     trusted = trusted_repos() if trusted is None else trusted
     if repo.lower() not in trusted:
         return set()
+    if repo.split("/")[0].lower() == "local--record":
+        return {"local--record"}   # a local record has one writer, the owner word; logins written after the name do not count
     return {repo.split("/")[0].lower()} | trusted[repo.lower()]
 
 

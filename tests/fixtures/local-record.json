@@ -1,0 +1,37 @@
+{
+  "note": "An invented local record of the sample project, as data. It holds no seal: a seal depends on a key, so the test helper writes these files through the store, and the damage rows below say how a file is hurt afterwards.",
+  "name": "sample project",
+  "profiles": ["software", "research"],
+  "topics": [
+    {"key": "hub", "title": "Sample project hub", "labels": ["hub"],
+     "body": "## Project\n\nThe sample project reads files of separated values into typed columns.\n\n## Deliverable sections\n\n| Section | Topic |\n|---|---|\n| Reader | #2 |\n| Speed | #3 |\n"},
+    {"key": "reader", "title": "Reader: quoting and line endings", "labels": ["final-record", "rel:changed", "topic:reader"],
+     "body": "## Changed\n\nThe reader follows strict quoting by default.\n",
+     "later": "## Changed\n\nThe reader follows strict quoting by default. A stray quote stops the read with an error.\n"},
+    {"key": "speed", "title": "Read speed against the standard library", "labels": ["final-record", "rd:results", "topic:speed"],
+     "body": "## Results\n\nThe sample reader needs about 1.5 times the time of the standard library on the largest file.\n"},
+    {"key": "task", "title": "Task: newlines inside quoted fields", "labels": ["active", "topic:reader"],
+     "body": "## Plan\n\nNot started.\n\n## Result\n\nNot finished.\n", "close": "completed"}
+  ],
+  "entries": [
+    {"topic": "hub", "kind": "resume", "body": "### Resume block: 2026-11-23 14:20 UTC\n\n<!-- ghim:resume:start -->\n**In short:** The sample reader handles quoted fields, and its speed is in doubt.\n\n**Last updated:** 2026-11-23 14:20 UTC by the maintainer's session\n**Current focus:** Speed of the reader.\n**Active issues:** #4 (newlines inside quoted fields).\n**Last decisions:** Strict quoting is the default, see #2.\n**Next actions:**\n\n| Action | Owner | Where |\n|---|---|---|\n| Rerun the speed benchmark | the maintainer | #3 |\n<!-- ghim:resume:end -->\n"},
+    {"topic": "reader", "kind": "decision", "body": "<!-- ghim:event type=decision at=2026-11-23T14:05:00Z -->\n### Decision: 2026-11-23 14:05 UTC - strict quoting is the default\n\n**In plain words, we decided to:** make strict quoting the default mode of the reader\n\n**Decision:** Strict quoting is the default mode of the reader.\n\n**Decided by:** the project lead, 2026-11-23 14:05 UTC\n\n**Exact words:**\n\n> Make strict the default.\n\n**Where recorded:** Chat with the session on 2026-11-23.\n\n**Effect:** The conformance numbers are for strict quoting.\n\n**Next step:** Document the lenient mode, owner the maintainer\n"},
+    {"topic": "reader", "kind": "result", "body": "<!-- ghim:event type=result at=2026-11-23T14:12:00Z -->\n### Result: 2026-11-23 14:12 UTC - the reader passes the wide-file check\n\n**In plain words, we found that:** the reader read all 12 wide files without an error\n\n**What ran:** `python check/wide.py` at commit 4f2a9c1.\n\n**Configuration:** one laptop, one thread.\n\n**Numbers:**\n\n| Measure | Value | Denominator | Source path |\n|---|---|---|---|\n| Wide files read | 12 | 12 | `check/out/wide.tsv` |\n\n**Exclusions and failures:** None.\n\n**Not established:** Files over 1 GB.\n\n**Next step:** Add files over 1 GB, owner the maintainer\n"},
+    {"topic": "reader", "kind": "failure", "body": "<!-- ghim:event type=failure at=2026-11-23T14:30:00Z -->\n### Failure: 2026-11-23 14:30 UTC - a file with a quote inside a field stopped the read\n\n**In plain words, what went wrong:** a stray quote stopped the read of one file\n\n**What failed:** `ParseError` at line 4 of `check/data/stray.csv`.\n\n**What ran:** `python check/wide.py --file stray.csv` at commit 4f2a9c1.\n\n**Cause:** Not established; the leading guess is the strict default.\n\n**Impact:** One of 13 files is unread.\n\n**Not established:** Whether the file is valid.\n\n**Next step:** Read the file by hand, owner the maintainer\n"},
+    {"topic": "reader", "kind": "question", "body": "<!-- ghim:event type=question at=2026-11-23T14:40:00Z -->\n### Question: 2026-11-23 14:40 UTC - should a lenient mode exist\n\n**In plain words, we ask:** whether the reader should have a lenient mode\n\n**Question:** Should the reader offer a lenient mode for files with a stray quote?\n\n**Why it matters:** The stray-quote file above stops the read.\n\n**Options:** a lenient mode, or none.\n\n**Next step:** Ask the project lead, owner the maintainer\n"},
+    {"topic": "reader", "kind": "note", "body": "A plain note with no marker: the maintainer will read the stray-quote file tomorrow.\n"},
+    {"topic": "speed", "kind": "result", "body": "<!-- ghim:event type=result at=2026-11-23T14:50:00Z -->\n### Result: 2026-11-23 14:50 UTC - first speed benchmark\n\n**In plain words, we found that:** the sample reader read the 100 MB file in a median of 1.84 s, against 1.21 s for the standard library\n\n**What ran:** `python bench/run.py --repeat 5` at commit 4f2a9c1.\n\n**Configuration:** bench data v1, one thread, one laptop.\n\n**Numbers:**\n\n| Measure | Value | Denominator | Source path |\n|---|---|---|---|\n| Median read time, 100 MB | 1.84 s | 5 runs | `bench/out/summary.tsv` |\n\n**Exclusions and failures:** None.\n\n**Not established:** Memory use.\n\n**Next step:** Rerun after the change, owner the maintainer\n"},
+    {"topic": "speed", "kind": "idea", "body": "<!-- ghim:event type=idea at=2026-11-23T15:00:00Z -->\n### Idea: 2026-11-23 15:00 UTC - read in blocks\n\n**In plain words, the idea is:** read the file in blocks of 64 KB\n\n**Idea:** Read the file in blocks of 64 KB and split the lines in memory.\n\n**Why it might help:** Fewer system calls.\n\n**Not tried:** Everything.\n\n**Next step:** Try it on the 100 MB file, owner the maintainer\n"},
+    {"topic": "task", "kind": "checkpoint", "body": "<!-- ghim:event type=checkpoint at=2026-11-23T15:10:00Z -->\n### Checkpoint: 2026-11-23 15:10 UTC - newlines in quoted fields\n\n**In plain words, where this stands:** the newline case reads, the escaped-quote case does not\n\n**Done:** The newline case reads.\n\n**Not done:** The escaped-quote case.\n\n**Next step:** Fix the escaped-quote case, owner the maintainer\n"}
+  ],
+  "damage": {
+    "changed-entry": "an entry's text is edited by hand after it was sealed",
+    "foreign-entry": "an entry is sealed under another key",
+    "changed-body": "a topic's text is edited by hand after it was sealed",
+    "conflict-copy": "a sync tool's conflict copy of a topic file",
+    "half-written": "a file that was copied only in part: front matter that does not close, and no seal",
+    "symlink": "an entry's name is a link to another entry's file",
+    "duplicate-number": "two topic files carry one number",
+    "crlf": "an entry file with CRLF line endings"
+  }
+}

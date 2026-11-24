@@ -12,6 +12,7 @@ its functions, never at the top.
 Standard library only."""
 
 import json
+import os
 import re
 
 import names
@@ -34,7 +35,16 @@ NO_LOCAL = "recortex: a local record cannot be opened here; nothing was read."
 
 
 class StoreError(recortex.GhError):
-    """Any refusal or failure of a store; a GhError, so that every `except recortex.GhError` keeps catching."""
+    """Any refusal or failure of a store; a GhError, so that every `except recortex.GhError` keeps catching. `kind` is a
+    fixed word for the reason (hooks print one fixed sentence per kind)."""
+
+    def __init__(self, message, kind="store"):
+        super().__init__(message)
+        self.kind = kind
+
+
+class RecordFolderError(StoreError):
+    """The record folder cannot be used: it is missing or moved, a check of storage.py failed, or record.json does not pass."""
 
 
 class Missing(StoreError):
@@ -59,6 +69,13 @@ WORDS = {
         "unread": "GitHub could not be read",
         "hidden": "%d memories by accounts outside your allowed list are not listed.",
         "changed": "%d memories edited after they were posted and are not listed.",
+    },
+    "local": {
+        "name": "the local record",
+        "place": "the local record of this project",
+        "unread": "the record folder could not be read",
+        "hidden": "%d memories written on another machine are not listed.",
+        "changed": "%d memories changed outside recortex are not listed.",
     },
 }
 
@@ -428,9 +445,52 @@ def for_repo(repo, config=None):
     return found
 
 
+_LOCAL_STORES = {}
+
+
 def _open_local(repo, config):
-    """The LocalStore of the configuration's record (local_store.py)."""
-    raise StoreError(NO_LOCAL)
+    """The LocalStore of the configuration's record. The machine must know the folder: a row of local-records.json (storage.
+    record_bindings) binds the record's id to the real path of the folder that the project file's `place` names (for `own`,
+    the row's path is the place; for `project`, the real path of <project root>/.recortex), the folder passes the record rules
+    of storage.py, and record.json holds that id. Otherwise a RecordFolderError with a fixed kind: unbound (no row), moved
+    (the id is bound, but to another folder), place (the project file's place is not one this version knows), or a kind of
+    storage.StorageError (a link, another owner, a write bit, a folder above that another account can replace, missing)."""
+    import local_store
+    import storage
+    place = config.get("place")
+    if place not in ("own", "project"):
+        raise RecordFolderError("recortex: the project file names a place for the record that this version does not know; "
+                                "nothing was read.", "place")
+    record_id = LOCAL_NAME.fullmatch(repo).group(1)
+    rows = storage.record_bindings(record_id)
+    if place == "project":
+        wanted = storage.record_path(recortex.project_root())
+        row = next((r for r in rows if r["path"] == wanted and r["place"] == "project"), None)
+        if row is None:
+            raise RecordFolderError("recortex: this project's local record is not bound to this folder on this machine." if not rows
+                                    else "recortex: this project's local record is bound to another folder on this machine.",
+                                    "moved" if rows else "unbound")
+    else:
+        mine = [r for r in rows if r["place"] in ("own", "chosen")]
+        if not mine:
+            raise RecordFolderError("recortex: this machine has no folder for this local record." if not rows else
+                                    "recortex: this local record is bound to another place on this machine.",
+                                    "unbound" if not rows else "moved")
+        row = mine[-1]
+    try:
+        folder = storage.check_record_folder(row["path"], "own" if row["place"] == "own" else row["place"])
+        info = os.lstat(folder)
+    except (storage.StorageError, OSError) as error:
+        raise RecordFolderError("recortex: the record folder cannot be used; nothing was read.",
+                                getattr(error, "kind", "missing"))
+    if (info.st_uid, getattr(info, "st_gid", 0)) != (row["uid"], row["gid"]):
+        raise RecordFolderError("recortex: the record folder's owner changed since this machine approved it; nothing was read.",
+                                "moved")
+    key = (repo, folder, row["mac"])
+    found = _LOCAL_STORES.get(key)
+    if found is None:
+        found = _LOCAL_STORES[key] = local_store.LocalStore(repo, config, folder, row["place"])
+    return found
 
 
 def github(args, stdin=None, timeout=60, errors=None, binary=False):
