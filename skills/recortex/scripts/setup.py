@@ -98,6 +98,7 @@ if __name__ == "__main__" and python_line(sys.version_info):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import names  # noqa: E402
 import lint_drafts  # noqa: E402
 import setup_labels  # noqa: E402
@@ -773,10 +774,7 @@ def notices(repo, marks, created=False):
     data about people or confidential information, and none for a repository that this run creates private."""
     lines = []
     if ("people" in marks or "confidential" in marks) and not created:
-        try:
-            value = recortex.gh(["api", "repos/%s" % repo, "--jq", ".private"], timeout=30).strip()
-        except recortex.GhError:
-            value = ""
+        value = record_store.for_repo(repo).visibility()
         if value == "false":
             lines.append(PUBLIC % (repo, mark_words(marks)))
         elif value != "true":

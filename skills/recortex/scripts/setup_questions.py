@@ -45,6 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import field_sheet  # noqa: E402
 import names  # noqa: E402
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import storage  # noqa: E402
 import writing  # noqa: E402
 
@@ -665,14 +666,16 @@ LABEL_SHOWN = re.compile(r"[A-Za-z0-9:._ -]{1,50}")
 
 
 def missing_labels(repo, config):
-    """The names of the labels the project's profiles and topics want that GitHub does not list: one `gh label list`
-    call, through recortex.gh. [] when none is missing; None when GitHub could not be read (or the profiles do not fit),
-    which is one fixed line for the session and never a stop."""
+    """The names of the labels the project's profiles and topics want that GitHub does not list: one label listing,
+    through the record store. [] when none is missing, and for a record that keeps no label catalog; None when the record
+    could not be read (or the profiles do not fit), which is one fixed line for the session and never a stop."""
     import setup_labels
     try:
         wanted = setup_labels.wanted_labels(list(config.get("profiles") or []), config.get("topics") or [])
-        listed = json.loads(recortex.gh(["label", "list", "--repo", repo, "--json", "name,color,description",
-                                         "--limit", "1000"], timeout=30))
+        store = record_store.for_repo(repo, config)
+        if not store.supports("label-catalog"):
+            return []
+        listed = store.list_labels("name,color,description", timeout=30)
     except (recortex.GhError, ValueError, RecursionError, SystemExit, TypeError, AttributeError):
         return None
     if not isinstance(listed, list):

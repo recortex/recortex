@@ -19,6 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 
 
 def cell(text):
@@ -75,8 +76,11 @@ def main(argv=None):
 
     config = recortex.load_config()
     repo = recortex.resolve_repo(args.repo, config)
-    issue_call = ["api", "--paginate", "repos/%s/issues?state=all&per_page=100" % repo]
-    comment_call = ["api", "--paginate", "repos/%s/issues/comments?per_page=100" % repo]
+    records = record_store.for_repo(repo, config)
+    if not records.supports("github-api"):
+        print(record_store.SNAPSHOT_OFF)
+        return 0
+    issue_call, comment_call = records.dump_commands()
     print(recortex.describe(config, repo))
     if args.dry_run:
         print("would run: " + recortex.show_command(issue_call, "read-only"))
@@ -84,8 +88,9 @@ def main(argv=None):
         print("would write: %s/INDEX.md and %s/issues/<number>.md" % (args.out, args.out))
         return 0
 
-    issues = recortex.parse_json_stream(recortex.gh(issue_call, timeout=args.timeout))
-    comments = recortex.parse_json_stream(recortex.gh(comment_call, timeout=args.timeout))
+    issues_text, comments_text = records.dump(args.timeout)
+    issues = recortex.parse_json_stream(issues_text)
+    comments = recortex.parse_json_stream(comments_text)
     by_issue = {}
     for comment in comments:
         match = re.search(r"/issues/([0-9]+)$", comment.get("issue_url", ""))

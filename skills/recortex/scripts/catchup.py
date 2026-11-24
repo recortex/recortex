@@ -44,6 +44,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import lint_drafts  # noqa: E402
 import record_format  # noqa: E402
 
@@ -151,11 +152,13 @@ def inventory(root, repo, offline, transcripts):
         root, "branch", "--format=%(refname:short)%09%(committerdate:iso-strict)").splitlines() if "\t" in line]
     data["pull_requests"], data["issues"] = [], []
     if repo and not offline:
+        records = record_store.for_repo(repo)
         try:
-            data["pull_requests"] = json.loads(recortex.gh(["pr", "list", "--repo", repo, "--state", "merged", "--json",
-                                                        "number,title,mergedAt,url", "--limit", "1000"]) or "[]")
-            data["issues"] = json.loads(recortex.gh(["issue", "list", "--repo", repo, "--state", "all", "--json",
-                                                 "number,title,createdAt,closedAt,url", "--limit", "1000"]) or "[]")
+            if records.supports("pull-requests"):
+                data["pull_requests"] = json.loads(records.github(["pr", "list", "--repo", repo, "--state", "merged",
+                                                                   "--json", "number,title,mergedAt,url", "--limit",
+                                                                   "1000"]) or "[]")
+            data["issues"] = records.find_issues("dated")
         except (recortex.GhError, ValueError) as error:
             data["github_error"] = str(error)[:300]
     documents = []
@@ -245,8 +248,11 @@ def gap(root, repo, since, offline):
         out["files"] = sorted({f for f in git(root, "log", "--since", since, "--name-only", "--format=").splitlines() if f})
     if repo and not offline:
         try:
-            merged = json.loads(recortex.gh(["pr", "list", "--repo", repo, "--state", "merged", "--json",
-                                         "number,title,mergedAt,url", "--limit", "500"]) or "[]")
+            merged = []
+            if record_store.for_repo(repo).supports("pull-requests"):
+                merged = json.loads(record_store.for_repo(repo).github(
+                    ["pr", "list", "--repo", repo, "--state", "merged", "--json", "number,title,mergedAt,url",
+                     "--limit", "500"]) or "[]")
             out["pull_requests"] = [p for p in merged if not since or (p.get("mergedAt") or "") > since]
         except (recortex.GhError, ValueError) as error:
             out["github_error"] = str(error)[:300]
