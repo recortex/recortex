@@ -36,13 +36,13 @@ Examples:
 import argparse
 import datetime
 import difflib
-import json
 import os
 import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import lint_drafts  # noqa: E402
 
 RULE = "\n---\n\n"
@@ -71,9 +71,9 @@ def split_record(text):
 
 def find_record(repo, number, former):
     """Record comments by this account on the issue that keep exactly this former body."""
-    me = recortex.gh(["api", "user", "--jq", ".login"]).strip()
-    rows = recortex.parse_json_stream(recortex.gh(
-        ["api", "--paginate", "repos/%s/issues/%d/comments?per_page=100" % (repo, number)]))
+    records = record_store.for_repo(repo)
+    me = records.whoami()
+    rows = recortex.parse_json_stream(records.list_entries(number))
     wanted = recortex.normalize(former.replace("\r\n", "\n").replace("\r", "\n").strip("\n"))
     found = []
     for row in rows:
@@ -114,6 +114,7 @@ def main(argv=None):
 
     config = recortex.load_config()
     repo = recortex.resolve_repo(args.repo, config)
+    records = record_store.for_repo(repo, config)
     print(recortex.describe(config, repo))
     profiles = [p.strip() for p in args.profile.split(",") if p.strip()] if args.profile else \
         list(config.get("profiles") or [])
@@ -150,8 +151,7 @@ def main(argv=None):
         print("nothing changed: fix the errors above")
         return 1
     if add:
-        have = {l["name"].lower() for l in json.loads(recortex.gh(
-            ["label", "list", "--repo", repo, "--json", "name", "--limit", "1000"]))}
+        have = {l["name"].lower() for l in records.list_labels()}
         missing = [label for label in add if label.lower() not in have]
         if missing:
             print("nothing changed: these labels do not exist in %s: %s; run setup_labels.py first"
@@ -204,20 +204,19 @@ def main(argv=None):
                                     "%s#%d now" % (repo, args.issue), args.body_file, lineterm="")
         print("\n".join(diff))
 
-    body_command = ["issue", "edit", str(args.issue), "--repo", repo, "--body-file", args.body_file]
-    labels_command = recortex.label_command(repo, args.issue, add, remove) if add or remove else None
+    labels_change = (add, remove) if add or remove else None
     if args.dry_run:
         if not done:
             if not found:
-                print("would run: " + recortex.show_command(["issue", "comment", str(args.issue), "--repo", repo,
-                                                         "--body-file", "-"], "the record comment above"))
+                print("would run: " + records.show("post_entry", args.issue, note="the record comment above"))
             print("would read back: the record comment, then check the live body again")
-            print("would run: " + recortex.show_command(body_command, "%d characters" % len(draft)))
-            print("would read back: gh api repos/%s/issues/%d and compare with %s" % (repo, args.issue, args.body_file))
+            print("would run: " + records.show("edit_body", args.issue, body_file=args.body_file,
+                                               note="%d characters" % len(draft)))
+            print("would read back: %s and compare with %s" % (records.read_back("issue", args.issue), args.body_file))
         if not plan["checked"]:
             print("section labels not checked: no profile defines any")
-        elif labels_command:
-            print("would run: " + recortex.show_command(labels_command))
+        elif labels_change:
+            print("would run: " + records.show("set_labels", args.issue, *labels_change))
             if remove and not args.allow_label_removal:
                 print("note: the real run removes section labels only with --allow-label-removal")
         else:
@@ -229,20 +228,19 @@ def main(argv=None):
         if found:
             # Adopted, possibly in another layout: read it back and check that it still keeps this former body.
             url = found[0][0]["html_url"]
-            match = re.search(r"#issuecomment-([0-9]+)", url)
-            parts = split_record(recortex.read_comment_body(repo, match.group(1))) if match else None
+            known = records.posted_id(url)
+            parts = split_record(recortex.read_comment_body(repo, known)) if known else None
             if not parts or parts[1] != recortex.normalize(live.replace("\r\n", "\n").replace("\r", "\n").strip("\n")):
                 print("stopped: the adopted record comment %s no longer keeps the former body; the body was not "
                       "replaced" % url)
                 return 1
             print("verified: record comment %s keeps the former body" % url)
         else:
-            url = recortex.gh(["issue", "comment", str(args.issue), "--repo", repo, "--body-file", "-"],
-                          stdin=comment).strip().split("\n")[-1]
+            url = records.post_entry(args.issue, body=comment).strip().split("\n")[-1]
             print("posted: %s" % url)
-            match = re.search(r"#issuecomment-([0-9]+)", url)
-            if not match or not recortex.verify_body(comment, recortex.read_comment_body(repo, match.group(1)),
-                                                 "record comment %s" % url):
+            posted = records.posted_id(url)
+            if not posted or not recortex.verify_body(comment, recortex.read_comment_body(repo, posted),
+                                                      "record comment %s" % url):
                 print("stopped: the record comment did not read back; the body was not replaced")
                 return 1
 
@@ -252,8 +250,8 @@ def main(argv=None):
                   "The record comment %s says the body was replaced, which is not so: post a correction comment that "
                   "links to it, then save the live body again, redraft, and rerun" % url)
             return 1
-        recortex.gh(body_command)
-        print("ran: " + recortex.show_command(body_command))
+        records.edit_body(args.issue, body_file=args.body_file)
+        print("ran: " + records.show("edit_body", args.issue, body_file=args.body_file))
         if not recortex.verify_body(draft, recortex.read_issue_body(repo, args.issue), "%s#%d" % (repo, args.issue)):
             return 1
 
@@ -261,9 +259,9 @@ def main(argv=None):
     if not plan["checked"]:
         print("section labels not checked: no profile defines any")
         return 0
-    if labels_command:
-        recortex.gh(labels_command)
-        print("ran: " + recortex.show_command(labels_command))
+    if labels_change:
+        records.set_labels(args.issue, *labels_change)
+        print("ran: " + records.show("set_labels", args.issue, *labels_change))
     now = recortex.read_issue(repo, args.issue)["labels"]
     add, remove = recortex.label_changes(now, wanted, profiles)
     if add or remove:
