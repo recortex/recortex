@@ -264,6 +264,30 @@ class ApplyLocalTests(Fresh):
         self.assertEqual([], os.listdir(path))
         self.assertEqual([], self.storage.record_bindings())
 
+    def test_a_chosen_folder_that_holds_anything_is_not_written_into(self):
+        path = os.path.join(self.outside, "not-empty")
+        os.mkdir(path, 0o700)
+        with open(os.path.join(path, "notes.md"), "w") as handle:
+            handle.write("a file of the user's\n")
+        before = self.snapshot()
+        done = self.apply("--yes", path=path)
+        self.assertNotEqual(0, done.returncode)
+        self.assertIn("is not empty", done.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.project, ".recortex.json")))
+        self.assertEqual(["notes.md"], os.listdir(path))
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual([], self.storage.record_bindings())
+
+    def test_a_folder_that_already_holds_a_record_json_is_not_written_over(self):
+        import local_store
+        path = os.path.join(self.outside, "other-record")
+        os.mkdir(path, 0o700)
+        with mock.patch.object(local_store.LocalStore, "create", return_value=False):
+            with self.assertRaises(SystemExit) as caught:
+                self.setup.make_record("own", path, None, "k3f5x2m7q4w6z5ab", {"project": "p"}, {"profiles": ["software"]})
+        self.assertIn("already holds a record.json", str(caught.exception))
+        self.assertEqual([], self.storage.record_bindings())
+
     def test_a_folder_inside_the_project_is_refused_as_a_path(self):
         done = self.apply("--yes", path=os.path.join(self.project, "inner"))
         self.assertNotEqual(0, done.returncode)

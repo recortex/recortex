@@ -1586,9 +1586,14 @@ def make_record(place, path, project_folder, record_id, answers, config):
             real, kind = storage_module.check_record_folder(project_folder, "project", create=True), "project"
         elif path is not None:
             real, kind = storage_module.check_record_folder(path, "chosen", create=True), "chosen"
+            if os.listdir(real):   # a folder of the user's own that holds anything is not written into: it may hold another record
+                raise SystemExit("error: the folder %s is not empty; setup writes a record into an empty folder, and nothing was "
+                                 "written" % real)
         else:
             real, kind = storage_module.check_record_folder(storage_module.own_record_folder(record_id, create=True), "own"), "own"
-        local_store.LocalStore.create(real, record_id, answers["project"] or "project", recortex.profile_names(config["profiles"]))
+        if not local_store.LocalStore.create(real, record_id, answers["project"] or "project", recortex.profile_names(config["profiles"])):
+            raise SystemExit("error: the record folder already holds a record.json; setup does not write over it, and nothing else "
+                             "was written")
         if place == "project":
             storage_module.link_new_record_file(os.path.join(real, ".gitattributes"), b"* -text\n")
         storage_module.bind_record(record_id, real, kind)
