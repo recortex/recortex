@@ -178,7 +178,7 @@ class ScanTests(Box):
 
     def test_a_subfolder_a_missing_folder_and_a_link_to_a_folder(self):
         path = self.folder("rec")
-        os.mkdir(os.path.join(path, "topics"))
+        os.mkdir(os.path.join(path, "topics"), 0o700)   # a folder of the record that others can write is refused on a scan
         self.put(os.path.join(path, "topics", "x.md"))
         self.assertEqual(["x.md"], [row[0] for row in storage.scan_record_folder(path, "topics")])
         self.assertEqual([], storage.scan_record_folder(path, "nothing"))
