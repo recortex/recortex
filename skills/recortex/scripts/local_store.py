@@ -41,6 +41,10 @@ RECORD_LIMIT = 65536
 LABELS_MAX = 50
 TITLE_MAX = 256
 YOUNG_SECONDS = 2        # a file with no seal that is this young may be one that is still being written
+NOT_FIT = "recortex: the text does not fit a record file; nothing was written."
+DUPLICATE = ("recortex: two files of the record carry the same number, as after two copies of the record were changed apart. "
+             "Nothing was read. hooks.py --doctor names them.")
+SLUG_TRIES = 50
 RECORD_JSON_REFUSED = "recortex: the record folder's record.json does not pass its check; nothing was read."
 OWN_AUTHOR = record_store.LOCAL_OWNER
 OTHER_AUTHOR = "other-machine"
@@ -267,13 +271,41 @@ def render(kind, front, body, relpath, record_id, seal=None):
     return signed + seal_line.encode("ascii") + b"\n"
 
 
+def checked(kind, front, body, relpath, record_id):
+    """The bytes of a file, made and then read the way the reader will read them: they must come back sealed, with the same kind,
+    front matter and body, or nothing is written. One rule, so that a writer and the reader cannot drift apart (a title, a label,
+    a NUL or text that is not UTF-8 that the reader would refuse is refused here, before a file exists)."""
+    try:
+        data = render(kind, front, body, relpath, record_id)
+        back = parse_file(data, relpath, record_id)
+    except (UnicodeError, Unread, ValueError, TypeError, KeyError):
+        raise Refused(NOT_FIT)
+    if back.state != "sealed" or back.kind != kind or back.front != front or back.body != body:
+        raise Refused(NOT_FIT)
+    return data
+
+
 def slug_of(title, number, taken):
-    """A slug from a title, once, at creation: lowercase, runs of other characters to one hyphen, cut to 60;
-    topic-<number> when nothing is left, when the slug is taken or when it is reserved."""
+    """A slug from a title, once, at creation: lowercase, runs of other characters to one hyphen, cut to 60. When nothing is
+    left, or the slug is reserved or taken (`taken` holds every name in the topics folder, a file or a folder, read or not),
+    topic-<number>, then topic-<number>-2, -3 and so on until a name is free; Refused after SLUG_TRIES."""
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].strip("-")
-    if not slug or not SLUG.fullmatch(slug) or slug == HUB_FOLDER or slug in taken:
-        return "topic-%d" % number
-    return slug
+    if slug and SLUG.fullmatch(slug) and slug != HUB_FOLDER and slug not in taken:
+        return slug
+    for attempt in range(1, SLUG_TRIES + 1):
+        candidate = "topic-%d" % number if attempt == 1 else "topic-%d-%d" % (number, attempt)
+        if candidate not in taken:
+            return candidate
+    raise Refused("recortex: a name for the topic's file could not be found.")
+
+
+def attributed(parsed, number):
+    """`parsed`, an entry or a version of a topic's text, as it counts when it is read under topic `number` (the number of the
+    topic whose folder holds it): sealed only when its own sealed front matter names that topic, else changed. The folder is no
+    seal; an entry's own `topic` is. A file that is not sealed stays what it is."""
+    if parsed.state == "sealed" and parsed.front.get("topic") != number:
+        return Parsed(parsed.kind, parsed.front, parsed.body, parsed.relpath, "changed", parsed.key_id, parsed.mac)
+    return parsed
 
 
 # ---------------------------------------------------------------- the store
@@ -375,10 +407,13 @@ class LocalStore:
                 continue
             if parsed is not None and parsed.kind == "topic":
                 found.append((parsed.number, relpath, parsed))
-        return sorted(found, key=lambda item: (item[0], item[1]))
+        found.sort(key=lambda item: (item[0], item[1]))
+        if len({item[0] for item in found}) != len(found):
+            raise record_store.RecordFolderError(DUPLICATE, "duplicate")   # the sync's rule: two diverged copies are not read
+        return found
 
     def topic(self, number):
-        """(relpath, Parsed) of topic `number`, or raises Missing."""
+        """(relpath, Parsed) of topic `number`, or raises Missing; two files that carry one number are refused (topics)."""
         for found, relpath, parsed in self.topics():
             if found == number:
                 return relpath, parsed
@@ -399,10 +434,20 @@ class LocalStore:
                 found.append((match.group(1), match.group(2), entry_number(match.group(2)), name, size, mtime))
         return sorted(found)
 
+    def topic_number_of(self, relpath):
+        """The number of the topic file at relpath as it reads now, or None when it does not read."""
+        try:
+            parsed = self.read_parsed(relpath)
+        except (Unread, storage.StorageError):
+            return None
+        return None if parsed is None else (1 if parsed.kind == "hub" else parsed.number)
+
     def read_entries(self, relpath, kinds=("entry",)):
-        """[(Parsed, number, mtime_ns)] of the files of kind in `kinds` in a topic's folder that read, oldest first."""
+        """[(Parsed, number, mtime_ns)] of the files of kind in `kinds` in a topic's folder that read, oldest first. A file counts
+        as sealed only when its own sealed `topic` is the number of the topic it is read under (attributed)."""
         folder = self.folder_of(relpath)
         rows = self.scan(folder)
+        topic = self.topic_number_of(relpath)
         result = []
         for created, entry_id, number, name, size, mtime in self.entry_rows(relpath):
             try:
@@ -411,7 +456,7 @@ class LocalStore:
                 continue
             if parsed is None or parsed.kind not in kinds or parsed.entry_id != entry_id:
                 continue
-            result.append((parsed, number, mtime))
+            result.append((attributed(parsed, topic), number, mtime))
         result.sort(key=lambda item: (item[0].front["created"], item[2], item[0].relpath))
         return result
 
@@ -438,10 +483,12 @@ class LocalStore:
         }
 
     def entry_row(self, number, relpath, parsed, entry_no, mtime_ns):
+        """The row of an entry as a comment. Its topic is its own sealed `topic`, never the folder it was found in."""
         created = parsed.front["created"]
         updated = created if parsed.state != "changed" else self.edited_stamp(parsed, mtime_ns, created)
-        return {"id": entry_no, "node_id": parsed.entry_id, "issue_url": self.api_issue(number),
-                "html_url": self.address(number, entry_no), "user": {"login": self.author_of(parsed)}, "body": parsed.body,
+        topic = parsed.front["topic"]
+        return {"id": entry_no, "node_id": parsed.entry_id, "issue_url": self.api_issue(topic),
+                "html_url": self.address(topic, entry_no), "user": {"login": self.author_of(parsed)}, "body": parsed.body,
                 "created_at": created, "updated_at": updated, "state_seal": parsed.state}
 
     # ------------------------------------------------------------ the interface: what the store has
@@ -488,7 +535,7 @@ class LocalStore:
                 except (Unread, storage.StorageError):
                     continue
                 if parsed is not None and parsed.kind == "entry" and parsed.entry_id == entry_id:
-                    return number, relpath, parsed, entry_no, mtime
+                    return number, relpath, attributed(parsed, number), entry_no, mtime
         raise record_store.Missing("recortex: the record has no such entry.")
 
     def read_entry(self, cid, timeout=60):
@@ -506,7 +553,7 @@ class LocalStore:
         for parsed, number, mtime in self.read_entries(relpath):
             changed = parsed.state == "changed"
             rows.append({
-                "url": self.address(hub, number), "created": parsed.front["created"], "body": parsed.body,
+                "url": self.address(parsed.front["topic"], number), "created": parsed.front["created"], "body": parsed.body,
                 "author": self.author_of(parsed),
                 "last_edited": self.edited_stamp(parsed, mtime, parsed.front["created"]) if changed else None,
                 "editor": None, "edit_total": 1 if changed else 0, "edit_editors": [None] if changed else [],
@@ -600,7 +647,8 @@ class LocalStore:
         return relpath, parsed
 
     def _write_topic(self, relpath, front, body):
-        storage.replace_record_file(self.path(relpath), render(front["kind"], front, body, relpath, self.record_id))
+        data = checked(front["kind"], front, body, relpath, self.record_id)
+        storage.replace_record_file(self.path(relpath), data)
         self._cache.clear()
 
     def _put_version(self, relpath, number, body, created):
@@ -611,36 +659,63 @@ class LocalStore:
             name = "%s-%s.md" % (name_stamp(created), entry_id)
             rel = "%s/%s" % (folder, name)
             front = {"recortex": 1, "kind": "body", "id": entry_id, "topic": number, "created": created}
-            if storage.link_new_record_file(self.path(rel), render("body", front, body, rel, self.record_id)):
+            if storage.link_new_record_file(self.path(rel), checked("body", front, body, rel, self.record_id)):
                 return entry_id
         raise Refused("recortex: a version of the text could not be made.")
 
+    def _numbers_in_use(self):
+        """The highest topic number that any topic file carries, read or not, sealed or not: a file that was changed or written
+        elsewhere keeps its number, because a number used twice stops the sync. A file that does not read is looked at for its
+        number line alone."""
+        highest = 1
+        names_ = [(HUB_FILE, self.scan())] + [("%s/%s" % (TOPICS_FOLDER, row[0]), None) for row in self.scan(TOPICS_FOLDER)
+                                                if row[3] == "file" and row[0].endswith(".md")]
+        for relpath, listing in names_:
+            try:
+                data = storage.read_record_file(self.path(relpath), FILE_LIMIT)
+            except storage.StorageError:
+                continue
+            found = re.search(rb"^number: ([1-9][0-9]{0,8})\r?$", data[:FRONT_LIMIT + 64], re.M) if data else None
+            if found:
+                highest = max(highest, int(found.group(1)))
+        return highest
+
     def create_issue(self, title, labels, body=None, body_file=None):
         text = self._text(body, body_file)
-        if not isinstance(title, str) or not title.strip() or len(title) > TITLE_MAX or any(
-                ord(char) < 32 or ord(char) == 127 for char in title):
-            raise Refused("recortex: the title does not fit a record file.")
         labels = list(labels)
-        if len(labels) > LABELS_MAX or not all(isinstance(l, str) and recortex.LABEL_NAME.fullmatch(l) for l in labels):
-            raise Refused("recortex: a label does not fit a record file.")
         with storage.record_lock(self.record_id):
-            existing = self.topics()
+            self.topics()   # two files with one number: nothing is made on top of that
             created = stamp()
             if "hub" in labels:
-                if any(number == 1 for number, relpath, parsed in existing):
-                    raise Refused("recortex: this record has a hub already.")
+                if any(row[0] == HUB_FILE for row in self.scan()):
+                    raise Refused("recortex: this record has a hub already.")   # in any state: hub.md is taken
                 number, relpath, kind = 1, HUB_FILE, "hub"
+                tries = [relpath]
             else:
-                number = max([1] + [n for n, r, p in existing]) + 1
+                number = self._numbers_in_use() + 1
                 if number > NUMBER_MAX:
                     raise Refused("recortex: the record holds the most topics there can be.")
-                taken = {r.split("/")[-1][:-3] for n, r, p in existing if n != 1}
-                relpath, kind = "%s/%s.md" % (TOPICS_FOLDER, slug_of(title, number, taken)), "topic"
+                kind = "topic"
+                taken = set()
+                for row in self.scan(TOPICS_FOLDER):   # every name there is, a file or a folder, whether it reads or not
+                    taken.add(row[0][:-3] if row[0].endswith(".md") else row[0])
+                tries = None
             if kind == "topic":
                 storage.make_record_folder(self.path(TOPICS_FOLDER))
             front = {"recortex": 1, "kind": kind, "number": number, "title": title, "labels": labels, "state": "open",
                      "created": created, "updated": created}
-            storage.replace_record_file(self.path(relpath), render(kind, front, text, relpath, self.record_id))
+            for _ in range(SLUG_TRIES):
+                if tries is None:
+                    slug = slug_of(title, number, taken)
+                    relpath = "%s/%s.md" % (TOPICS_FOLDER, slug)
+                data = checked(kind, front, text, relpath, self.record_id)
+                if storage.link_new_record_file(self.path(relpath), data):   # never replaces what is there
+                    break
+                if tries is not None:
+                    raise Refused("recortex: this record has a hub already.")
+                taken.add(slug)   # made by someone since the listing: the next free name
+            else:
+                raise Refused("recortex: a name for the topic's file could not be found.")
             self._cache.clear()
             self._put_version(relpath, number, text, created)
         return self.address(number)
@@ -650,8 +725,9 @@ class LocalStore:
         with storage.record_lock(self.record_id):
             relpath, parsed = self._own_topic(number)
             created = stamp()
-            self._put_version(relpath, number, text, created)
             front = dict(parsed.front, updated=created)
+            checked(front["kind"], front, text, relpath, self.record_id)   # refused before the version file is made
+            self._put_version(relpath, number, text, created)
             self._write_topic(relpath, front, text)
 
     def post_entry(self, issue, body=None, body_file=None):
@@ -659,6 +735,8 @@ class LocalStore:
         with storage.record_lock(self.record_id):
             relpath, parsed = self.topic(issue)
             folder = self.folder_of(relpath)
+            checked("entry", {"recortex": 1, "kind": "entry", "id": "aaaaaaaaaaaaaaaa", "topic": issue, "created": stamp()},
+                    text, "%s/2000-01-01T0000Z-aaaaaaaaaaaaaaaa.md" % folder, self.record_id)   # refused before a folder is made
             storage.make_record_folder(self.path(folder))
             created = stamp()
             used = {number for _, _, number, _, _, _ in self.entry_rows(relpath)}
@@ -669,7 +747,7 @@ class LocalStore:
                     continue
                 rel = "%s/%s-%s.md" % (folder, name_stamp(created), entry_id)
                 front = {"recortex": 1, "kind": "entry", "id": entry_id, "topic": issue, "created": created}
-                if storage.link_new_record_file(self.path(rel), render("entry", front, text, rel, self.record_id)):
+                if storage.link_new_record_file(self.path(rel), checked("entry", front, text, rel, self.record_id)):
                     return self.address(issue, entry_no)
         raise Refused("recortex: an entry could not be made.")
 

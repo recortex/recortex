@@ -1034,5 +1034,191 @@ class Writes(local_record.LocalSandbox):
         self.assertTrue(self.folder.startswith(self.dir + os.sep))
 
 
+
+class Hardening(local_record.LocalSandbox):
+    """The four findings of the automatic check on the first version of the store (24 November 2026)."""
+
+    def tree(self):
+        found = {}
+        for place, _, names_ in os.walk(self.folder):
+            for name in names_:
+                path = os.path.join(place, name)
+                found[os.path.relpath(path, self.folder)] = self.read(path)
+        return found
+
+    # ---- 1. creating a topic never replaces a file
+    def test_a_stray_file_or_folder_with_the_name_of_the_new_topic_is_never_replaced(self):
+        for stray, make, title, expected in (("topic-5.md", "file", "!!!", "topic-5-2.md"),
+                                             ("sample-title.md", "file", "Sample title", "topic-6.md"),
+                                             ("sample-title", "folder", "Sample title", "topic-7.md")):
+            with self.subTest(stray=stray):
+                path = os.path.join(self.folder, "topics", stray)
+                if make == "file":
+                    self.write(path, b"not a record file at all")
+                else:
+                    os.mkdir(path)
+                before = self.tree()
+                self.store.create_issue(title, ["final-record"], body="b")
+                self.assertIn(expected, self.files("topics"))
+                after = self.tree()
+                for name, data in before.items():
+                    self.assertEqual(data, after[name], name)   # nothing that was there is touched
+                os.remove(path) if make == "file" else os.rmdir(path)
+
+    def test_the_fallback_name_is_tried_with_a_suffix_until_one_is_free(self):
+        store = self.store
+        for name in ("topic-5.md", "topic-5-2.md", "topic-5-3.md"):
+            self.write(os.path.join(self.folder, "topics", name), b"stray")
+        store.create_issue("!!!", [], body="b")
+        self.assertIn("topic-5-4.md", self.files("topics"))
+        self.assertEqual(self.local_store.slug_of("x", 9, {"x", "topic-9", "topic-9-2"}), "topic-9-3")
+        with self.assertRaises(self.local_store.Refused):
+            self.local_store.slug_of("x", 9, {"x"} | {"topic-9"} | {"topic-9-%d" % n for n in range(2, 60)})
+
+    def test_a_name_made_since_the_listing_is_not_replaced_either(self):
+        real = self.storage.link_new_record_file
+        calls = []
+
+        def link(path, data):
+            calls.append(path)
+            if len(calls) == 1:
+                real(path, b"made by someone else meanwhile")
+            return real(path, data)
+        with mock.patch.object(self.storage, "link_new_record_file", side_effect=link):
+            self.store.create_issue("Fresh topic", [], body="b")
+        self.assertEqual(b"made by someone else meanwhile", self.read(os.path.join(self.folder, "topics", "fresh-topic.md")))
+        self.assertIn("topic-5.md", self.files("topics"))
+
+    def test_a_second_hub_is_refused_whatever_state_hub_md_is_in(self):
+        for what in ("changed", "unread"):
+            with self.subTest(what=what):
+                path = os.path.join(self.folder, "hub.md")
+                saved = self.read(path)
+                if what == "changed":
+                    self.write(path, saved.replace(b"sample project", b"edited project"))
+                else:
+                    self.write(path, b"garbage")
+                before = self.read(path)
+                with self.assertRaises(self.local_store.Refused):
+                    self.store.create_issue("Another hub", ["hub"], body="x")
+                self.assertEqual(before, self.read(path))
+                self.write(path, saved)
+
+    def test_the_next_number_is_above_every_number_a_topic_file_carries(self):
+        store = self.store
+        self.write(os.path.join(self.folder, "topics", "elsewhere.md"), b"---\nrecortex: 1\nkind: topic\nnumber: 12\nbroken")
+        self.assertEqual("#13", store.create_issue("After the unread one", [], body="b"))
+        changed = self.damage("changed-body", "speed")
+        self.write(changed, self.read(changed).replace(b"number: 3", b"number: 20", 1))   # a changed topic keeps its number
+        self.assertEqual("#21", store.create_issue("After the changed one", [], body="b"))
+
+    # ---- 2. an entry's topic is its own sealed one
+    def test_an_entry_read_under_another_topic_than_its_own_is_changed(self):
+        path = self.topic_path("reader")
+        self.write(path, self.read(path).replace(b"number: 2", b"number: 7", 1))   # the folder now belongs to topic 7
+        store = self.store
+        rows = json.loads(store.list_entries(7))
+        self.assertEqual(len(self.entries["reader"]), len(rows))
+        for row in rows:
+            self.assertEqual("changed", row["state_seal"])
+            self.assertEqual("local:%s/issues/2" % self.repo, row["issue_url"])   # its own sealed topic, not the folder's
+            self.assertTrue(row["html_url"].startswith("#2/"))
+            self.assertNotEqual(row["created_at"], row["updated_at"])
+        one = store.read_entry(self.entries["reader"][0])
+        self.assertEqual(("changed", "local:%s/issues/2" % self.repo), (one["state_seal"], one["issue_url"]))
+        sealed = self.local_store.attributed(self.local_store.parse_file(self.read(self.entry_path("speed", 0)), os.path.relpath(
+            self.entry_path("speed", 0), self.folder), self.record_id), 3)
+        self.assertEqual("sealed", sealed.state)
+        self.assertEqual("changed", self.local_store.attributed(sealed, 9).state)
+        self.assertEqual("foreign", self.local_store.attributed(self.local_store.Parsed("entry", {"topic": 3}, "", "x", "foreign", "k", "m"), 9).state)
+
+    # ---- 3. a number cannot be shadowed
+    def test_two_files_with_one_topic_number_are_refused_by_every_read_and_write(self):
+        self.damage("duplicate-number")
+        store = self.store
+        for call in (lambda: store.topic(2), lambda: store.read_issue(2), lambda: store.read_issue(3), lambda: store.list_entries(2),
+                     lambda: store.find_issues("mine"), lambda: store.read_entry(self.entries["reader"][0]),
+                     lambda: store.post_entry(3, body="x"), lambda: store.edit_body(3, body="x"),
+                     lambda: store.create_issue("More", [], body="b"), lambda: store.hub_entries(1)):
+            with self.assertRaises(self.record_store.RecordFolderError) as caught:
+                call()
+            self.assertEqual(self.local_store.DUPLICATE, str(caught.exception))
+            self.assertEqual("duplicate", caught.exception.kind)
+
+    def test_an_entry_may_still_be_posted_into_a_topic_that_is_changed_or_foreign(self):
+        self.damage("changed-body")
+        address = self.store.post_entry(2, body="posted into a changed topic")
+        self.assertEqual("sealed", self.store.read_entry(self.store.posted_id(address))["state_seal"])
+        with self.assertRaises(self.local_store.Refused):
+            self.store.edit_body(2, body="the text itself waits")
+
+    # ---- 4. the writer refuses what the reader refuses
+    def test_nothing_is_written_that_the_reader_would_refuse(self):
+        store = self.store
+        before = self.tree()
+        refused = [
+            lambda: store.create_issue("T\u2028x", [], body="b"), lambda: store.create_issue("T\x00", [], body="b"),
+            lambda: store.create_issue("ok", [], body="a\x00b"), lambda: store.create_issue("ok", [], body="\ud800"),
+            lambda: store.create_issue("ok", ["Bad Label"], body="b"), lambda: store.create_issue("x" * 257, [], body="b"),
+            lambda: store.post_entry(2, body="a\x00b"), lambda: store.post_entry(2, body="\udc80"),
+            lambda: store.edit_body(3, body="a\x00b"), lambda: store.edit_body(3, body="\ud800"),
+        ]
+        for call in refused:
+            with self.assertRaises(self.local_store.Refused) as caught:
+                call()
+            self.assertNotIn("\x00", str(caught.exception))
+        self.assertEqual(before, self.tree())   # not a file, not a version file, not a folder
+
+    def test_every_write_path_reads_back_sealed_with_the_same_front_and_body(self):
+        store = self.store
+        odd = "caf\u00e9 \u4e2d\u6587\n---\nline with\rcarriage return\n<!-- recortex:seal v1 key=%s mac=%s -->\n\n\n" % ("a" * 16, "b" * 64)
+        store.create_issue("Odd \"title\" \u00fcber", ["final-record", "topic:odd"], body=odd)
+        number = 5
+        store.edit_body(number, body=odd + "more")
+        address = store.post_entry(number, body=odd)
+        store.set_labels(number, ["rd:methods"], [])
+        store.close(number, "completed")
+        store.reopen(number)
+        self.assertIn("odd-title-ber.md", self.files("topics"))
+        problems = []
+        for place, _, names_ in os.walk(self.folder):
+            for name in names_:
+                if name == "record.json":
+                    continue
+                path = os.path.join(place, name)
+                relpath = os.path.relpath(path, self.folder).replace(os.sep, "/")
+                parsed = self.local_store.parse_file(self.read(path), relpath, self.record_id)
+                if parsed.state != "sealed":
+                    problems.append(relpath)
+        self.assertEqual([], problems)
+        self.assertEqual(odd, store.read_entry(store.posted_id(address))["body"])
+        self.assertEqual(odd + "more", store.read_issue(number)["body"])
+        self.assertEqual("Odd \"title\" \u00fcber", store.read_issue(number)["title"])
+
+    def test_the_check_refuses_when_the_two_halves_disagree(self):
+        front = {"recortex": 1, "kind": "entry", "id": "p7d2n5v3c5x4b6aq", "topic": 2, "created": "2026-11-23T14:12:07Z"}
+        relpath = "topics/reader/2026-11-23T1412Z-p7d2n5v3c5x4b6aq.md"
+        self.assertTrue(self.local_store.checked("entry", front, "ok\n", relpath, self.record_id))
+        real = self.local_store.parse_file
+
+        def other_body(data, path, record):
+            parsed = real(data, path, record)
+            parsed.body = "something else\n"
+            return parsed
+        with mock.patch.object(self.local_store, "parse_file", side_effect=other_body):
+            with self.assertRaises(self.local_store.Refused):
+                self.local_store.checked("entry", front, "ok\n", relpath, self.record_id)
+
+        def other_state(data, path, record):
+            parsed = real(data, path, record)
+            parsed.state = "changed"
+            return parsed
+        with mock.patch.object(self.local_store, "parse_file", side_effect=other_state):
+            with self.assertRaises(self.local_store.Refused):
+                self.local_store.checked("entry", front, "ok\n", relpath, self.record_id)
+        with self.assertRaises(self.local_store.Refused):
+            self.local_store.checked("entry", dict(front, id="BAD"), "ok\n", relpath, self.record_id)
+
+
 if __name__ == "__main__":
     unittest.main()
