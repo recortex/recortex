@@ -35,6 +35,17 @@ class Controls:
 
 class ObserverAdvisoryTests(unittest.TestCase):
     def setUp(self):
+        # observer.main(["advisory", ...]) reaches the grants file of the user key's folder, which only XDG_STATE_HOME moves;
+        # without this a run of the test wrote enable-grants.json under the real ~/.local/state/recortex
+        os.makedirs(Path(fixtures.ROOT) / ".tmp", exist_ok=True)
+        home = tempfile.TemporaryDirectory(prefix="advisory-home-", dir=Path(fixtures.ROOT) / ".tmp")
+        self.addCleanup(home.cleanup)
+        folders = mock.patch.dict(os.environ, {"HOME": home.name, "XDG_STATE_HOME": os.path.join(home.name, "state"),
+                                               "XDG_CACHE_HOME": os.path.join(home.name, "cache"),
+                                               "XDG_CONFIG_HOME": os.path.join(home.name, "config"),
+                                               "XDG_DATA_HOME": os.path.join(home.name, "data")})
+        folders.start()
+        self.addCleanup(folders.stop)
         self.fixture = fixtures.ObserverContextTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.tearDown)

@@ -12,6 +12,9 @@ commands, and each command is a line of the test block in CONTRIBUTING.md: a lis
     python tests/ci_shards.py run NAME      run the shard's commands one after the other, all of them even after a
                                             failure, and exit 1 if any failed
 
+`run` gives its commands a fresh home: HOME and the four XDG folders (cache, state, config, data) point into a new folder
+under .tmp/, so that no test writes under the real home (`isolated_home`). A test that needs another place sets its own.
+
 `check` loads the tests without running them: it asks the loader for everything that `discover -s tests` finds, asks it
 again for each command, and compares the two. A new test file or class that no shard holds fails the check, and so
 does one that two shards hold. tests/test_jobs_ci.py runs it, so a new test cannot be skipped by CI without a red test.
@@ -28,8 +31,10 @@ import collections
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
@@ -93,6 +98,36 @@ SHARDS = [
         files("test_jobs_[s-z]*.py"),                                                                 # 194
     ]),
 ]
+
+
+def isolated_home():
+    """A fresh folder under .tmp/ and the variables that make it the home of a test run: HOME and the four XDG folders of the
+    plugin's storage. Returns (the folder, {name: path}). The folder is made with mode 0700."""
+    os.makedirs(os.path.join(ROOT, ".tmp"), exist_ok=True)
+    folder = tempfile.mkdtemp(prefix="home-", dir=os.path.join(ROOT, ".tmp"))
+    return folder, {"HOME": folder,
+                    "XDG_CACHE_HOME": os.path.join(folder, ".cache"),
+                    "XDG_STATE_HOME": os.path.join(folder, ".local", "state"),
+                    "XDG_CONFIG_HOME": os.path.join(folder, ".config"),
+                    "XDG_DATA_HOME": os.path.join(folder, ".local", "share")}
+
+
+def run_isolated(name, out=sys.stdout):
+    """`run`, with the variables of isolated_home in this process's environment, which the commands inherit. The folder is
+    removed afterwards unless RECORTEX_TEST_KEEP=1; the environment is put back."""
+    folder, variables = isolated_home()
+    saved = {key: os.environ.get(key) for key in variables}
+    os.environ.update(variables)
+    try:
+        return run(name, out=out)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        if os.environ.get("RECORTEX_TEST_KEEP") != "1":
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 def command_line(args):
@@ -245,7 +280,7 @@ def main(argv):
             sys.stderr.write(line + "\n")
         return 1 if lines else 0
     if argv[:1] == ["run"] and len(argv) == 2:
-        return run(argv[1])
+        return run_isolated(argv[1])
     sys.stderr.write("usage: ci_shards.py plan [NAME] | check | run NAME\n")
     return 2
 

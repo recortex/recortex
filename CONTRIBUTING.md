@@ -4,6 +4,8 @@
 
 ```bash
 mkdir -p .tmp
+export HOME=$(mktemp -d "$PWD/.tmp/home-XXXXXX")   # a fresh home: no test writes under your own
+export XDG_CACHE_HOME=$HOME/.cache XDG_STATE_HOME=$HOME/.local/state XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share
 python3 -m unittest tests.test_scripts.{LintTests,HelperTests,WorkingFolderTests,LabelTests,CreateIssuesTests,PostVerifiedTests,ConvertBodyTests,SyncTests,RecoveryTests,CompileTests,TriageAndFormatTests,CatchUpTests,SnapshotTests,PackagingTests,CompatTests,MemoryFormatTests,DocsRecordTests,DocsTests,SetupTests}
 python3 -m unittest tests.test_scripts.{ResumeBlockTests,IndexTests,HookTests,StatusLineTests,StorageTests,GuardTests,BackgroundTests,DiscoveryTests,CurrentNameTests}
 python3 -m unittest tests.test_scripts.{EditHistoryTests,MindIndexTests,MindModelTests,MindPageTests,MindTextTests,MindFigureTests,FieldFormTests,FieldTests}
@@ -27,6 +29,8 @@ python3 -m unittest discover -s tests -p 'test_dashboard_*.py'
 python3 -m unittest discover -s tests -p 'test_decision_*.py'
 python3 -m unittest discover -s tests -p 'test_project_map*.py'
 ```
+
+Run the block in a shell of its own: its two `export` lines give every command a fresh home, so that no test writes under yours (`tests/test_jobs_isolation.py` fails when a run has none), and a test that needs another place sets its own. `python tests/ci_shards.py run NAME` does the same for one shard, and a test run starts no live dashboard server unless a test about the server sets `RECORTEX_TEST_SERVE=1`.
 
 The local batches cover every test. The four class lists cover `tests/test_scripts.py`. The discovery commands cover the observer, continuity, manuscripts, setup, jobs and dashboard. The four `test_jobs_` patterns split a long run by filename. Keep each batch under five minutes on an idle development machine. Use `mkdir -p .tmp` before running a batch in a fresh clone.
 
