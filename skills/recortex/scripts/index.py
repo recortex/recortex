@@ -630,6 +630,9 @@ def run_sync(repo, hub, rebuild, timeout, deadline, timeline_cap):
     db = connect(repo)
     for statement in MIND_TRIGGERS:
         db.execute(statement)
+    if record_store.is_local(repo):   # a local record: its files fill the same tables (local_sync.py)
+        import local_sync
+        return local_sync.run(db, repo, hub, rebuild, clock, timeline_cap)
     if get_meta(db, "synced_at") and get_meta(db, "links_ready") != "1":
         # An index from before 0.9.0 holds no merge state of pull requests and no sub-issue parents: the issues are
         # listed again and their body edits read again, once (a sync that stops goes on from where it was).
