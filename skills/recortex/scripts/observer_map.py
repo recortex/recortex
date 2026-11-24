@@ -9,6 +9,7 @@ import mind_model
 import observer_context
 import observer_holds
 import observer_publisher
+import record_store
 import observer_runtime as runtime
 import observer_sources
 import observer_store
@@ -319,7 +320,7 @@ def proposal(repo, hub, state, memories, sources, candidate, judgment, shadow):
     if len(runtime.canonical(impact).encode("utf-8")) > 4800 or len(line) > 440 or any(char in line for char in "\u202a\u202b\u202d\u202e\u2066\u2067\u2068\u2069"):  # the whole review must fit the actual dialog
         return None
     citations = {"conversation": [{"message": s["source_id"], "role": s["role"], "at": s.get("at")} for s in cited],
-                 "record": ["https://github.com/%s/issues/%d#issuecomment-%d" % (repo, memories[k]["issue"], k)
+                 "record": [record_store.address_of(repo, memories[k]["issue"], k)
                             for k in candidate["memories"]]}
     item = {"created": time.time(), "hub": hub, "line": line, "change": change, "support": sorted(support), "cited": citations,
             "proof": support, "sources": sid, "operation": envelope, "judgment": judgment, "affected": impact,
@@ -461,27 +462,27 @@ def consider(store, repo, config, options, invoke, root):
         return result
 
 
-def verify_comments(repo, memories):
+def verify_comments(repo, memories, config=None):
     """REST timestamps alone cannot distinguish an outsider's edit made in the same second as the post."""
     if not memories:
         return
     nodes = {}
     allowed = {login.lower() for login in recortex.allowed_users(repo)}
+    records = record_store.for_repo(repo, config)
     try:
         for cid, memory in memories.items():
-            raw = observer_publisher._remote_comment(repo, cid)
+            raw = observer_publisher._remote_comment(repo, cid, config)
             author = (raw.get("user") or {}).get("login")
             actual = [memory["issue"], author, raw.get("body"), raw.get("created_at"), raw.get("updated_at")]
             if (type(raw.get("id")) is not int or raw["id"] != cid or not isinstance(author, str)
                     or author.lower() not in allowed or runtime.candidate_hash(actual) != memory["comment_hash"]
-                    or str(raw.get("issue_url", "")).lower() != "https://api.github.com/repos/%s/issues/%d" %
-                    (repo.lower(), memory["issue"])):
+                    or str(raw.get("issue_url", "")).lower() != records.api_issue(memory["issue"]).lower()):
                 raise observer_publisher.PublishError("stale_map_evidence")
             node = raw.get("node_id")
             if not isinstance(node, str) or not index.COMMENT_NODE.fullmatch(node):
                 raise observer_publisher.PublishError("map_evidence_unavailable")
             nodes[cid] = (node, None)
-        response = json.loads(recortex.gh(["api", "graphql", "-f", "query=" + index.comment_edits_query(nodes)]))
+        response = json.loads(records.histories(nodes))
         if response.get("errors"):
             raise observer_publisher.PublishError("map_evidence_unavailable")
         for cid in nodes:
@@ -542,7 +543,7 @@ def publish(store, repo, config, item, manual=False):
                 evidence = record(repo, hub, "", requested={int(k) for k in item["proof"]})
                 if evidence is None or item["proof"] != {str(k): runtime.candidate_hash(m) for k, m in evidence[1].items()}:
                     raise observer_publisher.PublishError("stale_map_evidence")
-                verify_comments(repo, evidence[1])
+                verify_comments(repo, evidence[1], config)
                 check()  # permissions and holds may have changed during the rebuild
                 observer_publisher._daily_cap(store, settings)
             result = project_map_io.commit(repo, hub, item["operation"], guard=guard)

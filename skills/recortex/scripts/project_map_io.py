@@ -10,6 +10,7 @@ import sys
 import index
 import observer_store
 import project_map as model
+import record_store
 import recortex
 import storage
 
@@ -31,7 +32,7 @@ def scope(repo, hub):
 
 def account(repo, hub):
     allowed = scope(repo, hub)
-    status, name = recortex.gh_account()
+    status, name = record_store.for_repo(repo).account_state()
     if status != "ready" or not isinstance(name, str):
         raise MapError("Sign in with an allowed project account.")
     if name.lower() not in allowed:
@@ -43,8 +44,9 @@ def account(repo, hub):
 def verified_rows(repo, hub, marker):
     """Fetch trusted, immutable comments for one project ledger, including edit-history checks."""
     allowed = scope(repo, hub)
-    expected = "https://api.github.com/repos/%s/issues/%s" % (repo.lower(), hub)
-    raw = recortex.gh(["api", "--paginate", "repos/%s/issues/%d/comments?per_page=100" % (repo, hub)])
+    records = record_store.for_repo(repo)
+    expected = records.api_issue(hub).lower()
+    raw = records.list_entries(hub)
     if not raw.strip():
         raise MapError("The hub comment listing was incomplete.")
     rows = {}
@@ -65,8 +67,7 @@ def verified_rows(repo, hub, marker):
     verified = []
     for start in range(0, len(ids), index.GRAPHQL_BATCH):
         batch = ids[start:start + index.GRAPHQL_BATCH]
-        query = index.comment_edits_query({cid: (rows[cid]["node_id"], None) for cid in batch})
-        answer = json.loads(recortex.gh(["api", "graphql", "-f", "query=" + query]))
+        answer = json.loads(records.histories({cid: (rows[cid]["node_id"], None) for cid in batch}))
         for cid in batch:
             node = (answer.get("data") or {}).get("c%d" % cid) or {}
             edits = node.get("userContentEdits") or {}
@@ -233,7 +234,7 @@ def commit(repo, hub, envelope, guard=None):
         data["sending"] = True
         save(receipt_path(repo, hub, key), data)
         try:
-            recortex.gh(command, stdin=body)
+            record_store.for_repo(repo).post_entry(hub, body=body)
         except recortex.GhError:
             pass  # the server might have accepted the body; the authoritative reread decides
         state = current(repo, hub)

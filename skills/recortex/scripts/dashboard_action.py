@@ -39,6 +39,7 @@ import observer_runtime
 import observer_store
 import post_verified
 import project_map
+import record_store
 import recortex
 import storage
 import dashboard_server
@@ -117,6 +118,7 @@ class Actions:
         if not os.path.isdir(self.root) or not recortex.valid_repo(self.config.get("repo")):
             raise ActionError("configured_project_required")
         self.repo = recortex.resolve_repo(None, self.config).lower()
+        self.records = record_store.for_repo(self.repo, self.config)
         self.config_hash = digest(canonical(self.config))
         self.session = secrets.token_hex(16)
         self.map_previews = {}
@@ -140,7 +142,7 @@ class Actions:
         return allowed
 
     def account(self):
-        state, login = recortex.gh_account()
+        state, login = self.records.account_state()
         if state != "ready" or login.lower() not in {name.lower() for name in self.authority()}:
             raise ActionError("allowed_account_required", 403)
         return login
@@ -382,15 +384,14 @@ class Actions:
             issue = operation["target"]["issue"]
             if operation["account"].lower() not in {n.lower() for n in self.authority()}:
                 raise ActionError("allowed_account_required")
-            pages = recortex.gh(["api", "--paginate", "repos/%s/issues/%d/comments?per_page=100" % (self.repo, issue)])
-            rows = recortex.parse_json_stream(pages)
+            rows = recortex.parse_json_stream(self.records.list_entries(issue))
             matches = [r for r in rows if isinstance(r, dict) and
                        "eventkey=" + operation["id"] in (r.get("body") or "")]
             if len(matches) != 1 or type(matches[0].get("id")) is not int:
                 raise ActionError("receipt_unavailable")
             number = matches[0]["id"]
-            row = json.loads(recortex.gh(["api", "repos/%s/issues/comments/%d" % (self.repo, number)]))
-            expected_issue = "https://api.github.com/repos/%s/issues/%d" % (self.repo, issue)
+            row = self.records.read_entry(number)
+            expected_issue = self.records.api_issue(issue)
             if (row.get("issue_url", "").lower() != expected_issue or
                     row.get("user", {}).get("login") != operation["account"] or
                     recortex.normalize(row.get("body", "")) != recortex.normalize(operation["body"]) or
@@ -398,7 +399,7 @@ class Actions:
                 raise ActionError("receipt_mismatch")
             operation["state"] = "recorded"
             operation["receipt"] = {"comment": number,
-                                    "url": "https://github.com/%s/issues/%d#issuecomment-%d" % (self.repo, issue, number)}
+                                    "url": self.records.address(issue, number)}
             operation["refresh"] = "pending"
             self.save(operation)
             dashboard_notes.add(self.repo, "step", issue)   # a session that began before this learns of it on its next prompt
@@ -514,8 +515,7 @@ class Actions:
                                 break
                             sources.append(dict(ref, summary=(memory["plain"] or memory["title"] or "")[:400],
                                                 state=memory["state"],
-                                                url="https://github.com/%s/issues/%d#issuecomment-%d" %
-                                                    (self.repo, ref["issue"], ref["comment"])))
+                                                url=self.records.address(ref["issue"], ref["comment"])))
                         else:
                             result["suggestions"].append(dict(row, available=True, sources=sources))
                             continue

@@ -99,13 +99,11 @@ class Service:
 
     def context(self, group, item):
         # Historical receipts retain only checked local citations and a display label safe to publish.
-        link = re.compile(r"https://github\.com/" + re.escape(self.repo)
-                          + r"/issues/([1-9][0-9]*)(?:#issuecomment-([1-9][0-9]*))?", re.I)
         def citation(url):
-            match = link.fullmatch(url)
-            if not match:
+            found = self.actions.records.parse_address(url)
+            if found is None:
                 raise ReviewError("The cited record could not be verified for this project.")
-            return {"issue": int(match[1]), "comment": int(match[2] or 0)}
+            return {"issue": found[0], "comment": found[1]}
         label = item["label"][:200]
         if (not ledger.words(label, 200) or observer_worker.privacy_problem(label, self.actions.config)
                 or observer_publisher.outbound_problem(label, self.repo)):
@@ -247,7 +245,7 @@ class Service:
         if (head(history, event) or {}).get("comment", 0) != event["previous"]:
             raise ReviewError("Another review won the race. Refresh the target.")
         self.check_text(event)
-        command = ["issue", "comment", str(self.hub), "--repo", self.repo, "--body-file", "-"]
+        command = ["issue", "comment", str(self.hub), "--repo", self.repo, "--body-file", "-"]   # what a hold is matched against
         map_io.holds(self.repo, self.hub, command)
         if event["id"] in op["sent"]:
             raise ReviewError("The earlier send is unconfirmed. Reconcile the original preview.")
@@ -257,7 +255,7 @@ class Service:
         op["sent"].append(event["id"])
         self.save(op)
         try:
-            recortex.gh(command, stdin=body)
+            self.actions.records.post_entry(self.hub, body=body)
         except recortex.GhError:
             pass
         self.actions.impact_dirty = True
