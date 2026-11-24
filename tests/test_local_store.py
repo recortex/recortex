@@ -724,7 +724,7 @@ class Operations(local_record.LocalSandbox):
     def test_the_hub_entries_are_the_dicts_read_hub_comments_returns_newest_first(self):
         hub = self.store.hub_entries(1)
         self.assertEqual(1, len(hub))
-        self.assertEqual({"url", "created", "body", "author", "last_edited", "editor", "edit_total", "edit_editors"}, set(hub[0]))
+        self.assertEqual({"url", "created", "body", "author", "last_edited", "editor", "edit_total", "edit_editors", "local"}, set(hub[0]))
         self.assertEqual(("local--record", None, 0, []), (hub[0]["author"], hub[0]["last_edited"], hub[0]["edit_total"],
                                                          hub[0]["edit_editors"]))
         self.store.post_entry(1, body="a later entry")

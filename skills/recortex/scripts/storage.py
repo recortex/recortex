@@ -616,7 +616,7 @@ def check_record_folder(path, place="chosen", create=False):
         problem = _record_problem(current, info, path)
         if problem in ("source-owner", "source-permissions") and current != path:
             import observer_sources
-            if not observer_sources.Trust().accepts(current, info, path, None):
+            if not observer_sources.Trust("record").accepts(current, info, path, None):
                 raise StorageError("a folder above the record folder can be replaced by another account",
                                    RECORD_KINDS[problem])
         elif problem:

@@ -259,6 +259,128 @@ class TrustAboveTests(LocalActsBox):
         self.assertEqual(base.pretool_guard.SUBAGENT_DENIAL, self.hook(self.command_trust("--failing", "--yes"), agent_id="a1"))
         self.assertFalse(self.said("trust", values))
 
+    def record_values(self):
+        return acts.ACTS["trust"].parse(mock.Mock(values=[], scope="record", path=None), acts.Context())
+
+    def transcript_values(self):
+        return dict(self.record_values(), record=False)
+
+    def test_the_record_scope_has_its_own_words_labels_and_descriptions(self):
+        record, transcripts = self.record_values(), self.transcript_values()
+        act = acts.ACTS["trust"]
+        self.assertTrue(act.text(record).startswith("Trust these folders above this project's local record, so that recortex can read and "
+                                                    "write the record on this machine? "))
+        self.assertIn("Another account that can write to one of them could replace the record's folder.", act.text(record))
+        self.assertNotIn("transcripts", act.text(record))
+        self.assertIn("Claude Code's transcripts", act.text(transcripts))   # the 1.7.0 and 1.8.0 question, word for word
+        self.assertTrue(act.labels(record)[0].startswith("Trust the record's folders "))
+        self.assertTrue(act.labels(transcripts)[0].startswith("Trust these folders "))
+        self.assertNotEqual(act.options(record)[0]["description"], act.options(transcripts)[0]["description"])
+        for item in act.options(record):
+            self.assertRegex(item["description"], acts.DESCRIPTION)
+        self.assertIn("record", act.text(record).lower())
+
+    def test_a_grant_for_the_transcripts_does_not_pass_for_the_record_and_the_other_way_round(self):
+        record, transcripts = self.record_values(), self.transcript_values()
+        act = acts.ACTS["trust"]
+        self.assertNotEqual(act.value(record), act.value(transcripts))
+        self.yes("trust", transcripts)
+        self.hook(self.command("observer.py", "trust-ancestor", "--failing", "--yes"))   # the transcripts' own command
+        self.hook(self.command_trust("--failing", "--yes"))
+        self.assertFalse(self.said("trust", record))   # the answer to the other question is no answer to this one
+        self.assertFalse(acts.allowed("trust", record))
+        self.yes("trust", record)
+        self.hook(self.command_trust("--failing", "--yes"))
+        self.assertTrue(self.said("trust", record))
+        self.assertFalse(acts.allowed("trust", transcripts))
+        self.assertTrue(acts.allowed("trust", record))
+
+    def test_a_trusted_folder_is_for_its_scope_alone(self):
+        import observer_sources
+        rows = [{"path": self.parent}]
+        observer_sources.trust_add(rows, self.project, self.folder_path, "record")
+        self.assertEqual(LOCAL_ID, self.store.record_id)   # trusted for the record
+        info = os.lstat(self.parent)
+        record, transcripts = observer_sources.Trust("record"), observer_sources.Trust("transcripts")
+        self.assertTrue(record.accepts(self.parent, info, self.folder_path))
+        self.assertFalse(transcripts.accepts(self.parent, info, self.folder_path))
+        entry = observer_sources.read_trusted(scope="record")[1][self.parent]
+        self.assertEqual("record", entry["scope"])
+        self.assertEqual({}, observer_sources.read_trusted(scope="transcripts")[1])   # the transcripts' file holds nothing of it
+        # an entry carried over from one file to the other trusts nothing: its HMAC holds the scope
+        self.assertNotEqual(entry["mac"], observer_sources._mac(self.parent, entry["uid"], entry["gid"], entry["mode"], "transcripts"))
+        self.assertEqual(entry["mac"], observer_sources._mac(self.parent, entry["uid"], entry["gid"], entry["mode"], "record"))
+        mutated = dict(entry, scope="transcripts")
+        self.assertFalse(observer_sources._valid_entry(self.parent, mutated, "record"))
+        self.assertFalse(observer_sources._valid_entry(self.parent, dict(entry, scope="record"), "transcripts"))
+
+    def test_the_transcripts_value_and_mac_are_what_they_were(self):
+        import observer_sources
+        rows = [{"path": "/srv/a", "uid": 1, "gid": 2, "mode": "0755", "world": False}]
+        self.assertEqual(acts.digest("trust", [["/srv/a", 1, 2, "0755"]]), acts.ACTS["trust"].value({"rows": rows, "path": ""}))
+        self.assertEqual(acts.digest("trust", "record", [["/srv/a", 1, 2, "0755"]]),
+                         acts.ACTS["trust"].value({"rows": rows, "path": "", "record": True}))
+        # the transcripts' MAC is computed from the four fields it always was computed from
+        import hmac, hashlib, json
+        key = observer_sources.storage.user_key(create=True)
+        expected = hmac.new(key, json.dumps(["ancestor", "/srv/a", 1, 2, 493], sort_keys=True, separators=(",", ":"),
+                                            ensure_ascii=False).encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+        self.assertEqual(expected, observer_sources._mac("/srv/a", 1, 2, 493))
+
+
+class TargetOwn(LocalActsBox):
+    """8.2: the folder whose ancestors are trusted is the folder the store opens: one resolver, record_store.local_folder_target."""
+
+    def target(self):
+        return acts.record_folder(self.project)
+
+    def test_the_trust_target_and_the_opened_folder_are_the_same(self):
+        self.assertEqual(os.path.realpath(self.target()), os.path.realpath(self.store.folder))
+        self.assertEqual((self.target(), self.place if self.place != "chosen" else "chosen"),
+                         (record_store.local_folder_target(LOCAL, self.config)[0], record_store.local_folder_target(LOCAL, self.config)[2]))
+
+
+class TargetChosen(TargetOwn):
+    place = "chosen"
+
+    def test_a_row_of_another_place_for_the_same_id_does_not_move_the_target(self):
+        other = os.path.join(self.base, "elsewhere")
+        os.mkdir(other, 0o700)
+        storage.bind_record(LOCAL_ID, other, "project")   # a row of a record inside some project: not for `own`
+        self.assertEqual(self.folder_path, self.target())
+        self.assertEqual(os.path.realpath(self.folder_path), os.path.realpath(self.store.folder))
+        newer = os.path.join(self.base, "chosen-parent", "rec-two")
+        local_store.LocalStore.create(storage.check_record_folder(newer, "chosen", create=True), LOCAL_ID, "sample project", ["software"])
+        storage.bind_record(LOCAL_ID, newer, "chosen")   # the last row of `own` or `chosen` is the one both use
+        self.assertEqual(newer, self.target())
+        self.assertEqual(os.path.realpath(newer), os.path.realpath(self.store.folder))
+
+
+class TargetProject(TargetOwn):
+    place = "project"
+
+    def test_a_copied_project_has_its_own_target_and_is_not_opened_there(self):
+        moved = os.path.join(self.base, "moved-project")
+        shutil.copytree(self.project, moved)
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": moved}):
+            self.assertEqual(os.path.join(os.path.realpath(moved), ".recortex"), acts.record_folder(moved))   # not the first checkout's
+            with self.assertRaises(record_store.StoreError) as caught:
+                record_store.for_repo(LOCAL, self.config)
+            self.assertIn(caught.exception.kind, ("moved", "unbound"))
+        self.assertEqual(os.path.realpath(self.target()), os.path.realpath(self.store.folder))
+
+
+class TargetUnknownPlace(LocalActsBox):
+    def test_a_place_this_version_does_not_know_has_no_target_and_no_store(self):
+        config = dict(self.config, place="elsewhere")
+        self.assertIsNone(record_store.local_folder_target(LOCAL, config))
+        with self.assertRaises(record_store.StoreError) as caught:
+            record_store.for_repo(LOCAL, config)
+        self.assertEqual("place", caught.exception.kind)
+        with open(os.path.join(self.project, ".recortex.json"), "w") as handle:
+            json.dump(config, handle)
+        self.assertIsNone(acts.record_folder(self.project))
+
 
 class InProjectStateTests(LocalActsBox):
     """9.3: what the question says of the project's repository is computed by acts.py from the remotes and GitHub, never taken from

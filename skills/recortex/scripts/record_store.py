@@ -574,6 +574,27 @@ def for_repo(repo, config=None):
 _LOCAL_STORES = {}
 
 
+def local_folder_target(repo, config, root=None):
+    """(path, row, place) of the folder where a local record is meant to be on this machine, from the project file and the machine's
+    rows alone, or None when the project file's place is not `own` or `project`. `row` is the binding that belongs to it, or None.
+    The one rule that opening the store and trusting the folders above the record both use: for `project`, the project's own
+    `.recortex` and its binding; for `own`, the last binding whose place is `own` or `chosen` (a folder of the user's own is `own`
+    in the project file), and without one the record's own default folder."""
+    import storage
+    if config.get("place") not in ("own", "project"):
+        return None
+    record_id = LOCAL_NAME.fullmatch(repo).group(1)
+    rows = storage.record_bindings(record_id)
+    if config["place"] == "project":
+        wanted = storage.record_path(root or recortex.project_root())
+        row = next((r for r in rows if r["path"] == wanted and r["place"] == "project"), None)
+        return wanted, row, "project"
+    mine = [r for r in rows if r["place"] in ("own", "chosen")]
+    if mine:
+        return mine[-1]["path"], mine[-1], mine[-1]["place"]
+    return os.path.join(storage.records_top(), storage.PRIVATE, names.RECORDS, record_id), None, "own"
+
+
 def _open_local(repo, config):
     """The LocalStore of the configuration's record. The machine must know the folder: a row of local-records.json (storage.
     record_bindings) binds the record's id to the real path of the folder that the project file's `place` names (for `own`,
@@ -583,26 +604,20 @@ def _open_local(repo, config):
     storage.StorageError (a link, another owner, a write bit, a folder above that another account can replace, missing)."""
     import local_store
     import storage
-    place = config.get("place")
-    if place not in ("own", "project"):
+    target = local_folder_target(repo, config)
+    if target is None:
         raise RecordFolderError("recortex: the project file names a place for the record that this version does not know; "
                                 "nothing was read.", "place")
-    record_id = LOCAL_NAME.fullmatch(repo).group(1)
-    rows = storage.record_bindings(record_id)
-    if place == "project":
-        wanted = storage.record_path(recortex.project_root())
-        row = next((r for r in rows if r["path"] == wanted and r["place"] == "project"), None)
-        if row is None:
+    _, row, _ = target
+    if row is None:
+        rows = storage.record_bindings(LOCAL_NAME.fullmatch(repo).group(1))
+        if config.get("place") == "project":
             raise RecordFolderError("recortex: this project's local record is not bound to this folder on this machine." if not rows
                                     else "recortex: this project's local record is bound to another folder on this machine.",
                                     "moved" if rows else "unbound")
-    else:
-        mine = [r for r in rows if r["place"] in ("own", "chosen")]
-        if not mine:
-            raise RecordFolderError("recortex: this machine has no folder for this local record." if not rows else
-                                    "recortex: this local record is bound to another place on this machine.",
-                                    "unbound" if not rows else "moved")
-        row = mine[-1]
+        raise RecordFolderError("recortex: this machine has no folder for this local record." if not rows else
+                                "recortex: this local record is bound to another place on this machine.",
+                                "unbound" if not rows else "moved")
     try:
         folder = storage.check_record_folder(row["path"], "own" if row["place"] == "own" else row["place"])
         info = os.lstat(folder)

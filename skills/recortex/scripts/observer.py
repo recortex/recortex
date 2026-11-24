@@ -740,8 +740,9 @@ def trust_ancestor(args):
     if sum(chosen) != 1 or (args.yes and (args.list or args.forget)) or (args.list and args.forget):
         emit({"code": "invalid-arguments", "note": "Give exactly one of PATH, --failing, --list or --forget PATH."})
         return 1
+    scope = "record" if args.record else "transcripts"
     if args.list:
-        state, rows = observer_sources.trusted_listing()
+        state, rows = observer_sources.trusted_listing(scope)
         emit({"action": "trust-ancestor", "state": state,
               "entries": [dict(row, owner=_account(_pwd().getpwuid, row["uid"], "pw_name") if _pwd() else "",
                                group=_account(_grp().getgrgid, row["gid"], "gr_name") if _grp() else "")
@@ -749,7 +750,7 @@ def trust_ancestor(args):
         return 0
     if args.forget:
         try:
-            gone = observer_sources.trust_forget(args.forget)
+            gone = observer_sources.trust_forget(args.forget, scope)
         except observer_sources.TrustError as error:
             emit({"code": str(error)}); return 1
         emit({"action": "trust-ancestor", "forgotten": gone})
@@ -773,7 +774,7 @@ def trust_ancestor(args):
         if not acts.allowed("trust", values):   # on the user's own terminal it needs none, and spends one
             emit(acts.refusal("trust", values, root)); return 1
         try:
-            observer_sources.trust_add(chosen_rows, root, acts.record_folder(root) if args.record else None)
+            observer_sources.trust_add(chosen_rows, root, acts.record_folder(root) if args.record else None, scope)
         except observer_sources.TrustError as error:
             emit({"code": str(error)}); return 1
         stored = True

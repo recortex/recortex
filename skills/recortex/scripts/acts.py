@@ -432,7 +432,6 @@ class Undo(Act):
 def record_folder(root):
     """The real folder of the project's local record where it is meant to be, from the project file alone: the record's own folder,
     `.recortex` of the project, or the folder this machine's row binds. None for a project with no local record."""
-    import storage
     try:
         config = recortex.load_config()
     except (OSError, ValueError, SystemExit):
@@ -440,15 +439,8 @@ def record_folder(root):
     repo = config.get("repo")
     if not record_store.is_local(repo) or config.get("store") != "local":
         return None
-    record_id = record_store.LOCAL_NAME.fullmatch(repo).group(1)
-    if config.get("place") == "project":
-        return storage.record_path(root)
-    rows = storage.record_bindings(record_id)
-    if rows:   # the folder this machine's row binds (a folder of the user's own is "own" in the project file)
-        return rows[-1]["path"]
-    if config.get("place") == "own":
-        return os.path.join(storage.records_top(), storage.PRIVATE, names.RECORDS, record_id)
-    return None
+    target = record_store.local_folder_target(repo, config, root)   # the rule that opening the store uses too
+    return None if target is None else target[0]
 
 
 def trust_rows(root, path=None, record=False):
@@ -461,7 +453,7 @@ def trust_rows(root, path=None, record=False):
         folder = record_folder(root)
         if folder is None:
             return None
-    failing = observer_sources.failing(root, folder)
+    failing = observer_sources.failing(root, folder, "record" if record else "transcripts")
     rows = failing
     if path is not None:
         if not (os.path.isabs(path) and os.path.normpath(path) == path and os.path.isdir(path) and not os.path.islink(path)
@@ -526,6 +518,10 @@ class Trust(Act):
             shown += " and %d more (observer.py trust-ancestor --failing lists them)." % (len(rows) - ROWS_SHOWN)
         world = (" Anyone on this machine can replace what is below a folder that all may write and that has no sticky "
                  "bit.") if any(row["world"] for row in rows) else ""
+        if values.get("record"):
+            return ("Trust these folders above this project's local record, so that recortex can read and write the record on this "
+                    "machine? %s Each stays trusted only while its owner, group and mode stay as shown. Another account that can write "
+                    "to one of them could replace the record's folder.%s" % (shown, world))
         return ("Trust these folders above Claude Code's transcripts, so that recortex can take notes and read your answers "
                 "on this machine? %s Each stays trusted only while its owner, group and mode stay as shown. Its owner, and "
                 "its group where the group may write, can put another folder in its place.%s" % (shown, world))
@@ -535,12 +531,17 @@ class Trust(Act):
             (values["path"],) if values.get("path") else ("--failing",)) + ("--yes",)
         # the label carries a short token of the folders it is for, so that words typed for one set of folders are no answer
         # for another
+        if values.get("record"):
+            return [option("Trust the record's folders %s" % self.value(values)[:8],
+                           "The record is read and written here while the folders stay as they are.", "yes", [words]),
+                    option("Do not trust them", "Nothing changes; the record stays unread on this machine.", "no")]
         return [option("Trust these folders %s" % self.value(values)[:8],
                        "Notes and answers work here while the folders stay as they are.", "yes", [words]),
                 option("Do not trust them", "Nothing changes; the observer stays off on this machine.", "no")]
 
     def value(self, values):
-        return digest(self.kind, [[row["path"], row["uid"], row["gid"], row["mode"]] for row in values["rows"]])
+        rows = [[row["path"], row["uid"], row["gid"], row["mode"]] for row in values["rows"]]
+        return digest(self.kind, "record", rows) if values.get("record") else digest(self.kind, rows)   # the scope is in the value
 
     def ask_words(self, values):
         return (["--scope", "record"] if values.get("record") else []) + ([values["path"]] if values.get("path") else [])

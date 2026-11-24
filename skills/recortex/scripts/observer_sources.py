@@ -159,6 +159,11 @@ Group write is accepted only on a folder, and only for the owner's user private 
 # folder and a transcript that belong to the user and are closed to group and others.
 TRUSTED = "trusted-ancestors.json"
 TRUSTED_LOCK = "trusted-ancestors.lock"
+# The folders above a local record's folder are trusted the same way and for that alone: their own file, their own lock, and the scope
+# in every entry and in its HMAC, so that what was trusted for the transcripts never covers a record folder, and the other way round.
+TRUSTED_RECORD = "trusted-record-ancestors.json"
+TRUSTED_RECORD_LOCK = "trusted-record-ancestors.lock"
+SCOPES = {"transcripts": (TRUSTED, TRUSTED_LOCK), "record": (TRUSTED_RECORD, TRUSTED_RECORD_LOCK)}
 TRUSTED_FORM = 1
 TRUSTED_ENTRIES = 64
 TRUSTED_CAP = 65536
@@ -182,30 +187,33 @@ def _trusted_path_ok(path):
             and not CONTROL.search(path))
 
 
-def _mac(path, uid, gid, mode):
-    """The entry's HMAC under the user key: a trusted file restored or edited from elsewhere trusts nothing."""
+def _mac(path, uid, gid, mode, scope="transcripts"):
+    """The entry's HMAC under the user key: a trusted file restored or edited from elsewhere trusts nothing. The scope of a record
+    folder is in it; the transcripts' own is what it always was."""
     import hmac
     key = storage.user_key(create=False, tighten=False)
-    return hmac.new(key, _canonical(["ancestor", path, uid, gid, mode]).encode("utf-8"),
-                    hashlib.sha256).hexdigest()[:32]
+    parts = ["ancestor", path, uid, gid, mode] if scope == "transcripts" else ["ancestor", scope, path, uid, gid, mode]
+    return hmac.new(key, _canonical(parts).encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
 
-def _valid_entry(path, entry):
-    return (_trusted_path_ok(path) and isinstance(entry, dict) and set(entry) == {"uid", "gid", "mode", "mac", "added"}
+def _valid_entry(path, entry, scope="transcripts"):
+    fields = {"uid", "gid", "mode", "mac", "added"} | (set() if scope == "transcripts" else {"scope"})
+    return (_trusted_path_ok(path) and isinstance(entry, dict) and set(entry) == fields
+            and (scope == "transcripts" or entry["scope"] == scope)
             and all(type(entry[name]) is int and 0 <= entry[name] <= ID_MAX for name in ("uid", "gid"))
             and type(entry["mode"]) is int and 0 <= entry["mode"] <= 0o7777
             and isinstance(entry["mac"], str) and MAC.fullmatch(entry["mac"])
             and type(entry["added"]) in (int, float) and 0 <= entry["added"] < 4102444800)
 
 
-def read_trusted(create=False):
+def read_trusted(create=False, scope="transcripts"):
     """(state, entries): "none" with {} when there is no file; "ok" with the entries; "unreadable" with {} for a file that
     cannot be read, is too large, is not JSON, does not fit the form or is not safe (storage.check_path). Never raises."""
     try:
         private = storage.folder(storage.state_top(for_key=True), create=create, tighten=create)
         if private is None:
             return "none", {}
-        path = os.path.join(private, TRUSTED)
+        path = os.path.join(private, SCOPES[scope][0])
         info = storage.check_path(path, "file")
         if not info:
             return "none", {}
@@ -214,7 +222,7 @@ def read_trusted(create=False):
         data = json.loads(storage.read_file(path) or "")
         if (not isinstance(data, dict) or set(data) != {"form", "entries"} or data["form"] != TRUSTED_FORM
                 or not isinstance(data["entries"], dict) or len(data["entries"]) > TRUSTED_ENTRIES
-                or not all(_valid_entry(key, value) for key, value in data["entries"].items())):
+                or not all(_valid_entry(key, value, scope) for key, value in data["entries"].items())):
             return "unreadable", {}
         return "ok", dict(data["entries"])
     except (OSError, ValueError, RecursionError, storage.StorageError):
@@ -225,23 +233,23 @@ class Trust:
     """The user's trusted ancestors, loaded once, on first use, and never raising: a file that cannot be used trusts
     nothing (`state` is then "unreadable"). One per walk of a path; the file is read only when a component fails."""
 
-    def __init__(self):
+    def __init__(self, scope="transcripts"):
+        self.scope = scope
         self.state, self.entries, self.loaded = "none", {}, False
         self.used = []   # the paths accepted so far
 
     def load(self):
         if not self.loaded:
             self.loaded = True
-            self.state, self.entries = read_trusted()
+            self.state, self.entries = read_trusted(scope=self.scope)
         return self
 
-    @staticmethod
-    def _matches(path, entry, info):
+    def _matches(self, path, entry, info):
         import hmac
         try:
             same = (entry["uid"], entry["gid"], entry["mode"]) == (info.st_uid, getattr(info, "st_gid", None),
                                                                    stat.S_IMODE(info.st_mode))
-            return same and hmac.compare_digest(entry["mac"], _mac(path, entry["uid"], entry["gid"], entry["mode"]))
+            return same and hmac.compare_digest(entry["mac"], _mac(path, entry["uid"], entry["gid"], entry["mode"], self.scope))
         except Exception:  # noqa: BLE001 - nothing here may raise: a key that cannot be read trusts nothing
             return False
 
@@ -287,14 +295,14 @@ def _world(info):
     return bool(info.st_mode & stat.S_IWOTH) and not info.st_mode & stat.S_ISVTX
 
 
-def failing(project_root, folder=None):
+def failing(project_root, folder=None, scope="transcripts"):
     """The folders the walk to the transcript refuses now, for `observer.py trust-ancestor --failing`: path, code, boundary,
     uid, gid, mode (four octal digits), `trustable` (see _trustable) and `world` (all may write, no sticky bit). A folder
     the user trusted and that still matches is not among them. [] when there is no problem or the walk cannot be made. With
     `folder` the walk is the one from a local record's folder (the same rule, the same trust), not from the transcripts'."""
     try:
         folder = folder or project_directory(project_root)
-        trust = Trust()
+        trust = Trust(scope)
         rows, current = [], folder
         while True:
             if os.path.lexists(current):
@@ -317,7 +325,7 @@ class TrustError(ValueError):
     """Fixed code only."""
 
 
-def trust_add(rows, project_root, folder=None):
+def trust_add(rows, project_root, folder=None, scope="transcripts"):
     """Trust each folder of `rows` (dicts with a "path", or paths) exactly as it is now: its owner, group and mode are read
     again here and stored with their HMAC, under the lock of the file, which is never replaced when it cannot be read. A
     folder that is not a directory above the project folder, or is a link, is refused whole (TrustError "not-an-ancestor"),
@@ -337,38 +345,40 @@ def trust_add(rows, project_root, folder=None):
         if isinstance(row, dict) and "uid" in row and (row["uid"], row.get("gid"), row.get("mode")) != (
                 uid, gid, format(mode, "04o")):
             raise TrustError("trust_changed")   # what the user was asked about is no longer how the folder is: nothing is stored
-        stored[path] = {"uid": uid, "gid": gid, "mode": mode, "mac": _mac(path, uid, gid, mode), "added": int(time.time())}
-    with field_sheet.approvals_lock(storage.state_top(for_key=True), TRUSTED_LOCK):
-        state, entries = read_trusted(create=True)
+        stored[path] = {"uid": uid, "gid": gid, "mode": mode, "mac": _mac(path, uid, gid, mode, scope), "added": int(time.time())}
+        if scope != "transcripts":
+            stored[path]["scope"] = scope
+    with field_sheet.approvals_lock(storage.state_top(for_key=True), SCOPES[scope][1]):
+        state, entries = read_trusted(create=True, scope=scope)
         if state == "unreadable":
             raise TrustError("unreadable")
         entries.update(stored)
         if len(entries) > TRUSTED_ENTRIES:
             raise TrustError("too-many")
-        storage.write_file(os.path.join(storage.folder(storage.state_top(for_key=True)), TRUSTED),
+        storage.write_file(os.path.join(storage.folder(storage.state_top(for_key=True)), SCOPES[scope][0]),
                            json.dumps({"form": TRUSTED_FORM, "entries": entries}, sort_keys=True, indent=1) + "\n")
     return stored
 
 
-def trust_forget(path):
+def trust_forget(path, scope="transcripts"):
     """Remove one entry. True when there was one; TrustError "unreadable" when the file cannot be used (it stays)."""
     import field_sheet
-    with field_sheet.approvals_lock(storage.state_top(for_key=True), TRUSTED_LOCK):
-        state, entries = read_trusted(create=False)
+    with field_sheet.approvals_lock(storage.state_top(for_key=True), SCOPES[scope][1]):
+        state, entries = read_trusted(create=False, scope=scope)
         if state == "unreadable":
             raise TrustError("unreadable")
         if path not in entries:
             return False
         entries.pop(path)
-        storage.write_file(os.path.join(storage.folder(storage.state_top(for_key=True)), TRUSTED),
+        storage.write_file(os.path.join(storage.folder(storage.state_top(for_key=True)), SCOPES[scope][0]),
                            json.dumps({"form": TRUSTED_FORM, "entries": entries}, sort_keys=True, indent=1) + "\n")
     return True
 
 
-def trusted_listing():
+def trusted_listing(scope="transcripts"):
     """(state, rows): each entry with its path, uid, gid, mode and whether the folder still matches it now."""
-    state, entries = read_trusted()
-    trust = Trust()
+    state, entries = read_trusted(scope=scope)
+    trust = Trust(scope)
     trust.loaded, trust.state, trust.entries = True, state, entries
     rows = []
     for path, entry in sorted(entries.items()):

@@ -62,7 +62,7 @@ Each question shows counts and fixed words, never the text. Ask them one by one,
 
 ## A folder above the record that others can write
 
-When the brief says the record is not read because a folder above it can be replaced by another account, ask the question of `trust` for that folder: `acts.py ask trust --scope record`. It is the same question and the same trust as for the folders above Claude Code's transcripts: on a yes, `observer.py trust-ancestor --record --failing --yes` trusts each folder exactly as it is (its owner, group and mode); a change of any of them refuses the record again.
+When the brief says the record is not read because a folder above it can be replaced by another account, ask the question of `trust` for that folder: `acts.py ask trust --scope record`. It is the act `trust` with a scope of its own: its question names the local record, and a yes for it never covers the folders above Claude Code's transcripts, nor the other way round. On a yes, `observer.py trust-ancestor --record --failing --yes` trusts each folder exactly as it is (its owner, group and mode); a change of any of them refuses the record again.
 
 ## What the operations are
 
