@@ -39,6 +39,7 @@ import index  # noqa: E402
 import lint_drafts  # noqa: E402
 import lookup as record_lookup  # noqa: E402
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import record_format  # noqa: E402
 
 SCRIPTS = os.path.dirname(os.path.abspath(__file__))
@@ -206,11 +207,10 @@ PLAN_ISSUE_UNREAD = ("plan: could not look for an open issue with the label plan
 def refuse_second_plan(config, repo, profile):
     """Stop, before anything is created or planned (a dry run too), when an open issue of the repository already carries
     the label plan and the project file records no plan (the caller asks only then): a project that joined a record with a plan, or whose file lost
-    its `plans` entry, would otherwise get a second plan issue. One read through recortex.gh(); the number printed is an
+    its `plans` entry, would otherwise get a second plan issue. One read through the record store; the number printed is an
     integer from GitHub's answer that passed the same check as the project file's, never any text of the issue."""
     try:
-        found = json.loads(recortex.gh(["issue", "list", "--repo", repo, "--label", LABEL[0], "--state", "open",
-                                        "--json", "number", "--limit", "100"], timeout=60))
+        found = record_store.for_repo(repo, config).find_issues("plan", timeout=60)
         numbers = sorted(row["number"] for row in found if isinstance(row, dict) and type(row.get("number")) is int
                          and 1 <= row["number"] <= 2147483647) if isinstance(found, list) else None
     except (recortex.GhError, ValueError, RecursionError, KeyError, TypeError):
@@ -242,31 +242,33 @@ def setup_command(args):
     if not args.dry_run:
         with open(body_file, "w", encoding="utf-8") as handle:
             handle.write(body)
-    label_command = ["label", "create", LABEL[0], "--repo", repo, "--color", LABEL[1], "--description", LABEL[2]]
-    create = ["issue", "create", "--repo", repo, "--title", title, "--body-file", body_file, "--label", LABEL[0]]
+    records = record_store.for_repo(repo, config)
     if args.dry_run:
-        say("would run: " + recortex.show_command(label_command, "only when the label is missing"))
-        say("would run: " + recortex.show_command(create, "%d characters" % len(body)))
+        if records.supports("label-catalog"):
+            say("would run: " + records.show("create_label", LABEL[0], LABEL[1], LABEL[2], note="only when the label is missing"))
+        say("would run: " + records.show("create_issue", title, [LABEL[0]], body_file=body_file,
+                                         note="%d characters" % len(body)))
         say("would link the new issue under hub #%d as a sub-issue, and write \"plans\": {\"%s\": <number>} into %s"
             % (hub, profile, config.get("_path") or "the project file"))
         say("dry run: nothing was written")
         return 0
-    have = {row["name"].lower() for row in json.loads(recortex.gh(
-        ["label", "list", "--repo", repo, "--json", "name", "--limit", "1000"]))}
-    if LABEL[0] not in have:
-        recortex.gh(label_command)
-        say("ran: " + recortex.show_command(label_command))
-    url = recortex.gh(create).strip().split("\n")[-1]
-    match = re.search(r"/issues/([0-9]+)$", url)
-    if not match:
+    if records.supports("label-catalog"):
+        have = {row["name"].lower() for row in records.list_labels()}
+        if LABEL[0] not in have:
+            records.create_label(LABEL[0], LABEL[1], LABEL[2])
+            say("ran: " + records.show("create_label", LABEL[0], LABEL[1], LABEL[2]))
+    url = records.create_issue(title, [LABEL[0]], body_file=body_file).strip().split("\n")[-1]
+    try:
+        number = records.created_number(url)
+    except recortex.GhError:
         sys.exit("error: could not find the new issue's number in gh's answer; look for it on GitHub and add "
                  "\"plans\" to the project file by hand")
-    number = int(match.group(1))
     say("created: %s" % url)
     if not recortex.verify_body(body, recortex.read_issue_body(repo, number), "%s#%d" % (repo, number)):
         return 1
-    import sub_issues
-    say("sub-issue link: %s" % sub_issues.link(repo, hub, number))
+    if records.supports("sub-issues"):
+        import sub_issues
+        say("sub-issue link: %s" % sub_issues.link(repo, hub, number))
     write_config(config, lambda data: data.setdefault("plans", {}).__setitem__(profile, number),
                  "the number of the plan issue")
     try:
@@ -713,9 +715,9 @@ def post_command(args):
         pending = {k: SYNTHETIC + n for n, k in enumerate(todo) if k not in ids}
         path = os.path.join(posting, key + ".md")
         text = with_decision(drafts[key], substituted(drafts[key].text, dict(pending, **ids)), decision, first, items)
-        command = ["issue", "comment", str(issue), "--repo", repo, "--body-file", path]
         if args.dry_run:
-            say("would run: " + recortex.show_command(command, "%s, %d characters" % (key + ".md", len(text))))
+            say("would run: " + record_store.for_repo(repo).show("post_entry", issue, body_file=path,
+                                                                note="%s, %d characters" % (key + ".md", len(text))))
             continue
         recortex.write_working_files(posting, {key + ".md": text})
         ran = subprocess.run([sys.executable, post_verified, "comment", "--repo", repo, "--issue", str(issue),
@@ -760,8 +762,8 @@ def render_command(args):
     draft, base, backup = (os.path.join(work, name) for name in ("plan-body.md", "plan-body.base.md",
                                                                   "plan-body.before.md"))
     if args.dry_run:
-        say("would run: " + recortex.show_command(["issue", "edit", str(issue), "--repo", repo, "--body-file", draft],
-                                                   "%d characters" % len(body)))
+        say("would run: " + record_store.for_repo(repo).show("edit_body", issue, body_file=draft,
+                                                            note="%d characters" % len(body)))
         say("dry run: nothing was written")
         return 0
     live = recortex.read_issue_body(repo, issue)
