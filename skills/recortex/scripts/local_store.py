@@ -47,6 +47,7 @@ NOT_FIT = "recortex: the text does not fit a record file; nothing was written."
 DUPLICATE = ("recortex: two files of the record carry the same number, as after two copies of the record were changed apart. "
              "Nothing was read. hooks.py --doctor names them.")
 SLUG_TRIES = 50
+FOLDER_LOOK = 20   # the files of a topic's folder that the next number looks at, newest first
 RECORD_JSON_REFUSED = "recortex: the record folder's record.json does not pass its check; nothing was read."
 OWN_AUTHOR = record_store.LOCAL_OWNER
 OTHER_AUTHOR = "other-machine"
@@ -709,14 +710,38 @@ class LocalStore:
             if parsed is not None and parsed.state == "sealed" and parsed.kind in ("hub", "topic"):
                 sealed.add(parsed.number)
                 continue
-            block = front_block(data)
+            block = front_block(data[:FRONT_LIMIT * 2].lstrip(b"\xef\xbb\xbf").replace(b"\r\n", b"\n"))   # a sync tool's BOM and CRLF
             found = re.search(rb"^number: ([1-9][0-9]{0,8})$", block, re.M) if block else None
             if found:
                 other.add(int(found.group(1)))
+        for row in self.scan(TOPICS_FOLDER):   # a topic whose own file is gone is still named by what is in its folder
+            if row[3] == "dir" and SLUG.fullmatch(row[0]) and row[0] != HUB_FOLDER:
+                remembered = self._topic_of_folder("%s/%s" % (TOPICS_FOLDER, row[0]))
+                if remembered:
+                    sealed.add(remembered)
         number = max(sealed) + 1
         while number in other or number in sealed:
             number += 1
         return number
+
+    def _topic_of_folder(self, folder):
+        """The `topic` that the newest file of a topic's folder whose own seal holds says (an entry or an earlier text), or None. At most
+        FOLDER_LOOK files are read, newest name first; a file that does not read is passed over, and so is a folder that cannot be read
+        safely (the sync refuses it by name; a new topic is not made to wait for it)."""
+        try:
+            rows = self.scan(folder)
+            names_ = sorted((row[0] for row in rows if row[3] == "file" and ENTRY_NAME.fullmatch(row[0])), reverse=True)
+            for name in names_[:FOLDER_LOOK]:
+                try:
+                    parsed = self.read_parsed("%s/%s" % (folder, name), rows)
+                except Unread:
+                    continue
+                topic = parsed.front.get("topic") if parsed is not None and parsed.state == "sealed" and parsed.kind in ("body", "entry") else None
+                if type(topic) is int and 0 < topic <= NUMBER_MAX:
+                    return topic
+        except storage.StorageError:
+            return None
+        return None
 
     def create_issue(self, title, labels, body=None, body_file=None):
         text = self._text(body, body_file)

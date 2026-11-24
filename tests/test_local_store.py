@@ -623,8 +623,8 @@ class Numbers(local_record.LocalSandbox):
         self.assertEqual("#1", store.create_issue("Hub", ["hub"], body="x"))
         self.assertEqual("#2", store.create_issue("First", ["final-record"], body="x"))
         self.assertEqual("#3", store.create_issue("Second", ["final-record"], body="x"))
-        os.remove(self.topic_path_of("second"))   # a topic that is gone leaves a gap, and the next number is above the highest
-        self.assertEqual("#3", store.create_issue("Third", ["final-record"], body="x"))
+        os.remove(self.topic_path_of("second"))   # a topic whose file is gone is still named by its folder: its number is not given again
+        self.assertEqual("#4", store.create_issue("Third", ["final-record"], body="x"))
         with self.assertRaises(self.local_store.Refused):
             store.create_issue("Another hub", ["hub"], body="x")
 
@@ -1130,6 +1130,41 @@ class Hardening(local_record.LocalSandbox):
         self.write(os.path.join(self.folder, "topics", "late.md"),
                    b"---\n" + b"x: 1\n" * 1200 + b"---\nnumber: 5\n")
         self.assertEqual("#5", store.create_issue("Not moved by those", [], body="b"))
+
+    def test_a_topic_whose_file_is_gone_is_still_named_by_the_newest_sealed_file_of_its_folder(self):
+        store = self.store
+        os.remove(self.topic_path("task"))   # the highest topic, #4; its entry stays in its folder
+        self.assertEqual("#5", store.create_issue("After the one that is gone", [], body="b"))
+        # the newest file that reads and is sealed names it; a planted newer file that is not sealed names nothing
+        folder = os.path.join(self.folder, "topics", self.slug("speed"))
+        self.write(os.path.join(folder, "2099-01-01T0000Z-aaaaaaaaaaaaaaaa.md"), b"---\nrecortex: 1\nkind: entry\ntopic: 900\nbroken")
+        os.remove(self.topic_path("speed"))
+        self.assertEqual("#6", store.create_issue("And after the second one", [], body="b"))
+
+    def alone(self, number):
+        """The topic file of `number` with nothing else of it in the record: its folder (the earlier text it was made with) is gone."""
+        slug = self.slug_of(number)
+        folder = os.path.join(self.folder, "topics", slug)
+        for name in os.listdir(folder):
+            os.remove(os.path.join(folder, name))
+        os.rmdir(folder)
+        return os.path.join(self.folder, "topics", slug + ".md")
+
+    def test_a_topic_file_that_a_sync_tool_gave_line_endings_or_a_mark_keeps_its_number_out_of_use(self):
+        store = self.store
+        self.assertEqual("#5", store.create_issue("Fifth", [], body="b"))
+        path = self.alone(5)
+        self.write(path, self.read(path).replace(b"\n", b"\r\n"))   # the file no longer reads as sealed
+        self.assertEqual("#6", store.create_issue("Sixth", [], body="b"))
+        path = self.alone(6)
+        self.write(path, b"\xef\xbb\xbf" + self.read(path).replace(b"\n", b"\r\n"))
+        self.assertEqual("#7", store.create_issue("Seventh", [], body="b"))
+
+    def slug_of(self, number):
+        for name in sorted(os.listdir(os.path.join(self.folder, "topics"))):
+            if name.endswith(".md") and ("number: %d\n" % number).encode() in self.read(os.path.join(self.folder, "topics", name)):
+                return name[:-3]
+        self.fail("no topic file carries number %d" % number)
 
     def test_the_next_number_is_still_the_highest_sealed_number_plus_one(self):
         self.assertEqual("#5", self.store.create_issue("Next", [], body="b"))
