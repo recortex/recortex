@@ -276,8 +276,9 @@ class RegistrationTests(unittest.TestCase):
 
 
 class HeredocTests(unittest.TestCase):
-    """The guard reads the commands that run, not the text of a note that is being written (1.9.0, 18.3). A heredoc that goes to a
-    plain text sink is not read; one that goes to a shell or an interpreter is code, and is."""
+    """The guard reads the commands that run, not the text of a note that is being written (1.9.0, 18.3). A body is dropped only when
+    the whole command is a note: every line outside a body is one of a few plain shapes (a list of bad receivers cannot be made
+    tight). Anything else is matched as a whole."""
 
     HELPER = "set" + "sid"
     BODY = "note: %s python3 %s status" % (HELPER, OBSERVER)
@@ -285,57 +286,110 @@ class HeredocTests(unittest.TestCase):
     def denied(self, command):
         return pretool_guard.terminal_decision(call(command, agent=None)) is not None
 
-    def test_a_note_written_with_cat_or_tee_or_a_commit_or_a_body_file_is_not_read(self):
-        for first in ("cat >> notes.md", "cat > notes.md", "tee notes.md", "tee -a a.md b.md", "git commit -F -",
-                      "gh issue comment 5 --body-file -", "post_verified.py comment --body-file -"):
-            for opener in ("<<EOF", "<<'EOF'", '<<"EOF"'):
-                command = "%s %s\n%s\nEOF" % (first, opener, self.BODY)
-                with self.subTest(command=command[:50]):
-                    self.assertFalse(self.denied(command))
-        self.assertFalse(self.denied("cat >> notes.md <<-EOF\n\t%s\n\tEOF" % self.BODY))   # <<- strips the tabs of the end word
+    def note(self, opening, body=None, end="EOF"):
+        return "%s\n%s\n%s" % (opening, self.BODY if body is None else body, end)
 
-    def test_the_same_text_for_a_shell_or_an_interpreter_is_still_denied(self):
-        for first in ("bash", "sh", "zsh", "dash", "python3 -", "python -", "perl", "node", "env bash", "sudo bash", "xargs",
-                      "ssh host", "tmux", "script -q"):
-            command = "%s <<EOF\n%s\nEOF" % (first, self.BODY)
+    # ---- the plain cases pass
+    def test_a_note_written_with_cat_or_tee_or_a_commit_or_a_post_is_not_read(self):
+        for opening in ("cat >> notes.md <<'EOF'", "cat > notes.md <<'EOF'", 'cat > notes.md <<"EOF"', "cat <<'EOF' > notes.md",
+                        "cat <<'EOF' >> notes.md", "tee notes.md <<'EOF'", "tee -a a.md b.md <<'EOF'", "git commit -F - <<'EOF'",
+                        "git commit -a -F - <<'EOF'", "gh issue comment 5 --repo octo-org/octo-repo --body-file - <<'EOF'",
+                        "gh issue create --title Plain --body-file - <<'EOF'"):
+            with self.subTest(opening=opening):
+                self.assertFalse(self.denied(self.note(opening)))
+
+    def test_an_unquoted_end_word_drops_a_body_that_the_shell_would_not_expand(self):
+        self.assertFalse(self.denied(self.note("cat >> notes.md <<EOF")))
+        self.assertFalse(self.denied(self.note("cat >> notes.md <<EOF", "a note\nwith two lines")))
+
+    def test_two_notes_in_one_command_pass(self):
+        command = "cat >> a.md <<'EOF'\n%s\nEOF\ncat >> b.md <<'EOF'\n%s\nEOF\n" % (self.BODY, self.BODY)
+        self.assertFalse(self.denied(command))
+
+    # ---- the seven ways past the first version, and the other shapes that keep the whole text
+    def test_an_unquoted_body_is_expanded_by_the_shell_so_it_is_read(self):
+        for body in ("$(%s python3 %s status)" % (self.HELPER, OBSERVER), "`%s python3 %s status`" % (self.HELPER, OBSERVER),
+                     "%s python3 %s status \\" % (self.HELPER, OBSERVER)):
+            with self.subTest(body=body):
+                self.assertTrue(self.denied(self.note("cat > notes.md <<EOF", body)))
+
+    def test_a_marker_in_a_comment_or_in_quotes_is_no_heredoc(self):
+        for first in ('echo "cat > notes.md <<EOF"', "echo hi # cat > notes.md <<EOF", "echo 'x' ; cat > notes.md <<EOF",
+                      "true && cat > notes.md <<EOF"):
             with self.subTest(first=first):
-                self.assertTrue(self.denied(command), command)
+                self.assertTrue(self.denied("%s\n%s python3 %s status\nEOF" % (first, self.HELPER, OBSERVER)))
 
-    def test_a_pipe_a_list_or_a_substitution_keeps_the_text(self):
-        for command in ("cat <<EOF | bash\n%s\nEOF" % self.BODY, "cat > f <<EOF && bash f\n%s\nEOF" % self.BODY,
-                        "cat > f <<EOF $(true)\n%s\nEOF" % self.BODY, "cat > f <<EOF `true`\n%s\nEOF" % self.BODY,
-                        "cat <<EOF > >(bash)\n%s\nEOF" % self.BODY, "cat f <<EOF > g\n%s\nEOF" % self.BODY,
-                        "tee <<EOF\n%s\nEOF" % self.BODY):   # tee with no file writes to the screen only; it is no note taking
+    def test_a_continuation_line_or_a_compound_command_is_not_judged_by_one_line(self):
+        for command in ("cat > notes.md \\\n  <<'EOF'\n%s\nEOF" % self.BODY, "cat > notes.md <<'EOF' \\\n && true\n%s\nEOF" % self.BODY,
+                        "{ cat > notes.md <<'EOF'\n%s\nEOF\n}" % self.BODY, "( cat > notes.md <<'EOF'\n%s\nEOF\n)" % self.BODY,
+                        "if true; then cat > f <<'EOF'\n%s\nEOF\nfi" % self.BODY):
             with self.subTest(command=command[:40]):
-                self.assertTrue(self.denied(command), command)
+                self.assertTrue(self.denied(command))
 
-    def test_a_heredoc_with_no_end_word_keeps_its_whole_text(self):
-        self.assertTrue(self.denied("cat >> notes.md <<EOF\n%s\n" % self.BODY))
-        self.assertTrue(self.denied("cat >> notes.md <<EOF\n%s\nEOFX" % self.BODY))
+    def test_a_process_substitution_or_an_fd_redirection_keeps_the_text(self):
+        for opening in ("cat <<'EOF' > >(bash)", "cat > f >&2 <<'EOF'", "cat > f 2>&1 <<'EOF'", "cat <<'EOF' >& 2",
+                        "cat > f <<'EOF' | bash", "cat > f <<'EOF' && bash f", "cat > $HOME/f <<'EOF'", "cat > `x` <<'EOF'"):
+            with self.subTest(opening=opening):
+                self.assertTrue(self.denied(self.note(opening)))
+
+    def test_a_body_file_post_is_plain_only_for_gh_itself(self):
+        for opening in ("python3 --body-file - <<'EOF'", "bash --body-file - <<'EOF'", "env gh issue comment 5 --body-file - <<'EOF'",
+                        "/usr/bin/gh issue comment 5 --body-file - <<'EOF'", "sudo gh issue comment 5 --body-file - <<'EOF'",
+                        "foo=1 gh issue comment 5 --body-file - <<'EOF'", "command gh issue comment 5 --body-file - <<'EOF'",
+                        "some-tool --body-file - <<'EOF'", "gh issue comment 5 --body-file - -x $y <<'EOF'"):
+            with self.subTest(opening=opening):
+                self.assertTrue(self.denied(self.note(opening)))
+
+    def test_an_end_word_that_is_only_part_of_the_word_keeps_the_text(self):
+        for opening in ("cat > f <<EOF$x", "cat > f <<EOF;bash", "cat > f <<'EOF'x", "cat > f <<EOF#"):
+            with self.subTest(opening=opening):
+                self.assertTrue(self.denied(self.note(opening)))
+        self.assertTrue(self.denied("cat > f <<'EOF'\n%s\nEOFX" % self.BODY))   # no end line: the whole text stays
+        self.assertTrue(self.denied("cat > f <<'EOF'\n%s\n EOF" % self.BODY))   # the end line is the end word alone
+        self.assertTrue(self.denied("cat > f <<'EOF'\n%s\nEOF " % self.BODY))
+
+    def test_a_file_written_by_a_heredoc_and_run_by_a_later_line_is_read(self):
+        for later in ("bash notes.sh", "sh notes.sh", "python3 notes.py", "./notes.sh", "source notes.sh", ". notes.sh"):
+            command = "cat > notes.sh <<'EOF'\n%s\nEOF\n%s" % (self.BODY, later)
+            with self.subTest(later=later):
+                self.assertTrue(self.denied(command))
+
+    def test_the_text_for_a_shell_or_an_interpreter_is_still_denied(self):
+        for first in ("bash", "sh", "zsh", "dash", "python3 -", "python -", "perl", "node", "env bash", "sudo bash", "xargs",
+                      "ssh host", "tmux", "script -q", "cat | bash"):
+            with self.subTest(first=first):
+                self.assertTrue(self.denied("%s <<'EOF'\n%s\nEOF" % (first, self.BODY)))
+
+    def test_a_heredoc_with_no_end_word_or_after_another_command_is_read(self):
+        self.assertTrue(self.denied("cat >> notes.md <<'EOF'\n%s\n" % self.BODY))
+        self.assertTrue(self.denied("cat >> notes.md <<'EOF'\nplain text\nEOF\n%s python3 %s status" % (self.HELPER, OBSERVER)))
+        self.assertTrue(self.denied("echo before\ncat >> notes.md <<'EOF'\n%s\nEOF" % self.BODY))   # a line of another shape
 
     def test_two_heredocs_one_for_cat_and_one_for_a_shell_are_denied(self):
-        command = "cat >> notes.md <<EOF\n%s\nEOF\nbash <<EOF\n%s\nEOF" % (self.BODY, self.BODY)
-        self.assertTrue(self.denied(command))
-        self.assertFalse(self.denied("cat >> a.md <<EOF\n%s\nEOF\ncat >> b.md <<EOF\n%s\nEOF" % (self.BODY, self.BODY)))
-
-    def test_a_command_after_the_heredoc_is_still_read(self):
-        command = "cat >> notes.md <<EOF\nplain text\nEOF\n%s python3 %s status" % (self.HELPER, OBSERVER)
+        command = "cat >> notes.md <<'EOF'\n%s\nEOF\nbash <<'EOF'\n%s\nEOF" % (self.BODY, self.BODY)
         self.assertTrue(self.denied(command))
 
     def test_the_decision_of_the_hook_follows_the_same_rule(self):
-        note = "cat >> notes.md <<EOF\n%s\nEOF" % self.BODY
-        self.assertIsNone(pretool_guard.decide(json.dumps(call(note, agent=None))))
-        code = "bash <<EOF\n%s\nEOF" % self.BODY
-        out = pretool_guard.decide(json.dumps(call(code, agent=None)))
+        self.assertIsNone(pretool_guard.decide(json.dumps(call(self.note("cat >> notes.md <<'EOF'"), agent=None))))
+        out = pretool_guard.decide(json.dumps(call(self.note("bash <<'EOF'"), agent=None)))
         self.assertEqual(pretool_guard.TERMINAL_DENIAL, out["hookSpecificOutput"]["permissionDecisionReason"])
 
     def test_dropping_a_body_changes_nothing_else_of_the_command(self):
-        command = "echo before\ncat >> notes.md <<EOF\nthe body\nEOF\necho after"
-        self.assertEqual("echo before\ncat >> notes.md <<EOF\nEOF\necho after", pretool_guard.without_text_heredocs(command))
-        self.assertEqual("echo no heredoc", pretool_guard.without_text_heredocs("echo no heredoc"))
-        code = "bash <<EOF\nthe code\nEOF"
-        self.assertEqual(code, pretool_guard.without_text_heredocs(code))
-        self.assertEqual("cat <<< here string", pretool_guard.without_text_heredocs("cat <<< here string"))
+        command = "cat >> notes.md <<'EOF'\nthe body\nEOF"
+        self.assertEqual("cat >> notes.md <<'EOF'\nEOF", pretool_guard.without_text_heredocs(command))
+        for same in ("echo no heredoc", "bash <<'EOF'\nthe code\nEOF", "cat <<< here string", "", "cat > f <<EOF\n$x\nEOF"):
+            self.assertEqual(same, pretool_guard.without_text_heredocs(same))
+        self.assertEqual("cat >> a.md <<'A'\nA\ntee b.md <<'B'\nB",
+                         pretool_guard.without_text_heredocs("cat >> a.md <<'A'\nx\nA\ntee b.md <<'B'\ny\nB\n"))
+
+    def test_each_shape_is_a_whole_line_and_nothing_else(self):
+        for line in ("cat > a.md <<'EOF'", "cat <<'EOF' >> a.md", "tee a.md b.md <<'EOF'", "git commit -F - <<'EOF'",
+                     "gh issue comment 5 --body-file - <<'EOF'"):
+            self.assertIsNotNone(pretool_guard.sink_opening(line), line)
+        for line in ("cat -n a.md <<'EOF'", "cat > -a <<'EOF'", "cat > a.md  <<'EOF'", "cat > a.md <<'EOF' ", "tee <<'EOF'",
+                     "git commit -m x -F - <<'EOF'", "git log -F - <<'EOF'", "gh issue comment 5 --body-file x <<'EOF'",
+                     "cat > a.md <<-'EOF'", "cat > a.md <<< x", "cat > ../../a b <<'EOF'"):
+            self.assertIsNone(pretool_guard.sink_opening(line), line)
 
 
 if __name__ == "__main__":
