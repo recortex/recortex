@@ -46,6 +46,7 @@ import index  # noqa: E402
 import lint_drafts  # noqa: E402
 import post_verified  # noqa: E402
 import recortex  # noqa: E402
+import record_store  # noqa: E402
 import record_format  # noqa: E402
 import storage  # noqa: E402
 import task_rules  # noqa: E402
@@ -299,16 +300,16 @@ def close_task(repo, config, issue, dry_run=False, report=None):
     if post_body(repo, issue, "Result", task_rules.result_section(rows, stamp), base, backup, dry_run) != 0:
         return out
     if dry_run:
-        say("would run: " + recortex.show_command(["issue", "close", str(issue), "--repo", repo, "--reason",
-                                                   "completed"]))
+        say("would run: " + record_store.for_repo(repo).show("close", issue, "completed"))
         say("(the task list under ## Plan is rendered after the Result is written)")
         return dict(out, ok=True, reason="dry run")
     result = render_task(repo, config, issue, report=report)
     if not result["ok"]:
         say("the Result is written, but the list could not be rendered; the task stays open")
         return dict(out, backup=backup)
-    recortex.gh(["issue", "close", str(issue), "--repo", repo, "--reason", "completed"])
-    state = json.loads(recortex.gh(["api", "repos/%s/issues/%d" % (repo, issue)])).get("state")
+    records = record_store.for_repo(repo)
+    records.close(issue, "completed")
+    state = records.read_issue(issue).get("state")
     if state != "closed":
         say("MISMATCH: #%d reads back as %s; it was not closed" % (issue, state))
         return dict(out, backup=backup)
@@ -335,10 +336,11 @@ def reopen_task(repo, config, issue, dry_run=False):
     if earlier is None or not earlier.strip() or earlier.startswith("Finished"):
         earlier = "%s Reopened %s." % (task_rules.NOT_FINISHED, recortex.stamp(now(), config))
     if dry_run:
-        say("would run: " + recortex.show_command(["issue", "reopen", str(issue), "--repo", repo]))
+        say("would run: " + record_store.for_repo(repo).show("reopen", issue))
     else:
-        recortex.gh(["issue", "reopen", str(issue), "--repo", repo])
-        state = json.loads(recortex.gh(["api", "repos/%s/issues/%d" % (repo, issue)])).get("state")
+        records = record_store.for_repo(repo)
+        records.reopen(issue)
+        state = records.read_issue(issue).get("state")
         if state != "open":
             say("MISMATCH: #%d reads back as %s; it was not reopened" % (issue, state))
             return {"ok": False, "backup": None}

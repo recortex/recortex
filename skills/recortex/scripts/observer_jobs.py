@@ -29,6 +29,7 @@ import board
 import index
 import observer_runtime as runtime
 import post_verified
+import record_store
 import recortex
 import record_format
 import storage
@@ -448,8 +449,7 @@ def log_lines(store, repo, config, days):
 
 
 def _live_state(repo, issue):
-    import json
-    return json.loads(recortex.gh(["api", "repos/%s/issues/%d" % (repo, issue)])).get("state")
+    return record_store.for_repo(repo).read_issue(issue).get("state")
 
 
 def _restore(repo, config, row, kind):
@@ -503,7 +503,7 @@ def undo(store, repo, config, ident):
         else:   # task_opened
             if _live_state(repo, row["issue"]) != "open":
                 return {"code": "not_open"}
-            recortex.gh(["issue", "close", str(row["issue"]), "--repo", repo, "--reason", "not planned"])
+            record_store.for_repo(repo).close(row["issue"], "not planned")
             done = _live_state(repo, row["issue"]) == "closed"
             code = "closed_not_planned" if done else "failed"
     except (recortex.GhError, OSError, ValueError):
