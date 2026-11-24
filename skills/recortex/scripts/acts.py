@@ -36,6 +36,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import names  # noqa: E402
 import recortex  # noqa: E402
 import record_store  # noqa: E402
 
@@ -48,7 +49,7 @@ NEEDS_DIALOG = ("acts: this question is answered in the question dialog only. Wh
 TYPED_UNRECORDED = ("acts: a typed answer cannot be recorded here, because the plugin's hook did not see this command, so "
                     "nothing is asked.")
 DESCRIPTION = re.compile(r"[A-Za-z0-9 .,;:'()/_#-]{20,120}")
-KIND = re.compile(r"[a-z]{1,10}")
+KIND = re.compile(r"[a-z-]{1,20}")
 ASCII_PATH = re.compile(r"/[A-Za-z0-9 ._/+@%=,:~-]{0,300}")
 HOLD_WORDS = {"git-push": "pushing with git", "git-tag": "changing git tags", "gh-release": "changing GitHub releases",
               "command": "running one exact command (observer.py holds shows it)", "publish": "posting to the record"}
@@ -113,6 +114,7 @@ class Act:
     kind = ""
     header = "Question"
     grant = True        # a one-time grant is recorded for it (observer_grants); sign-in has none
+    pre_setup = False   # asked before the project is set up (the project file does not exist yet)
     typed = False       # only the trust question has a typed form: the answer to it can never be read back from the transcript
 
     def parse(self, args, ctx):
@@ -785,6 +787,186 @@ class Publish(Act):
         return ["--to", values["to"], "--branch", values["branch"], "--path", values["path"]]
 
 
+# ---------------------------------------------------------------- the acts of a local record (setup.py)
+
+def setup_call(words):
+    """(the words before it, the subcommand, the words after it) of a setup.py command, or None."""
+    found = script_args(words, "setup.py")
+    if found is None or not found[1]:
+        return None
+    return found[0], found[1][0], found[1][1:]
+
+
+class RecordInProject(Act):
+    """The record kept inside the project, in `.recortex`: committed with the project's code if the user commits it, so a public
+    repository shows it to everyone. Asked before anything is made, so it needs no project file; its value is bound to the
+    project folder. The words about the repository (public, private, not known) are in the option's description, because the
+    command that carries the answer cannot know them, and the question text must be the same for both."""
+
+    kind, header = "record-in-project", "Record"
+    pre_setup = True
+    STATES = {"public": "The project's repository is public.", "private": "The project's repository is private now.",
+              "unknown": "recortex could not tell if its repository is public."}
+    ANSWERS = re.compile(r"[^\x00-\x1f\x7f]{1,300}")
+
+    def parse(self, args, ctx):
+        state = args.values[0] if args.values else "unknown"
+        answers = args.path
+        if state not in self.STATES or (answers is not None and not self.ANSWERS.fullmatch(answers)):
+            raise ActError("acts: record-in-project takes public, private or unknown, and --path with the answers file.")
+        return {"project": os.path.realpath(ctx.root), "state": state, "answers": answers}
+
+    def from_command(self, words, ctx):
+        call = setup_call(words)
+        if call is None or call[1] != "apply" or "--dry-run" in call[2]:
+            return None
+        path = option_value(call[2], "--answers")
+        if path is None:
+            return None
+        root = option_value(call[2], "--root") or ctx.root
+        if os.path.realpath(root) != os.path.realpath(ctx.root):
+            return None   # the answer was to the question about this session's project, and covers no other folder
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError, RecursionError):
+            return None
+        if not isinstance(data, dict) or data.get("record") != "local" or data.get("place") != "project":
+            return None
+        return {"project": os.path.realpath(root), "state": "unknown", "answers": path}
+
+    def text(self, values):
+        return ("recortex: the record will be in .recortex inside this project. If you commit it, it is committed with your "
+                "code, and in a public repository anyone can read it. Keep the record inside the project?")
+
+    def options(self, values):
+        command = [("setup.py", "apply", "--answers", values["answers"], "--yes")] if values.get("answers") else []
+        return [option("Keep it inside the project", "Create .recortex here; nothing is added to .gitignore. " +
+                       self.STATES[values["state"]], "yes", command),
+                option("Use its own folder instead", "Keep the record private, outside the project.", "no")]
+
+    def value(self, values):
+        return digest(self.kind, values["project"])
+
+    def ask_words(self, values):
+        return [values["state"]] + (["--path", values["answers"]] if values.get("answers") else [])
+
+
+class Folder(Act):
+    """Use the record at the folder this machine has not approved for it: the question when a record moved (or was copied with
+    its project). Its value is the id and a hash of the folder's real path, which the question does not print."""
+
+    kind, header = "folder", "Folder"
+
+    def _values(self, ctx):
+        import record_store
+        import storage
+        config = ctx.config
+        if config.get("store") != "local" or not record_store.is_local(config.get("repo") or ""):
+            raise ActError("acts: this project keeps no local record.")
+        record_id = record_store.LOCAL_NAME.fullmatch(config["repo"]).group(1)
+        if config.get("place") == "project":
+            path = storage.record_path(ctx.root)
+        elif config.get("place") == "own":
+            path = os.path.join(storage.records_top(), storage.PRIVATE, names.RECORDS, record_id)
+        else:
+            raise ActError("acts: this project's record is in a place this version does not know.")
+        if not os.path.isdir(path):
+            raise ActError("acts: there is no record folder at the place the project file names.")
+        return {"id": record_id, "path": hashlib.sha256(os.path.realpath(path).encode("utf-8")).hexdigest()}
+
+    def parse(self, args, ctx):
+        if args.values:
+            raise ActError("acts: folder takes no value.")
+        return self._values(ctx)
+
+    def from_command(self, words, ctx):
+        call = setup_call(words)
+        if call is None or call[1] != "record-folder" or "--yes" not in call[2]:
+            return None
+        try:
+            return self._values(ctx)
+        except ActError:
+            return None
+
+    def text(self, values):
+        return ("recortex: this project's local record is now at a folder this machine has not approved for it (record %s). "
+                "Use the record at its new place?" % values["id"])
+
+    def options(self, values):
+        return [option("Use the record there", "This machine then reads and writes the record at that folder.", "yes",
+                       [("setup.py", "record-folder", "--yes")]),
+                option("Leave it unused", "Nothing changes; the record stays unread until you say.", "no")]
+
+    def value(self, values):
+        return digest(self.kind, values["id"], values["path"])
+
+
+class Adopt(Act):
+    """Take back as the user's own what recortex does not vouch for: a topic's text that was changed outside recortex, or every
+    file that was written under another key. The question shows fixed words and counts, never text; the value binds the bytes
+    of the files as they are, so a file that changed since the question refuses the act. A changed entry is never adopted."""
+
+    kind, header = "adopt", "Record"
+
+    def _plan(self, mode, number, ctx):
+        import record_store
+        try:
+            store = record_store.for_repo(ctx.repo, ctx.config)
+        except (record_store.StoreError, SystemExit):
+            raise ActError("acts: this project's local record cannot be read.")
+        if getattr(store, "kind", "") != "local":
+            raise ActError("acts: this project keeps no local record.")
+        try:
+            return store.adopt_plan(mode, number)
+        except record_store.StoreError as error:
+            raise ActError(str(error))
+
+    def parse(self, args, ctx):
+        words = args.values
+        if words == ["foreign"]:
+            return self._plan("foreign", 0, ctx)
+        if len(words) == 2 and words[0] == "topic" and re.fullmatch(r"[1-9][0-9]{0,8}", words[1]):
+            return self._plan("topic", int(words[1]), ctx)
+        raise ActError("acts: adopt takes `topic N` or `foreign`.")
+
+    def from_command(self, words, ctx):
+        call = setup_call(words)
+        if call is None or call[1] != "adopt" or "--yes" not in call[2] or ctx.repo is None:
+            return None
+        topic = option_value(call[2], "--topic")
+        try:
+            if "--foreign" in call[2]:
+                return self._plan("foreign", 0, ctx)
+            if topic is not None and re.fullmatch(r"[1-9][0-9]{0,8}", topic):
+                return self._plan("topic", int(topic), ctx)
+        except ActError:
+            return None
+        return None
+
+    def text(self, values):
+        if values["mode"] == "topic":
+            return ("recortex: topic #%d of the local record was changed outside recortex (%d lines differ from the last version "
+                    "recortex wrote). Take the text as it is now as yours?" % (values["topic"], values["lines"]))
+        return ("recortex: %d entries and %d topics of this record were written under another key (another machine, or this one "
+                "before its key changed). Seal them as yours on this machine?" % (values["entries"], values["topics"]))
+
+    def options(self, values):
+        if values["mode"] == "topic":
+            return [option("Take topic #%d as mine" % values["topic"], "recortex seals the text as it is now, and keeps the "
+                           "last version it wrote.", "yes", [("setup.py", "adopt", "--topic", str(values["topic"]), "--yes")]),
+                    option("Leave it as it is", "Nothing changes; the text stays marked as changed outside recortex.", "no")]
+        return [option("Seal them as mine", "recortex seals those files under this machine's key, and changes nothing else in "
+                       "them.", "yes", [("setup.py", "adopt", "--foreign", "--yes")]),
+                option("Leave them as they are", "Nothing changes; they stay marked as written elsewhere.", "no")]
+
+    def value(self, values):
+        return digest(self.kind, values["mode"], values["topic"], values["digest"])
+
+    def ask_words(self, values):
+        return ["topic", str(values["topic"])] if values["mode"] == "topic" else ["foreign"]
+
+
 # ---------------------------------------------------------------- the table
 
 ACTS = {}
@@ -795,7 +977,8 @@ def register(act):
     return act
 
 
-for _act in (Release(), Disable(), Resume(), Undo(), Trust(), Hosts(), Advisory(), Reminder(), Replace(), Publish()):
+for _act in (Release(), Disable(), Resume(), Undo(), Trust(), Hosts(), Advisory(), Reminder(), Replace(), Publish(),
+             RecordInProject(), Folder(), Adopt()):
     register(_act)
 
 
@@ -925,7 +1108,7 @@ def ask_main(args):
         return 1
     act = ACTS[kind]
     ctx = Context()
-    if ctx.repo is None or ctx.repo.lower() not in recortex.trusted_repos():
+    if not act.pre_setup and (ctx.repo is None or ctx.repo.lower() not in recortex.trusted_repos()):
         print(NOT_SET_UP)
         return 1
     try:

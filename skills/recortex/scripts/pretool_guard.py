@@ -67,6 +67,9 @@ ASKED_WORD = re.compile(r"(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(
 ANY_NAME = re.compile(r"(?:observer|setup)\.py\b")
 HOSTS_OPTION = re.compile(r"--ho(?:s(?:ts?)?)?(?:\s+|=)[\"']?any\b")
 PUBLISH = re.compile(r"(?<![A-Za-z0-9_-])publish\.py\b")
+SETUP_NAME = re.compile(r"setup\.py\b")
+SETUP_ACTS = ("adopt", "record-folder")   # the acts of a local record that setup.py performs (acts.py: adopt, folder)
+SETUP_ACT_WORD = re.compile(r"(?<![A-Za-z0-9_-])(?:%s)(?![A-Za-z0-9_-])" % "|".join(SETUP_ACTS))
 ACTS_SCRIPT = re.compile(r"(?<![A-Za-z0-9_-])acts\.py\b")   # asking a question is the main session's own call
 # A hook of the plugin is run by Claude Code, never by a session: a session that runs hooks.py or run_hook.sh with an event, and a
 # JSON of its own on stdin, would make the user's typed answer (hooks.py, prompt-submit) up. --doctor and --print read only.
@@ -282,7 +285,7 @@ def subagent_decision(data):
     if command is None:
         return None
     for text in texts:
-        if asks_an_act(text) or hosts_any(text) or ACTS_SCRIPT.search(text):
+        if asks_an_act(text) or hosts_any(text) or ACTS_SCRIPT.search(text) or asks_a_setup_act(text):
             return deny(SUBAGENT_DENIAL)
     if any(PUBLISH.search(text) for text in texts) and not publish_only_reads(command):
         return deny(SUBAGENT_DENIAL)
@@ -292,6 +295,11 @@ def subagent_decision(data):
 def asks_an_act(text):
     first = OBSERVER_NAME.search(text)
     return bool(first and ASKED_WORD.search(text, first.end()))
+
+
+def asks_a_setup_act(text):
+    first = SETUP_NAME.search(text)
+    return bool(first and SETUP_ACT_WORD.search(text, first.end()))
 
 
 def hosts_any(text):

@@ -831,6 +831,91 @@ class LocalStore:
             front.update(state="open", updated=stamp())
             self._write_topic(relpath, front, parsed.body)
 
+    # ------------------------------------------------------------ taking back what is not vouched for (adopt)
+    def _files(self):
+        """[(relpath, Parsed)] of every file of the record that reads, by path, with its own state (not attributed): the hub, the
+        topics, and each topic's entries and versions of its text."""
+        found = []
+        for number, relpath, parsed in self.topics():
+            found.append((relpath, parsed))
+            folder = self.folder_of(relpath)
+            rows = self.scan(folder)
+            for created, entry_id, entry_no, name, size, mtime in self.entry_rows(relpath):
+                try:
+                    inner = self.read_parsed("%s/%s" % (folder, name), rows)
+                except (Unread, storage.StorageError):
+                    continue
+                if inner is not None and inner.kind in ("entry", "body") and inner.entry_id == entry_id:
+                    found.append(("%s/%s" % (folder, name), inner))
+        return sorted(found, key=lambda item: item[0])
+
+    def _digest(self, relpaths):
+        """The SHA-256 of the bytes of these files, in path order: what an answer to an adopt question is bound to."""
+        sha = hashlib.sha256()
+        for relpath in sorted(relpaths):
+            data = storage.read_record_file(self.path(relpath), FILE_LIMIT) or b""
+            sha.update(relpath.encode("utf-8") + b"\0" + data + b"\0")
+        return sha.hexdigest()
+
+    def adopt_plan(self, mode, number=0):
+        """The values of an adopt question: for `mode` "topic" the topic whose text was changed outside recortex (how many lines
+        differ from the last version recortex wrote), for "foreign" the files that were written under another key (how many
+        entries and topics). Counts and a hash of the bytes, never text. Raises a StoreError when there is nothing to take back.
+        A topic whose seal holds, and an entry that was changed, are never adopted: an entry is never edited."""
+        if mode == "topic":
+            self.record = self.read_record()   # a record.json changed since this store was opened is read again
+            relpath, parsed = self.topic(number)
+            if parsed.state != "changed":
+                raise Refused("recortex: topic #%d is not marked as changed outside recortex; nothing to take back." % number)
+            sealed = [text for created, state, text in self.versions(number) if state == "sealed"]
+            import difflib
+            before = sealed[0].split("\n") if sealed else []
+            lines = sum(1 for row in difflib.ndiff(before, parsed.body.split("\n")) if row[:1] in ("+", "-"))
+            return {"mode": "topic", "topic": number, "lines": lines, "entries": 0, "topics": 0, "digest": self._digest([relpath])}
+        self.record = self.read_record()
+        found = [(relpath, parsed) for relpath, parsed in self._files() if parsed.state == "foreign"]
+        paths = [relpath for relpath, parsed in found]
+        if self.record["state"] == "foreign":
+            paths.append(RECORD_FILE)
+        if not paths:
+            raise Refused("recortex: nothing in this record was written under another key.")
+        return {"mode": "foreign", "topic": 0, "lines": 0, "digest": self._digest(paths),
+                "entries": sum(1 for relpath, parsed in found if parsed.kind == "entry"),
+                "topics": sum(1 for relpath, parsed in found if parsed.kind in ("hub", "topic"))}
+
+    def adopt(self, mode, number, expected):
+        """Seal what the user took back. With the hash of the bytes the question was bound to: a file that changed since then
+        refuses the act. A topic's text first becomes a version file (the text as it was taken), then is sealed; foreign files get
+        their seal line rewritten and nothing else of them. Returns how many files were sealed."""
+        with storage.record_lock(self.record_id):
+            plan = self.adopt_plan(mode, number)
+            if plan["digest"] != expected:
+                raise Refused("recortex: the files changed since the question was asked; nothing was sealed.")
+            if mode == "topic":
+                relpath, parsed = self.topic(number)
+                created = stamp()
+                front = dict(parsed.front, updated=created)
+                checked(front["kind"], front, parsed.body, relpath, self.record_id)
+                self._put_version(relpath, number, parsed.body, created)
+                self._write_topic(relpath, front, parsed.body)
+                return 1
+            done = 0
+            for relpath, parsed in self._files():
+                if parsed.state != "foreign":
+                    continue
+                data = checked(parsed.kind, parsed.front, parsed.body, relpath, self.record_id)
+                storage.replace_record_file(self.path(relpath), data)
+                done += 1
+            if self.record["state"] == "foreign":
+                plain = {key: value for key, value in self.record.items() if key not in ("seal", "state")}
+                seal = sealing()
+                record = dict(plain, seal={"key": seal.key_id, "mac": seal.json_mac(plain)})
+                storage.replace_record_file(self.path(RECORD_FILE), (json.dumps(record, sort_keys=True, indent=1) + "\n").encode())
+                done += 1
+            self._cache.clear()
+            self.record = self.read_record()
+            return done
+
     # ------------------------------------------------------------ reading what a write returned, and saying what one would do
     def show(self, op, *args, note="", **kwargs):
         words = SHOW_WORDS.get(op)

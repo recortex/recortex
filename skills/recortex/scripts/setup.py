@@ -344,13 +344,17 @@ def check_answers(answers):
     if not isinstance(answers, dict):
         raise AnswerError("the answers must be a JSON object")
     out = {}
-    repo = answers.get("repo")
-    if not recortex.valid_repo(repo):
-        raise AnswerError("repo must be owner/name in GitHub's form")
-    out["repo"] = repo
     record = answers.get("record", "this")
-    if record not in ("this", "other", "new"):
-        raise AnswerError("record must be this, other or new")
+    if record not in ("this", "other", "new", "local"):
+        raise AnswerError("record must be this, other, new or local")
+    if record == "local":
+        out["_local"] = local_answers(answers)
+        out["repo"] = None   # made by apply: local--record/<id>
+    else:
+        repo = answers.get("repo")
+        if not recortex.valid_repo(repo):
+            raise AnswerError("repo must be owner/name in GitHub's form")
+        out["repo"] = repo
     out["record"] = record
     project = answers.get("project", "")
     if project and (not isinstance(project, str) or not TEXT.fullmatch(project)):
@@ -408,6 +412,8 @@ def check_answers(answers):
         raise AnswerError("prompt_hook must be {\"enabled\": true|false, \"every\": N}")
     out["prompt_hook"] = {"enabled": hook.get("enabled", True), "every": min(100, max(1, hook.get("every", 10)))}
     board = answers.get("board", "no")
+    if record == "local" and board != "no":
+        raise AnswerError("a local record has no board: board must be \"no\"")
     if board == "no":
         out["board"] = None
     elif board == "new":
@@ -769,10 +775,15 @@ def mark_words(marks):
     return field_sheet.mark_words(marks)
 
 
-def notices(repo, marks, created=False):
+def notices(repo, marks, created=False, place=None):
     """The fixed lines of a sensitive-material mark. One read of GitHub (is the record's repository private?), only for
-    data about people or confidential information, and none for a repository that this run creates private."""
+    data about people or confidential information, and none for a repository that this run creates private. A local record
+    in its own folder has no visibility to check; one inside the project says that a public repository shows it."""
     lines = []
+    if record_store.is_local(repo):
+        if place == "project" and ("people" in marks or "confidential" in marks or not marks):
+            lines.append(record_store.OFF["visibility"])
+        created = True
     if ("people" in marks or "confidential" in marks) and not created:
         value = record_store.for_repo(repo).visibility()
         if value == "false":
@@ -1488,7 +1499,304 @@ def settle_questions(answers, had_file, config, root, dry):
                   setup_questions.NOT_READABLE.get(str(error), error) if isinstance(error, ValueError) else error))
 
 
+# ---------------------------------------------------------------- a local record (1.9.0)
+
+RECORD_Q1 = "recortex: where should this project's record be kept?"
+RECORD_Q2 = "recortex: where should the local record's folder be?"
+LOCAL_OFF = ("A local record has no GitHub Projects board (the dashboard shows the work), no sub-issue links (a topic lists its "
+             "tasks), no triage workflow, no publishing to GitHub Pages (the page is saved as a file), and, for a paper, no "
+             "versions branch, no approval by pull request and no fetched pictures.")
+DESCRIPTION_CAP = 120
+
+
+def record_options(state, login):
+    """The two options of the first question, the recommended one first: GitHub issues when gh is ready, else a local record."""
+    github = ("Issues in a repository, as account %s; needs the GitHub CLI." % login) if state == "ready" else \
+        NOT_READY[state][:DESCRIPTION_CAP]
+    local = "Markdown files in a folder on this machine; needs no account."
+    if state == "ready":
+        return [("GitHub issues (Recommended)", github), ("A local record", local)]
+    return [("A local record (Recommended)", local), ("GitHub issues", github)]
+
+
+def record_question_command(args):
+    """setup.py record-question [--location | --in-project]: the plugin's own question about where the record is kept, word for
+    word with its options, the recommended one first; the session asks exactly this. The first runs the gh check itself; the
+    third (a record inside the project) looks at the project's git remotes and, for a GitHub one, asks GitHub once whether it is
+    public. Read-only."""
+    if args.location:
+        print(RECORD_Q2)
+        print("- Its own folder (Recommended): Private to your account on this machine, outside the project.")
+        print("- Inside the project: A folder named .recortex in the project, committed with your code if you commit it.")
+        print("- Another folder: an absolute path of your own (a synced folder, a repository of its own), through the other answer.")
+        return 0
+    if args.in_project:
+        import acts
+        state = in_project_state(os.path.abspath(args.root or recortex.project_root()))
+        values = {"project": os.path.realpath(args.root or recortex.project_root()), "state": state, "answers": None}
+        for line in acts.question_lines(acts.describe(acts.ACTS["record-in-project"], values, "choice"), bare_no=True):
+            print(line)
+        return 0
+    state, login = recortex.gh_account()
+    login = login if state == "ready" and recortex.LOGIN.fullmatch(login or "") else ""
+    print(RECORD_Q1)
+    for label, description in record_options(state if login or state != "ready" else "unnamed", login):
+        print("- %s: %s" % (label, description))
+    print(LOCAL_OFF)
+    return 0
+
+
+def in_project_state(root):
+    """"public", "private" or "unknown" for the project's repository: the remotes of the checkout, read locally; GitHub is asked
+    once, only for a remote that names github.com and only when gh is ready."""
+    try:
+        text = subprocess.run(["git", "-C", root, "config", "--get-regexp", r"^remote\..*\.url$"], capture_output=True, text=True,
+                              timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    found = re.search(r"github\.com[:/]([A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Za-z0-9._-]{1,100}?)(?:\.git)?(?:\s|$)", text)
+    if not found or recortex.gh_account()[0] != "ready":
+        return "unknown"
+    value = record_store.GithubStore(found.group(1)).visibility()
+    return {"false": "public", "true": "private"}.get(value, "unknown")
+
+
+def local_answers(answers):
+    """The part of check_answers for a local record: where it is kept, and what it cannot have."""
+    place = answers.get("place", "own")
+    if place not in ("own", "project"):
+        raise AnswerError("place must be own or project")
+    path = answers.get("path")
+    if path is not None:
+        if place != "own" or not isinstance(path, str) or not os.path.isabs(path) or CONTROL.search(path) \
+                or os.path.normpath(path) != path or len(path) > 1000:
+            raise AnswerError("path must be a normal absolute path, and only for a record outside the project")
+    if answers.get("triage_workflow"):
+        raise AnswerError("a local record has no triage workflow: triage_workflow must be false")
+    return place, path
+
+
+def local_config_problem(existing):
+    """The record an existing project file already names, as a line: a local record is made new by setup, and the id is made
+    by it, so a file that names any record (GitHub's or another local one) is not changed."""
+    repo = existing.get("repo")
+    if isinstance(repo, str):
+        return "already names %s" % repo
+    return None
+
+
+def make_record(place, path, project_folder, record_id, answers, config):
+    """The record folder (checked by the rules of its place, so nothing is written when the place is refused), its record.json,
+    for a record inside the project the `.gitattributes` that keeps a sync tool or git from changing line endings (never a
+    .gitignore, never `git add`), and the row that makes this machine use the folder. Returns the line to print."""
+    import local_store
+    import storage as storage_module
+    try:
+        if place == "project":
+            real, kind = storage_module.check_record_folder(project_folder, "project", create=True), "project"
+        elif path is not None:
+            real, kind = storage_module.check_record_folder(path, "chosen", create=True), "chosen"
+        else:
+            real, kind = storage_module.check_record_folder(storage_module.own_record_folder(record_id, create=True), "own"), "own"
+        local_store.LocalStore.create(real, record_id, answers["project"] or "project", recortex.profile_names(config["profiles"]))
+        if place == "project":
+            storage_module.link_new_record_file(os.path.join(real, ".gitattributes"), b"* -text\n")
+        storage_module.bind_record(record_id, real, kind)
+    except (storage_module.StorageError, OSError) as error:
+        raise SystemExit("error: the record folder was refused (%s); nothing else was written" % (
+            getattr(error, "kind", None) or "it could not be made"))
+    return "made: the record folder %s   # %s" % (real, "inside the project" if place == "project" else "a folder of its own")
+
+
+def apply_local(answers, root, dry, drafts):
+    """setup.py apply for a local record, in the order of the spec: the Python line, the grant for a record inside the project,
+    the checks of the place, the id and the project file, the record folder and its record.json, the machine's row for it, the
+    trusted list, the hub and its first resume block through create_issues.py, the first sync, then the steps every record has.
+    `--dry-run` prints each step and writes nothing."""
+    import acts
+    import local_store
+    place, path = answers["_local"]
+    print("ready: Python %d.%d" % (sys.version_info[0], sys.version_info[1]))
+    config_path = config_target(root)
+    existing, had_file = {}, os.path.isfile(config_path)
+    if had_file:
+        try:
+            existing = json.loads(recortex.read_text(config_path))
+        except ValueError as error:
+            raise SystemExit("error: %s is not valid JSON (%s); fix it by hand" % (config_path, error))
+        if not isinstance(existing, dict):
+            raise SystemExit("error: %s is not a JSON object; fix it by hand" % config_path)
+        problem = local_config_problem(existing)
+        if problem:
+            raise SystemExit("error: %s %s; a local record is made new, so setup does not change it. Change the setup by hand "
+                             "if the record moved" % (config_path, problem))
+    if path is not None and not outside(path, root):
+        raise SystemExit("error: a record folder of your own lies outside the project; %s does not" % path)
+    project_folder = os.path.join(root, names.RECORD_DIR)
+    if place == "project":
+        if not dry and not acts.allowed("record-in-project", {"project": os.path.realpath(root), "state": "unknown", "answers": None}):
+            print(acts.refusal("record-in-project", {"project": os.path.realpath(root), "state": "unknown",
+                                                     "answers": None})["note"])
+            raise SystemExit("error: a record inside the project needs your answer to its question; nothing was made")
+        refuse_unsafe(root, os.path.join(project_folder, "record.json"))   # no link on the way, and .recortex is a folder
+        if os.path.lexists(project_folder) and os.listdir(project_folder):
+            raise SystemExit("error: %s exists and is not empty; setup writes the record into an empty folder" % project_folder)
+    refuse_unsafe(root, config_path)
+    for name in ("hub.md", "resume-1.md", "manifest.json"):
+        refuse_unsafe(os.path.dirname(drafts) if outside(drafts, root) else root, os.path.join(drafts, name))
+    record_id = local_store.new_id()   # a dry run names an id that a real run will not repeat
+    repo = "%s/%s" % (record_store.LOCAL_OWNER, record_id)
+    answers = dict(answers, repo=repo)
+    try:
+        config, added = new_config(existing, answers, os.path.basename(config_path))
+    except AnswerError as error:
+        raise SystemExit("error: %s" % error)
+    config.update(store="local", place=place, hub=1)
+    print("profiles: %s" % ", ".join(recortex.profile_names(config["profiles"])))
+    made = None
+    if dry:
+        folder = project_folder if place == "project" else path or "<the record's own folder>"
+        print("would make: the record folder %s with record.json   # the record is Markdown files; the machine keeps a row of "
+              "its place" % folder)
+    else:
+        made = make_record(place, path, project_folder, record_id, answers, config)
+    if answers["fields"] is not None:
+        approvals_readable()
+        print_patterns(existing.get("restricted_patterns"), answers["restricted"], dry)
+        for line in notices(repo, answers["fields"]["sensitive"], True, place):
+            print(line)
+    print("config (%s):" % os.path.basename(config_path))
+    print(json.dumps(config, indent=2))
+    write_text(config_path, json.dumps(config, indent=2) + "\n", dry, "the project's setup", root)
+    if made:
+        print(made)
+    if answers["fields"] is not None:
+        record_fields(repo, answers["fields"], dry)
+    print("labels: a local record keeps each topic's labels in the topic; nothing to create.")
+    hub = hub_body(answers, config)
+    resume = resume_comment(answers)
+    findings = lint_drafts.lint_text(hub, kind="hub", config=config) + lint_drafts.lint_text(resume, kind="resume", config=config)
+    errors = [str(f) for f in findings if f.level == "error"]
+    if errors:
+        raise SystemExit("error: the hub draft does not pass lint:\n  " + "\n  ".join(errors))
+    manifest = {"repo": repo, "issues": [{"key": "hub", "kind": "hub", "title": "Project record hub", "labels": ["hub"],
+                                          "body_file": "hub.md", "pin": True}],
+                "comments": [{"issue": "NEW-hub", "kind": "resume", "body_file": "resume-1.md"}]}
+    drafts_base = os.path.dirname(drafts) if outside(drafts, root) else root
+    write_text(os.path.join(drafts, "hub.md"), hub, dry, "the hub", drafts_base)
+    write_text(os.path.join(drafts, "resume-1.md"), resume, dry, "the first resume comment", drafts_base)
+    write_text(os.path.join(drafts, "manifest.json"), json.dumps(manifest, indent=2) + "\n", dry, "the manifest", drafts_base)
+    if repo.lower() in recortex.trusted_repos():
+        print("trusted: %s is already in %s" % (repo, ", ".join(recortex.trusted_sources(repo))))
+    elif answers["trust"]:
+        if dry:
+            print("would add: %s to %s   # the user agreed" % (repo, recortex.trusted_target()))
+        else:
+            print("added: %s to %s" % (repo, add_trusted(repo)))
+    else:
+        print("trusted: not changed; the hooks stay silent until the user adds %s to %s" % (repo, recortex.trusted_target()))
+    python, scripts = sys.executable, HERE
+    run([python, os.path.join(scripts, "create_issues.py"), "--manifest", os.path.join(drafts, "manifest.json"), "--repo", repo], dry,
+        "create the hub and post the first resume comment", cwd=root)
+    if answers["claude_md"]:
+        claude_md = os.path.join(root, "CLAUDE.md")
+        refuse_unsafe(root, claude_md)
+        current = recortex.read_text(claude_md) if os.path.isfile(claude_md) else ""
+        if "## Project record" in current:
+            print("not written: CLAUDE.md already has a Project record section")
+        else:
+            write_text(claude_md, (current.rstrip("\n") + "\n\n" if current else "") + snippet(config), dry,
+                       "the CLAUDE.md snippet", root)
+    run([python, os.path.join(scripts, "index.py"), "--repo", repo, "sync"], dry,
+        "build the local index in the foreground, so the first session has a brief", cwd=root)
+    if "map_files" in answers:
+        if not dry:
+            try:
+                project_map_sources.approve(root, repo, answers["map_files"])
+            except (OSError, ValueError, storage.StorageError) as error:
+                sys.exit("error: could not save the selected map files: %s" % error)
+        print("%s for Project Map on this machine: %s" % ("would select" if dry else "selected",
+              ", ".join(answers["map_files"]) or "no files"))
+    if "reminder" in answers:
+        reminder_step(answers, dry)
+    if answers["observer"]:
+        observer_step(answers, root, python, dry)
+    status_line_step(answers, dry)
+    settle_questions(answers, had_file, config, root, dry)
+    present = [item["kind"] for item in detect(root)]
+    if dry:
+        print("would record as known: %s   # the hooks suggest only deliverables that appear later" % (", ".join(present) or "nothing"))
+    else:
+        try:
+            remember_told(repo, present)
+            print("recorded as known: %s" % (", ".join(present) or "nothing"))
+        except (OSError, storage.StorageError) as error:
+            print("not recorded: the kinds present now (%s), because the local storage was refused: %s" % (", ".join(present), error))
+    if answers["catch_up"]:
+        print("next: catch up on earlier work (references/catch-up.md), starting with catchup.py inventory%s"
+              % (" --transcripts" if answers["read_transcripts"] else ""))
+    if not dry and recortex.allowed_users(repo):
+        print('Your project dashboard is available. In Claude Code, ask "open my dashboard" in this project '
+              'or type /recortex:dashboard with the plugin installed.')
+    for line in (notices(repo, [], True, place) if place == "project" and answers["fields"] is None else []):
+        print(line)
+    print("dry run: nothing was written" if dry else "setup applied")
+    return 0
+
+
+def record_folder_command(args):
+    """setup.py record-folder --yes: this machine approves the folder the project file names for the record (the question of the
+    act `folder`): on the user's answer, or in the user's own terminal."""
+    import acts
+    import storage as storage_module
+    if not args.yes:
+        sys.exit("error: pass --yes once the user answered the question")
+    context = acts.Context()
+    try:
+        values = acts.ACTS["folder"]._values(context)
+    except acts.ActError as error:
+        sys.exit(str(error))
+    if not acts.allowed("folder", values):
+        print(acts.refusal("folder", values)["note"])
+        return 1
+    config = context.config
+    place = "project" if config.get("place") == "project" else "own"
+    folder = storage_module.record_path(context.root) if place == "project" else os.path.join(
+        storage_module.records_top(), storage_module.PRIVATE, names.RECORDS, values["id"])
+    real = storage_module.check_record_folder(folder, place)
+    storage_module.bind_record(values["id"], real, place)
+    print("This machine now uses the record folder for record %s." % values["id"])
+    return 0
+
+
+def adopt_command(args):
+    """setup.py adopt (--topic N | --foreign) --yes: take back as the user's own a topic's text that was changed outside recortex,
+    or the files that were written under another key (the question of the act `adopt`). A changed entry is never adopted."""
+    import acts
+    if not args.yes:
+        sys.exit("error: pass --yes once the user answered the question")
+    if bool(args.topic) == bool(args.foreign):
+        sys.exit("error: name --topic N or --foreign")
+    context = acts.Context()
+    try:
+        store = record_store.for_repo(context.repo, context.config)
+        values = store.adopt_plan("topic" if args.topic else "foreign", args.topic or 0)
+    except (record_store.StoreError, SystemExit, AttributeError) as error:
+        sys.exit(str(error) if not isinstance(error, SystemExit) else "error: this project keeps no local record")
+    if not acts.allowed("adopt", values):
+        print(acts.refusal("adopt", values)["note"])
+        return 1
+    try:
+        done = store.adopt(values["mode"], values["topic"], values["digest"])
+    except record_store.StoreError as error:
+        sys.exit(str(error))
+    print("Sealed %d file%s as yours on this machine." % (done, "" if done == 1 else "s"))
+    return 0
+
+
 def apply(answers, root, dry, drafts):
+    if answers["record"] == "local":
+        return apply_local(answers, root, dry, drafts)
     if not dry:
         print(preflight())  # before anything is written; a dry run writes nothing and makes no such check
     if "map_files" in answers:
@@ -2068,6 +2376,19 @@ def main(argv=None):
     a.add_argument("--mode", required=True, choices=("on", "off"))
     a.add_argument("--yes", action="store_true", help="the user chose it in the conversation")
     sub.add_parser("preflight", help="check gh and Python before the first question (writes nothing)")
+    p = sub.add_parser("record-question", help="print the question about where the record is kept (a local record or GitHub "
+                       "issues), word for word with its options: the session asks exactly this")
+    place = p.add_mutually_exclusive_group()
+    place.add_argument("--location", action="store_true", help="the question about the local record's folder")
+    place.add_argument("--in-project", action="store_true", help="the question about a record inside the project")
+    p.add_argument("--root", help="project folder (default: the project root)")
+    p = sub.add_parser("record-folder", help="approve, on this machine, the folder the project file names for its local record")
+    p.add_argument("--yes", action="store_true", help="the user answered the question")
+    p = sub.add_parser("adopt", help="take back as the user's own a topic's text changed outside recortex, or the files written "
+                       "under another key")
+    p.add_argument("--topic", type=int, help="the topic whose text was changed outside recortex")
+    p.add_argument("--foreign", action="store_true", help="every file written under another key")
+    p.add_argument("--yes", action="store_true", help="the user answered the question")
     p = sub.add_parser("map-files", help="list or select local project documents for the Project Map")
     choices = p.add_mutually_exclusive_group()
     choices.add_argument("--select", metavar="PATH", action="append", help="tracked project document, repeat per file")
@@ -2102,6 +2423,10 @@ def main(argv=None):
     if args.command == "preflight":
         print(preflight())
         return 0
+    for name, command in (("record-question", record_question_command), ("record-folder", record_folder_command),
+                          ("adopt", adopt_command)):
+        if args.command == name:
+            return command(args)
     if args.command == "fields":
         return fields_command(args)
     if args.command == "writing":
