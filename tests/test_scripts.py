@@ -8931,7 +8931,7 @@ class MindModelTests(MindSandbox):
         text = self.page()
         self.assertIn("Opened by <span class=\"people\">an account</span> on April 5, 2026; still open.", text)
         for mark in ("MARK-LOGIN", "MARK-TITLE", "MARK-LABEL"):
-            self.assertNotIn(mark, outside_reader(text))
+            self.assertNotIn(mark, text)
 
     def test_a_large_table_many_words_and_many_threads_are_cut_at_their_caps(self):
         """The three caps that no test holds."""

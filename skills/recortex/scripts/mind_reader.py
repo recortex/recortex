@@ -10,6 +10,7 @@ import re
 
 import index
 import record_store
+import recortex
 
 LOCAL_CHANGED = "Changed outside recortex. Not counted as your words."
 LOCAL_FOREIGN = "Written on another machine. Not counted as your words."
@@ -76,7 +77,8 @@ class ReaderMixin:
             topic = {"n": number, "title": self.clean_text(row["title"], 300) if self.title_shown(number) and (row["title"] or "").strip()
                      else "Topic %d" % number, "state": "closed" if row["state"] == "closed" else "open",
                      "closed": stamp_text(row["closed_at"]) if row["closed_at"] and row["state"] == "closed" else None,
-                     "labels": [self.clean_text(label, 60) for label in index.issue_labels(db, number)][:20] if self.ok(row["author"]) else [],
+                     "labels": [self.clean_text(label, 60) for label in index.issue_labels(db, number)
+                                if recortex.LABEL_NAME.fullmatch(label or "")][:20] if self.ok(row["author"]) else [],
                      "updated": stamp_text(row["updated_at"] or row["created_at"]), "hub": number == hub,
                      "count": len(listed), "folded": folded}
             body_mark = None
