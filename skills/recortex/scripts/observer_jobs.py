@@ -415,7 +415,6 @@ UNDO_NOTES = {"changed_since": "Nothing was written: the body is no longer the o
               "not_open": "Nothing was written: that task is not open now.",
               "already_undone": "That act was undone before.",
               "no_such_act": "No act has that number: observer.py log lists them."}
-ADDRESS = "https://github.com/%s/issues/%d"
 
 
 def undo_note(code):
@@ -428,8 +427,7 @@ def address(repo, row):
     """The GitHub address of what an act is about, from checked integers."""
     if not row["issue"]:
         return ""
-    base = ADDRESS % (repo, row["issue"])
-    return base + ("#issuecomment-%d" % row["comment"] if row["comment"] else "")
+    return record_store.address_of(repo, row["issue"], row["comment"] or None)
 
 
 def log_lines(store, repo, config, days):

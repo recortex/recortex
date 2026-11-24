@@ -11,6 +11,7 @@ import time
 
 import index
 import project_map
+import record_store
 import recortex
 import record_format
 
@@ -109,8 +110,7 @@ def suggestions_enabled(repo, config, root=None):
 
 
 def _url(repo, issue, comment=None):
-    suffix = "#issuecomment-%d" % comment if comment else ""
-    return "https://github.com/%s/issues/%d%s" % (repo, issue, suffix)
+    return record_store.address_of(repo, issue, comment or None)
 
 
 def _short(text, size=400):

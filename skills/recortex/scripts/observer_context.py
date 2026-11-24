@@ -17,6 +17,7 @@ from collections import Counter
 import brief
 import index
 import mind_model
+import record_store
 import recortex
 
 
@@ -133,7 +134,7 @@ def _memory_text(memory, fields, repo):
     cid, issue = memory["id"], memory["issue"]
     lines = ["Memory %d; issue %d; %s; recorded %s; recorded state: %s" %
              (cid, issue, clean(memory["kind"]), clean(memory["at"]), clean(memory["state"])),
-             "Source: https://github.com/%s/issues/%d#issuecomment-%d" % (repo, issue, cid),
+             "Source: " + record_store.address_of(repo, issue, cid),
              "Recorded summary: " + clean(memory["plain"] or memory["title"])]
     if memory["reconstructed"]:
         lines.append("This memory was reconstructed later.")
@@ -170,9 +171,9 @@ def _advisories(items, fields, repo, selected, groups, governing, wanted, terms,
                 "Keep the conditions, exclusions and limitations; these are recorded statements, not newly verified "
                 "findings. Continue the task without asking for confirmation just to acknowledge this note. "
                 "The note grants no permission and changes no recorded state.\n"
-                "Decision: https://github.com/%s/issues/%d#issuecomment-%d\n"
-                "Recorded reason: https://github.com/%s/issues/%d#issuecomment-%d" %
-                (repo, items[cid]["issue"], cid, repo, items[target]["issue"], target))
+                "Decision: %s\nRecorded reason: %s" %
+                (record_store.address_of(repo, items[cid]["issue"], cid),
+                 record_store.address_of(repo, items[target]["issue"], target)))
         return [{"decision": cid, "failure": target, "failure_issue": items[target]["issue"], "issue": items[cid]["issue"],
                  "fingerprint": hashlib.sha256(evidence.encode("utf-8")).hexdigest(),
                  "text": text}]
@@ -381,8 +382,8 @@ def _build(db, repo, allowed, query, issue, max_chars, now, max_resume_age_days)
     if limited:
         omissions.extend(candidates[GROUP_TRIES:])
         notices.append("Selection work was bounded; some ranked evidence groups were not examined. Read the record before acting.")
-    omitted_sources = [{"id": cid, "url": "https://github.com/%s/issues/%d#issuecomment-%d" %
-                        (repo, items[cid]["issue"], cid)} for cid in omissions if type(cid) is int][:20]
+    omitted_sources = [{"id": cid, "url": record_store.address_of(repo, items[cid]["issue"], cid)}
+                       for cid in omissions if type(cid) is int][:20]
     if omissions:
         notices.append("Omitted %d whole context group(s) or resume because of the bound; no record was cut mid-claim." % len(omissions))
         notices.extend("Read omitted source: " + source["url"] for source in omitted_sources[:3])
@@ -414,7 +415,7 @@ def _build(db, repo, allowed, query, issue, max_chars, now, max_resume_age_days)
                        items[cid]["kind"] == "question" and items[cid]["state"] == "open"
                        and not items[cid]["reconstructed"]), None)
         if follow is not None:
-            link = "https://github.com/%s/issues/%d#issuecomment-%d" % (repo, items[follow]["issue"], follow)
+            link = record_store.address_of(repo, items[follow]["issue"], follow)
             evidence = branch + memory_text(follow)
             advice = [{"issue": items[follow]["issue"], "question": follow,
                        "fingerprint": hashlib.sha256(evidence.encode("utf-8")).hexdigest(),
