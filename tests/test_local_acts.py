@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -391,6 +392,49 @@ class TargetUnknownPlace(LocalActsBox):
         with open(os.path.join(self.project, ".recortex.json"), "w") as handle:
             json.dump(config, handle)
         self.assertIsNone(acts.record_folder(self.project))
+
+
+class ParseTests(unittest.TestCase):
+    """`acts.py ask` takes its words and its options in any order, on every Python the plugin supports: argparse before 3.12 stops reading
+    positionals at the first option, so a form like `ask trust --scope record /folder` failed with an exit code 2 on 3.8."""
+
+    def test_the_words_and_the_options_of_ask_may_come_in_any_order(self):
+        for argv, expected in ((["ask", "trust", "--scope", "record", "/srv/folder"], ("trust", ["/srv/folder"], "record")),
+                               (["ask", "trust", "/srv/folder", "--scope", "record"], ("trust", ["/srv/folder"], "record")),
+                               (["ask", "--scope", "record", "trust", "/srv/folder"], ("trust", ["/srv/folder"], "record")),
+                               (["ask", "adopt", "topic", "3", "--json"], ("adopt", ["topic", "3"], None)),
+                               (["ask", "adopt", "--json", "topic", "3"], ("adopt", ["topic", "3"], None)),
+                               (["ask", "inproject", "--path", "/p/answers.json"], ("inproject", [], None)),
+                               (["ask", "trust", "--typed"], ("trust", [], None))):
+            args = acts.parse(argv)
+            self.assertEqual(expected, (args.kind, args.values, args.scope), argv)
+            self.assertEqual("ask", args.command)
+        self.assertEqual("/p/answers.json", acts.parse(["ask", "inproject", "--path", "/p/answers.json"]).path)
+        self.assertEqual("list", acts.parse(["list"]).command)
+
+    def test_every_form_of_ask_that_a_document_or_a_printed_question_writes_parses(self):
+        import shlex
+        forms = []
+        for folder in (os.path.join(base.ROOT, "skills", "recortex"), os.path.join(base.ROOT, "commands"), os.path.join(base.ROOT, "docs"),
+                       os.path.join(base.ROOT, "agents")):
+            for place, dirs, files in os.walk(folder):
+                for name in files:
+                    if name.endswith(".md"):
+                        with open(os.path.join(place, name), encoding="utf-8") as handle:
+                            forms += re.findall(r"acts\.py ask ([A-Za-z0-9 .<>_/:=-]+?)(?=[`.,;)]|$)", handle.read(), re.M)
+        self.assertGreater(len(forms), 5)
+        for form in forms:
+            words = shlex.split(form.replace("<", "").replace(">", ""))
+            acts.parse(["ask"] + words)   # an exit code 2 here is a SystemExit
+
+    def test_the_command_lines_that_the_questions_print_parse(self):
+        for kind, values in (("trust", {"rows": [{"path": "/srv/a", "uid": 1, "gid": 2, "mode": "0755", "world": False}], "path": "/srv/a",
+                                        "record": True}),
+                             ("inproject", {"project": "/p", "state": "unknown", "answers": "/p/a.json"}),
+                             ("adopt", {"mode": "topic", "topic": 3, "lines": 1, "entries": 0, "topics": 0, "labels": 1, "state": "open",
+                                        "digest": "0" * 64})):
+            words = ["ask", kind] + acts.ACTS[kind].ask_words(values)
+            self.assertEqual(kind, acts.parse(words).kind, words)
 
 
 class InProjectStateTests(LocalActsBox):

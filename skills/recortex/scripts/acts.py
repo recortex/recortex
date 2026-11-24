@@ -1195,14 +1195,13 @@ def ask_main(args):
     return 0
 
 
-def parser():
-    class Parser(argparse.ArgumentParser):
-        def __init__(self, *args, **kwargs):
-            kwargs.setdefault("allow_abbrev", False)
-            super().__init__(*args, **kwargs)
-    root = Parser(description=__doc__)
-    sub = root.add_subparsers(dest="command", required=True)
-    ask = sub.add_parser("ask", help="the question for one act and the command of each option")
+class Parser(argparse.ArgumentParser):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
+
+def add_ask_arguments(ask):
     ask.add_argument("kind")
     ask.add_argument("values", nargs="*")
     ask.add_argument("--scope")
@@ -1212,12 +1211,32 @@ def parser():
     ask.add_argument("--json", action="store_true")
     ask.add_argument("--typed", action="store_true",
                      help="print the question as text to show in the chat, and take the user's typed words as the answer")
+
+
+def parser():
+    root = Parser(description=__doc__)
+    sub = root.add_subparsers(dest="command", required=True)
+    add_ask_arguments(sub.add_parser("ask", help="the question for one act and the command of each option"))
     sub.add_parser("list", help="the kinds of act, one line each")
     return root
 
 
+def parse(argv):
+    """The arguments of a command line. `ask KIND [VALUES...]` takes its words and its options in any order (`ask trust --scope record
+    /folder` and `ask trust /folder --scope record` alike): argparse before 3.12 stops reading positionals after the first option, so
+    the words of `ask` are read by parse_intermixed_args, which a parser with subparsers cannot use."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["ask"]:
+        ask = Parser(prog="acts.py ask", description="the question for one act and the command of each option")
+        add_ask_arguments(ask)
+        args = ask.parse_intermixed_args(argv[1:])
+        args.command = "ask"
+        return args
+    return parser().parse_args(argv)
+
+
 def main(argv=None):
-    args = parser().parse_args(argv)
+    args = parse(argv)
     if args.command == "list":
         for kind, act in ACTS.items():
             print("%s: %s" % (kind, act.header))
