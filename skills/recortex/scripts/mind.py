@@ -675,7 +675,9 @@ class Page:
         if self.fallbacks > before:
             out.append(E("p", {"class": "quiet"}, TEX_NOTE))
         if isinstance(doc, dict) and doc.get("cut"):
-            out.append(E("p", {"class": "quiet"}, CUT, " ", E("a", {"href": cut_to}, CUT_LINK) if cut_to else ""))
+            more = [E("a", {"href": cut_to}, self.local_words(CUT_LINK))] if cut_to else []
+            reader = self.record_link(integer(issue), None, "Read the rest in the record." if self.is_local() else "Read it in the record")
+            out.append(E("p", {"class": "quiet"}, CUT, " ", *(more + ([" "] if more and reader else []) + ([reader] if reader else []))))
         return J(*out)
 
     def block(self, block, store, issue):
@@ -699,9 +701,7 @@ class Page:
         if "plan" in block:
             return self.plan_table(block["plan"])
         if "note" in block:
-            address = github_url("issue", self.repo, issue)
-            return E("p", {"class": "quiet"}, HTML_TABLE_NOTE, " ", E("a", {"href": address}, "Open it on GitHub")
-                     if address else "")
+            return E("p", {"class": "quiet"}, self.local_words(HTML_TABLE_NOTE), " ", *self.reader_links("issue", issue, None, "Open it on GitHub"))
         if "block" in block and store is not None:
             data = block["block"] if isinstance(block["block"], dict) else {}
             found = store.get((data.get("kind"), data.get("id")))
@@ -993,9 +993,7 @@ class Page:
                    E("p", None, "Recorded by ", E("span", {"class": "people"}, who), ". Event stamp: ", when,
                      ". Posted to the record: ", self.history_stamp(memory.get("posted")), ".",
                      " Reconstructed later." if memory.get("reconstructed") else ""),
-                   E("a", {"href": address}, "Open the original comment on GitHub")
-                   if address else "",
-                   *self.beside(address, self.record_link(integer(memory.get("issue")), integer(memory.get("id"))))))
+                   *self.reader_links("memory", memory.get("issue"), memory.get("id"), "Open the original comment on GitHub")))
 
     # ------------------------------------------------------------ the views
 
@@ -1069,7 +1067,7 @@ class Page:
                              *[self.field(entry, address) for entry in memory.get("fields", [])],
                              *self.references(memory, embed_pictures=False),
                              *[self.field(entry, address) for entry in memory.get("where", [])],
-                             E("a", {"href": address}, "Original " + kind + " on GitHub") if address else "")
+                             *self.reader_links("memory", memory.get("issue"), memory.get("id"), "Original " + kind + " on GitHub"))
         following = completion.get("next_step")
         if completion.get("task_closed") is True:
             next_line = E("p", {"class": "quiet"}, "Task closed.")
@@ -1103,6 +1101,9 @@ class Page:
 
     def record_address(self, url):
         """Rebuild a same-project citation from issue and comment identifiers."""
+        if self.is_local():
+            found = re.fullmatch(r"#([1-9][0-9]{0,8})/([0-9]{1,19})", url) if isinstance(url, str) else None
+            return self.origin("memory", int(found.group(1)), int(found.group(2))) if found else None
         parts = mind_model.mind_text.github_parts(url) or {}
         if parts.get("repo") == self.repo and parts.get("kind") in ("memory", "issue"):
             return self.address(parts)
@@ -1144,7 +1145,11 @@ class Page:
         label, quote = text_of(item.get("label")), text_of(item.get("quote"))
         address, target = self.record_address(item.get("url")), text_of(item.get("anchor"))
         jump = E("a", {"href": anchor(target)}, "Open in dashboard") if target and ANCHOR.fullmatch(target) else ""
-        source = E("a", {"href": address}, "Original on GitHub") if address else ""
+        parts = mind_model.mind_text.github_parts(item.get("url")) or {}
+        if parts.get("repo") == self.repo and parts.get("kind") in ("memory", "issue"):
+            source = J(*self.reader_links(parts["kind"], parts.get("n"), parts.get("cid"), "Original on GitHub"))
+        else:
+            source = J(*([E("a", {"href": address}, self.local_words("Original on GitHub"))] if address else []))
         review = item.get("review") or {}
         state = self.IMPACT_VERDICTS.get(review.get("verdict"), "")
         prompts = self.guidance_prompts("impact-%d, item %s in %s" % (old, ident, self.repo))
@@ -1188,11 +1193,11 @@ class Page:
             editor = self.impact_editor()
             target = (event.get("context") or {}).get("label") or "Earlier item"
             path = "impact-%d-%s-pending-%d" % (integer(old.get("id")), key, cid)
-            receipt = github_url("memory", self.repo, group.get("hub"), cid)
+            receipt = self.reader_links("memory", group.get("hub"), cid, "Read shared review")
             sections.append(E("div", {"class": "impact-section"}, E("h4", None, "Verification pending"),
                               E("p", None, target),
                               E("a", {"href": Href(editor + "#" + path + ("" if history else "-overview"))}, "Check pending change") if editor else
-                              E("a", {"href": receipt}, "Read shared review") if receipt else ""))
+                              J(*receipt)))
         log = []
         if history:
             for event in group.get("review_history", []):
@@ -1201,11 +1206,10 @@ class Page:
                     key = event.get("target")
                     current_item = next((item for item in items if item["id"] == key), {})
                     name = (event.get("context") or {}).get("label") or current_item.get("label") or "Earlier item"
-                    receipt = github_url("memory", self.repo, group.get("hub"), event.get("comment"))
                     log.append(E("li", None, E("b", None, name), " · ", state, " · ", text_of(event.get("reviewer")),
                                  " · ", self.history_stamp(event.get("at")),
                                  E("p", None, text_of(event.get("note"))) if event.get("note") else "",
-                                 E("a", {"href": receipt}, "Read shared review") if receipt else ""))
+                                 *self.reader_links("memory", group.get("hub"), event.get("comment"), "Read shared review")))
         count = len(pending) + len(verifications)
         summary = plural(count, "1 item to review", "%d items to review") if count else "No items awaiting review"
         if group.get("conflict"):
@@ -1233,10 +1237,10 @@ class Page:
         """Show at most three entries from the recorded handoff and unresolved task failures."""
         rows = []
         if last and last.get("holds"):
-            source = github_url("memory", self.repo, last.get("issue"), last.get("id"))
+            source = self.origin("memory", last.get("issue"), last.get("id"))
             rows.append(E("li", None, E("span", {"class": "lab"}, "Hold from the last handoff"),
                           self.blocks(last["holds"], cut_to=source),
-                          E("a", {"class": "lk", "href": source}, "Read the handoff on GitHub") if source else ""))
+                          *self.reader_links("memory", last.get("issue"), last.get("id"), "Read the handoff on GitHub", **{"class": "lk"})))
         blocked = [task for task in opened if task.get("blocked") is True]
         room = 3 - len(rows)
         for task in blocked[:room]:
@@ -1250,8 +1254,7 @@ class Page:
             if memory and memory.get("kind") == "failure":
                 evidence = self.said(memory, "lk", "Read the blocking failure")
             else:
-                address = github_url("memory", self.repo, failure.get("issue"), failure.get("id"))
-                evidence = E("a", {"class": "lk", "href": address}, "Read the failure on GitHub") if address else ""
+                evidence = J(*self.reader_links("memory", failure.get("issue"), failure.get("id"), "Read the failure on GitHub", **{"class": "lk"}))
             words = text_of(step.get("text"))
             rows.append(E("li", None, E("span", {"class": "lab"}, "Blocked step" if words else "Blocked task",
                                        " · ", title if words else "#%d" % issue),
@@ -1285,7 +1288,7 @@ class Page:
         """A portable excerpt of the trusted snapshot. Separate the dated handoff from later task evidence."""
         built = self.model.get("built") or {}
         last = self.model.get("last") or {}
-        source = github_url("memory", self.repo, last.get("issue"), last.get("id"))
+        source = self.origin("memory", last.get("issue"), last.get("id"))
         notes = []
         if source:
             status = ["Recorded handoff · " + (text_of(last.get("day")) or "date unknown")]
@@ -1307,7 +1310,7 @@ class Page:
             for row in actions[:3]:
                 memory = self.m.get(integer((row.get("completion") or {}).get("source")))
                 if memory and memory.get("kind") in record_format.MARK_RULES["done"]:
-                    receipt = github_url("memory", self.repo, memory.get("issue"), memory.get("id"))
+                    receipt = self.origin("memory", memory.get("issue"), memory.get("id"))
                     if receipt:
                         notes.append(["Completed since handoff — " + text_of(memory.get("plain") or memory.get("title")),
                                       E("a", {"href": receipt}, "Read the completion record")])
@@ -1318,7 +1321,7 @@ class Page:
                 step = next((s for s in task.get("steps", []) if isinstance(s, dict)
                              and s.get("state") in ("open", "blocked")), None)
                 if step and text_of(step.get("text")):
-                    receipt = github_url("memory", self.repo, task["issue"], step.get("comment"))
+                    receipt = self.origin("memory", task["issue"], step.get("comment"))
                     if receipt:
                         label = "Blocked step" if step["state"] == "blocked" else "Open step"
                         title = text_of(task.get("title"))
@@ -1345,7 +1348,7 @@ class Page:
                     event = waiting[0]
                     label = (event.get("context") or {}).get("label") or "the earlier item"
                     lines.append("Next step — verify the pending change for " + label + ".")
-                    sources.append(github_url("memory", self.repo, group.get("hub"), event.get("comment")))
+                    sources.append(self.origin("memory", group.get("hub"), event.get("comment")))
                 else:
                     item = pending[0]
                     state = (item.get("review") or {}).get("verdict")
@@ -1407,7 +1410,7 @@ class Page:
             if first and not (first[0].get("blocked") and complete and tasks.get("available") is True):
                 task, step = first
                 target = self.step_id(task["issue"], step) or "work-task-%d" % task["issue"]
-                receipt = github_url("memory", self.repo, task["issue"], step.get("comment"))
+                receipt = self.origin("memory", task["issue"], step.get("comment"))
                 guidance = self.guidance_prompts("the unfinished task step in %s at %s" % (self.repo, receipt)) if receipt else []
                 out.append(E("section", {"class": "resume-step"}, E("h3", None, "First unfinished recorded step"),
                              E("a", {"class": "said", "href": anchor(target)}, text_of(step["text"])),
@@ -1422,7 +1425,7 @@ class Page:
                            " to organize your first goals.")))
         if last:
             day = text_of(last.get("day"))
-            source = github_url("memory", self.repo, last.get("issue"), last.get("id"))
+            source = self.origin("memory", last.get("issue"), last.get("id"))
             caption = "Status automatically refreshed on %s." % day if last.get("automatic") is True else \
                 "We last paused on %s. This is how things stood:" % day if day else "Recorded status."
             out.append(E("p", {"class": "paused"}, caption, " ", E("a", {"href": source}, "Original status") if source else ""))
@@ -1562,7 +1565,7 @@ class Page:
                 if isinstance(opened, list) else None
             if task:
                 return E("li", None, E("a", {"href": anchor("work-task-%d" % n)}, task.get("title") or "Task #%d" % n))
-            return E("li", None, E("a", {"href": github_url("issue", self.repo, n)}, "Issue #%d" % n))
+            return E("li", None, E("a", {"href": self.origin("issue", n)}, "Issue #%d" % n))
         return E("li", None, E("code", None, value) if kind == "file" else ref)
 
     @staticmethod
@@ -1703,7 +1706,7 @@ class Page:
     def plan_link(self, seg, words=None):
         """A planned part as a sentence that opens its comment on GitHub: the address is built from checked numbers."""
         words = words if words is not None else text_of(seg.get("t"))
-        address = github_url("memory", self.repo, seg.get("issue"), seg.get("gh"))
+        address = self.origin("memory", seg.get("issue"), seg.get("gh"))
         return E("a", {"class": "inl", "href": address}, words) if address else words
 
     def plan_cell(self, segs):
@@ -1928,7 +1931,7 @@ class Page:
             body = self.blocks(text.get("doc"), address, self.stores.get(n), topic)
             ident = "text-%d-%d" % (n, ordinal)
         else:
-            body = J(E("p", None, NOT_SHOWN), E("a", {"href": address}, "Open it on GitHub") if address else "")
+            body = J(E("p", None, NOT_SHOWN), *self.reader_links("issue", topic, None, "Open it on GitHub"))
             ident = None
         return E("article", {"class": "part", "id": ident},
                  E("p", {"class": "status"}, *self.sentences(part.get("status"))), E("div", {"class": "parttext"}, body),
@@ -2230,7 +2233,7 @@ class Page:
         if part.get("shown") is not True:
             address = github_url("issue", self.repo, topic)
             body, empty = [E("div", {"class": "row untoldrow noprint"}, E("div", None, E("p", {"class": "quiet"}, NOT_SHOWN, " ",
-                           E("a", {"href": address}, "Open it on GitHub") if address else "")), E("div", {"class": "mn"}))], True
+                           *self.reader_links("issue", topic, None, "Open it on GitHub"))), E("div", {"class": "mn"}))], True
         elif part.get("long") is True or not rows or not isinstance(doc, dict):
             blocks = self.blocks(doc, github_url("issue", self.repo, topic), self.stores.get(n), topic) \
                 if isinstance(doc, dict) and doc.get("blocks") else ""
@@ -2719,7 +2722,7 @@ class Page:
                  E("p", {"class": "said"}, words),
                  E("a", {"class": "quiet", "href": anchor("task-%d" % integer(task.get("issue")))}, "See it in the story")
                  if story else "", " " if story else "",
-                 E("a", {"class": "quiet", "href": address}, "Open the task on GitHub") if address else "")
+                 *self.reader_links("issue", task.get("issue"), None, "Open the task on GitHub", **{"class": "quiet"}))
 
     def threads_view(self):
         # The model keeps deliverable order for Outputs. A story's place in History follows its included records.
@@ -3401,8 +3404,8 @@ class Page:
         day = text_of(task.get("closed"))
         if closed and USAGE_DAY.fullmatch(day):
             line += ", closed on %s" % day
-        body = [head, E("p", {"class": "quiet"}, line, J(" ", E("a", {"class": "lk", "href": address}, "Open it on GitHub"))
-                                                          if address else "")]
+        more = self.reader_links("issue", n, None, "Open it on GitHub", **{"class": "lk"})
+        body = [head, E("p", {"class": "quiet"}, line, J(" ", *more) if more else "")]
         if steps and not closed:
             body.append(self.meter(done, steps))
         if task.get("hand") is True and not closed:
@@ -3419,7 +3422,7 @@ class Page:
                 if integer(made["id"]) in self.m:
                     by = E("a", {"class": "lk", "href": anchor("m-%d" % integer(made["id"])), "data-m": integer(made["id"])}, words)
                 else:
-                    address = github_url("memory", self.repo, made.get("issue"), made.get("id"))
+                    address = self.origin("memory", made.get("issue"), made.get("id"))
                     by = E("a", {"class": "lk", "href": address}, words) if address else words
             items.append(E("li", {"class": "step s-" + state, "id": self.step_id(n, step)}, E("span", {"class": "sk"}, TODO_STATES[state]),
                            E("span", {"class": "sbody"}, E("span", {"class": "stx"}, text_of(step.get("text"))),
@@ -3447,10 +3450,10 @@ class Page:
             kind, day = act.get("kind") if isinstance(act, dict) else None, text_of(act.get("day")) if isinstance(act, dict) else ""
             if kind not in TODO_ACTS or not USAGE_DAY.fullmatch(day):
                 continue
-            address = github_url("memory", self.repo, act.get("issue"), act.get("comment")) if integer(act.get("comment")) \
-                else github_url("issue", self.repo, act.get("issue")) if integer(act.get("issue")) else None
+            more = self.reader_links("memory", act.get("issue"), act.get("comment"), "Open it on GitHub") if integer(act.get("comment")) \
+                else self.reader_links("issue", act.get("issue"), None, "Open it on GitHub") if integer(act.get("issue")) else []
             acts.append(E("li", None, "%s, %s" % (TODO_ACTS[kind], day), " (undone)" if act.get("undone") is True else "",
-                          J(" ", E("a", {"href": address}, "Open it on GitHub")) if address else ""))
+                          J(" ", *more) if more else ""))
         if acts:
             parts += [E("h3", None, "What the observer did in the last 7 days"), E("ul", {"class": "plainlist"}, *acts)]
         return self.view("todo", "What is there to do?", TODO_LEDE, *parts)
@@ -3466,7 +3469,14 @@ class Page:
         address and never a path."""
         if self.live_base and not self.reader_here(n):
             return Href("%s/read/%d%s" % (self.live_base, n, "#read-%d-e%d" % (n, entry) if entry else ""))
+        if entry and not self.reader_has_entry(n, entry):
+            entry = None   # an entry the view does not hold (a comment that is not in the record): the topic's view alone
         return anchor("read-%d-e%d" % (n, entry) if entry else "read-%d" % n)
+
+    def reader_has_entry(self, n, entry):
+        data = self.reader_data() or {}
+        return any(integer(t.get("n")) == n and any(integer(e.get("id")) == entry for e in t.get("entries") or [] if isinstance(e, dict))
+                   for t in data.get("topics", []) if isinstance(t, dict))
 
     def reader_here(self, n):
         """True when the view of topic `n` is on this page."""
@@ -3483,6 +3493,38 @@ class Page:
         if not self.reader_has(n):
             return ""
         return E("a", {"href": self.read_href(n, entry)}, text)
+
+    def is_local(self):
+        return record_store.is_local(self.repo or "")
+
+    def local_words(self, text):
+        """A fixed sentence of the page for this record: for a local record, "on GitHub" is "in the record"."""
+        return text.replace(" on GitHub", " in the record") if self.is_local() else text
+
+    def origin(self, kind, issue, cid=None):
+        """Where a topic ("issue") or an entry ("memory") is read: its address on GitHub, or for a local record its place in the reader
+        (None when the page has no reader for it). Never a file address."""
+        if not self.is_local():
+            return github_url(kind, self.repo, issue, cid) if kind == "memory" else github_url(kind, self.repo, issue)
+        n = integer(issue)
+        if not n or not self.reader_has(n):
+            return None
+        return self.read_href(n, integer(cid) if kind == "memory" and cid else None)
+
+    def reader_links(self, kind, issue, cid, text, **attrs):
+        """The link to where a topic or an entry is read, in the words `text`, as a list of nodes: for a GitHub record the link to
+        GitHub and, beside it, the reader's (when the page has one); for a local record the reader's alone, in words that do not name
+        GitHub. Empty when the page has neither."""
+        out = []
+        if not self.is_local():
+            address = github_url(kind, self.repo, issue, cid) if kind == "memory" else github_url(kind, self.repo, issue)
+            if address:
+                out.append(E("a", dict(attrs, href=address), text))
+        n = integer(issue)
+        if n and self.reader_has(n):
+            out += ([" "] if out else []) + [E("a", dict(attrs, href=self.read_href(n, integer(cid) if kind == "memory" and cid else None)),
+                                              self.local_words(text) if self.is_local() else "Read it in the record")]
+        return out
 
     @staticmethod
     def beside(address, link):
@@ -3636,14 +3678,12 @@ class Page:
                                              "%d memories by accounts outside your allowed list are not told here.")))
         edited = integer(missing.get("edited"))
         if edited:
-            links = [github_url("memory", self.repo, entry.get("issue"), entry.get("id"))
+            links = [self.reader_links("memory", entry.get("issue"), entry.get("id"), "Open it on GitHub")
                      for entry in missing.get("edited_ids", [])]
             lines.append(E("p", None, record_store.count_line(words["page_changed"], edited) if local else
                            plural(edited, "1 memory was changed on GitHub after it was posted, so it is not told here.",
                                   "%d memories were changed on GitHub after they were posted, so they are not told here.")))
-            lines.append(E("ul", {"class": "plainlist"}, *[E("li", None, E("a", {"href": address},
-                                                                         "Open it on GitHub"))
-                                                            for address in links if address]))
+            lines.append(E("ul", {"class": "plainlist"}, *[E("li", None, *nodes) for nodes in links if nodes]))
         older = integer(missing.get("older"))
         if older:
             lines.append(E("p", None, plural(older, "1 older memory is not on this page; compile.py writes the whole "
@@ -3659,8 +3699,7 @@ class Page:
             lines.append(E("p", None, "The text of the thread ", self.thread_link(body.get("thread")),
                            " is not shown: someone outside your allowed accounts wrote or changed it, or its history "
                            "has not been read yet. ",
-                           E("a", {"href": address}, "Open it on GitHub") if address
-                           else ""))
+                           *self.reader_links("issue", body.get("topic"), None, "Open it on GitHub")))
         if integer(missing.get("kinds")):
             lines.append(E("p", None, plural(integer(missing["kinds"]), "1 comment is of a kind this version of the "
                                                                           "plugin does not know, so it is not told here.",

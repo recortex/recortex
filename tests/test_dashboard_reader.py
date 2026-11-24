@@ -10,6 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_dashboard_live as live  # noqa: E402  (used by its module's name: its tests are not collected here)
+import test_scripts as ts  # noqa: E402
 
 ROOT = live.ROOT
 MIND_JS = os.path.join(ROOT, "skills", "recortex", "page", "mind.js")
@@ -96,6 +97,36 @@ class MarkTests(ReaderBox):
         self.assertEqual(0, len(re.findall(r'class="readentry folded"[^>]*open', view)))
 
 
+class BesideTests(ts.MindSandbox):
+    """10.3: a GitHub record's page has the reader's link beside each of its links to an issue or a comment on GitHub."""
+
+    def page(self):
+        built = self.tool("mind.py", gh="false")
+        self.assertEqual(0, built.returncode, built.stdout + built.stderr)
+        with open(os.path.join(self.data, "private", self.slug(), "mind.html"), encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_every_link_to_an_issue_or_a_comment_has_the_readers_link_beside_it(self):
+        self.add_chain()
+        self.ready()
+        page = self.page()
+        found = re.findall(r'<a href="https://github\.com/octo-org/octo-repo/(issues|pull)/([0-9]+)(?:#issuecomment-([0-9]+))?"[^>]*>'
+                           r'([^<]*on GitHub[^<]*)</a>(.{0,160})', ts.outside_reader(page), re.S)   # the reader's own views link out as they do
+        self.assertGreaterEqual(len(found), 3, "the page has too few links to GitHub to say anything")
+        topics = 0
+        for kind, number, comment, text, after in found:
+            if kind == "pull":
+                continue   # a pull request is no topic of the record
+            topics += 1
+            want = '#read-%s%s"' % (number, "-e" + comment if comment else "")
+            self.assertTrue(after.startswith(' <a href="%s' % want) or ('href="#read-%s' % number) in after[:80], (text, after[:100]))
+            self.assertIn("Read it in the record", after[:140])
+        self.assertTrue(topics)
+        # and the places they name are in the page
+        for target in set(re.findall(r'href="(#read-[0-9]+(?:-e[0-9]+)?)"', page)):
+            self.assertIn('id="%s"' % target[1:], page, target)
+
+
 class ScriptTests(unittest.TestCase):
     def test_the_reader_inserts_no_text_by_script(self):
         with open(MIND_JS, encoding="utf-8") as handle:
@@ -104,19 +135,31 @@ class ScriptTests(unittest.TestCase):
             self.assertNotIn(word, script)
         self.assertIn("data-start", script)   # the one thing the reader's route asks of the script
 
+    @staticmethod
+    def model():
+        return {"repo": "octo-org/octo-repo", "memories": [], "threads": [], "words": [], "cited": [],
+                "reader": {"local": False, "mode": "views", "only": 5, "counts": {"entries": 1, "folded": 0}, "unread": 0,
+                           "topics": [{"n": 5, "title": "A topic", "state": "open", "closed": None, "labels": ["final-record"],
+                                       "updated": "2026-04-10 12:00 UTC", "hub": False, "count": 1, "folded": 0, "body_mark": None,
+                                       "untold": False, "capped": False, "body": None, "versions": [], "edits": [],
+                                       "entries": [{"id": 9, "at": "2026-04-10 12:00 UTC", "mark": None, "kind": "result",
+                                                    "doc": {"blocks": [{"p": [{"t": "A result."}]}], "cut": False},
+                                                    "note": False}]}]}}
+
     def test_a_reading_view_holds_no_button_form_or_field(self):
         import mind
-        model = {"repo": "octo-org/octo-repo", "memories": [], "threads": [], "words": [], "cited": [],
-                 "reader": {"local": False, "mode": "views", "only": 5, "counts": {"entries": 1, "folded": 0}, "unread": 0,
-                            "topics": [{"n": 5, "title": "A topic", "state": "open", "closed": None, "labels": ["final-record"],
-                                        "updated": "2026-04-10 12:00 UTC", "hub": False, "count": 1, "folded": 0, "body_mark": None,
-                                        "untold": False, "capped": False, "body": None, "versions": [], "edits": [],
-                                        "entries": [{"id": 9, "at": "2026-04-10 12:00 UTC", "mark": None, "kind": "result",
-                                                     "doc": {"blocks": [{"p": [{"t": "A result."}]}], "cut": False},
-                                                     "note": False}]}]}}
+        model = self.model()
         page = mind.Page(model).read_view(model["reader"]["topics"][0])
         for tag in ("<button", "<form", "<input", "<select", "<textarea"):
             self.assertNotIn(tag, page)
+
+    def test_a_link_to_an_entry_the_view_does_not_hold_goes_to_the_topic_and_a_topic_the_page_lacks_has_no_link(self):
+        import mind
+        page = mind.Page(self.model())
+        self.assertEqual("#read-5-e9", page.read_href(5, 9))
+        self.assertEqual("#read-5", page.read_href(5, 12345))   # a comment that is not in the record
+        self.assertEqual("", page.record_link(6))
+        self.assertTrue(all("read-6" not in str(node) for node in page.reader_links("memory", 6, 1, "Open it on GitHub")))
 
 
 if __name__ == "__main__":

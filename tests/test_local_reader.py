@@ -221,7 +221,15 @@ class NothingElseTests(Reader):
         page = self.page()
         self.assertNotRegex(page, r'href="https?://')
         self.assertEqual(0, len(re.findall(r"Open the original comment on GitHub|Open the whole issue on GitHub", page)))
-        self.assertIn("Read it in the record", page)   # the cited issues' boxes
+        # the links to GitHub of a GitHub record are, for a local record, links into the reader, in words that do not name GitHub
+        links = re.findall(r'<a href="(#read-[0-9]+(?:-e[0-9]+)?)"[^>]*>([^<]*)</a>', page)
+        self.assertGreaterEqual(len(links), 6)
+        words = {text for target, text in links}
+        self.assertIn("Open the original comment in the record", words)
+        self.assertIn("Read the original handoff", words)   # the handoff's source has a place in the record, so it is shown
+        for target, text in links:
+            self.assertNotIn("GitHub", text)
+            self.assertTrue(re.search(r'id="%s"' % target[1:], page), "the reader has no place %s" % target)
 
     def test_text_that_only_the_reader_shows_feeds_nothing_else(self):
         self.plant("changed-entry")
