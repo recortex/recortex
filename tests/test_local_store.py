@@ -1104,13 +1104,67 @@ class Hardening(local_record.LocalSandbox):
                 self.assertEqual(before, self.read(path))
                 self.write(path, saved)
 
-    def test_the_next_number_is_above_every_number_a_topic_file_carries(self):
+    def test_a_number_from_a_file_that_is_not_sealed_is_kept_out_of_use_but_never_moves_the_counter(self):
         store = self.store
-        self.write(os.path.join(self.folder, "topics", "elsewhere.md"), b"---\nrecortex: 1\nkind: topic\nnumber: 12\nbroken")
-        self.assertEqual("#13", store.create_issue("After the unread one", [], body="b"))
+        # sealed topics are 1 to 4; an unread file that claims 999999999 and one that claims 5 change nothing but the use of 5
+        self.write(os.path.join(self.folder, "topics", "planted.md"),
+                   b"---\nrecortex: 1\nkind: topic\nnumber: 999999999\nbroken")
+        self.write(os.path.join(self.folder, "topics", "claims-five.md"),
+                   b"---\nrecortex: 1\nkind: topic\nnumber: 5\nbroken")
+        self.assertEqual("#6", store.create_issue("After the planted ones", [], body="b"))
         changed = self.damage("changed-body", "speed")
-        self.write(changed, self.read(changed).replace(b"number: 3", b"number: 20", 1))   # a changed topic keeps its number
-        self.assertEqual("#21", store.create_issue("After the changed one", [], body="b"))
+        self.write(changed, self.read(changed).replace(b"number: 3", b"number: 7", 1))   # a changed file keeps its number
+        self.assertEqual("#8", store.create_issue("After the changed one", [], body="b"))   # 6 is the sealed new one; 7 is kept
+        other = self.local_store.Sealing(b"another machine")
+        relpath = "topics/foreign.md"
+        front = dict(self.local_store.parse_file(self.read(self.topic_path("task")), "topics/%s.md" % self.slug("task"),
+                                                 self.record_id).front, number=9)
+        self.write(os.path.join(self.folder, relpath), self.local_store.render("topic", front, "x", relpath, self.record_id, other))
+        self.assertEqual("#10", store.create_issue("After the foreign one", [], body="b"))
+
+    def test_a_number_is_read_only_from_the_front_matter_of_a_file_that_begins_with_it(self):
+        store = self.store
+        self.write(os.path.join(self.folder, "topics", "no-front.md"), b"text first\nnumber: 5\n---\n")
+        self.write(os.path.join(self.folder, "topics", "in-body.md"),
+                   b"---\nrecortex: 1\nkind: topic\n---\nnumber: 5\n")
+        self.write(os.path.join(self.folder, "topics", "late.md"),
+                   b"---\n" + b"x: 1\n" * 1200 + b"---\nnumber: 5\n")
+        self.assertEqual("#5", store.create_issue("Not moved by those", [], body="b"))
+
+    def test_the_next_number_is_still_the_highest_sealed_number_plus_one(self):
+        self.assertEqual("#5", self.store.create_issue("Next", [], body="b"))
+        self.assertEqual("#6", self.store.create_issue("Next again", [], body="b"))
+
+    # ---- 1. a topic file that cannot be read is no reason to guess
+    def test_a_topic_file_that_cannot_be_read_safely_refuses_a_new_topic_and_other_names_do_not(self):
+        store = self.store
+        before = self.tree()
+        path = self.topic_path("speed")
+        os.chmod(path, 0o666)
+        with self.assertRaises(self.record_store.RecordFolderError) as caught:
+            store.create_issue("Not made", [], body="b")
+        self.assertEqual(self.local_store.UNREADABLE_TOPIC, str(caught.exception))
+        self.assertEqual("unreadable", caught.exception.kind)
+        os.chmod(path, 0o600)
+        link = os.path.join(self.folder, "topics", "linked.md")
+        os.symlink(path, link)
+        with self.assertRaises(self.record_store.RecordFolderError):
+            store.create_issue("Not made", [], body="b")
+        os.remove(link)
+        os.mkfifo(os.path.join(self.folder, "topics", "piped.md"))
+        started = time.monotonic()
+        with self.assertRaises(self.record_store.RecordFolderError):
+            store.create_issue("Not made", [], body="b")
+        self.assertLess(time.monotonic() - started, 5)
+        os.remove(os.path.join(self.folder, "topics", "piped.md"))
+        # a conflict copy and a name that is no slug are not topic files: whatever they are, they do not stop a new topic
+        for name in ("reader (conflicted copy).md", "Upper-Case.md", "notes.txt"):
+            os.symlink(path, os.path.join(self.folder, "topics", name))
+        self.assertEqual("#5", store.create_issue("Made", [], body="b"))
+        self.assertIn("made.md", self.files("topics"))
+        after = self.tree()
+        for name, data in before.items():
+            self.assertEqual(data, after[name], name)   # and nothing that was there changed
 
     # ---- 2. an entry's topic is its own sealed one
     def test_an_entry_read_under_another_topic_than_its_own_is_changed(self):
@@ -1131,6 +1185,33 @@ class Hardening(local_record.LocalSandbox):
         self.assertEqual("sealed", sealed.state)
         self.assertEqual("changed", self.local_store.attributed(sealed, 9).state)
         self.assertEqual("foreign", self.local_store.attributed(self.local_store.Parsed("entry", {"topic": 3}, "", "x", "foreign", "k", "m"), 9).state)
+
+    def test_an_entry_that_is_not_sealed_is_placed_under_the_topic_of_its_folder_never_under_its_own_claim(self):
+        store = self.store
+        path = self.entry_path("reader", 0)
+        relpath = os.path.relpath(path, self.folder).replace(os.sep, "/")
+        parsed = self.local_store.parse_file(self.read(path), relpath, self.record_id)
+        claim = dict(parsed.front, topic=3)
+        cid = int(self.local_store.entry_number(parsed.entry_id))
+        # foreign: sealed under another key, claiming topic 3
+        other = self.local_store.Sealing(b"another machine")
+        self.write(path, self.local_store.render("entry", claim, parsed.body, relpath, self.record_id, other))
+        foreign = store.read_entry(cid)
+        self.assertEqual(("foreign", "local:%s/issues/2" % self.repo, "other-machine"),
+                         (foreign["state_seal"], foreign["issue_url"], foreign["user"]["login"]))
+        # changed: edited by hand to claim topic 3, so its seal fails
+        self.write(path, self.local_store.render("entry", parsed.front, parsed.body, relpath, self.record_id))
+        self.write(path, self.read(path).replace(b"topic: 2\n", b"topic: 3\n", 1))
+        changed = store.read_entry(cid)
+        self.assertEqual(("changed", "local:%s/issues/2" % self.repo), (changed["state_seal"], changed["issue_url"]))
+        self.assertTrue(changed["html_url"].startswith("#2/"))
+        self.assertEqual(cid, [row["id"] for row in json.loads(store.list_entries(2))][0])
+        self.assertEqual([], [row for row in json.loads(store.list_entries(3)) if row["id"] == cid])
+        # sealed under our key, but placed in the folder of another topic: its own claim holds, and it is changed
+        self.write(path, self.local_store.render("entry", claim, parsed.body, relpath, self.record_id))
+        moved = store.read_entry(cid)
+        self.assertEqual(("changed", "local:%s/issues/3" % self.repo), (moved["state_seal"], moved["issue_url"]))
+        self.assertEqual(3, self.local_store.attributed(self.local_store.parse_file(self.read(path), relpath, self.record_id), 2).placed)
 
     # ---- 3. a number cannot be shadowed
     def test_two_files_with_one_topic_number_are_refused_by_every_read_and_write(self):

@@ -41,6 +41,8 @@ RECORD_LIMIT = 65536
 LABELS_MAX = 50
 TITLE_MAX = 256
 YOUNG_SECONDS = 2        # a file with no seal that is this young may be one that is still being written
+UNREADABLE_TOPIC = ("recortex: a topic file of the record could not be read, so no new topic was made. hooks.py --doctor "
+                    "names it.")
 NOT_FIT = "recortex: the text does not fit a record file; nothing was written."
 DUPLICATE = ("recortex: two files of the record carry the same number, as after two copies of the record were changed apart. "
              "Nothing was read. hooks.py --doctor names them.")
@@ -145,6 +147,8 @@ class Parsed:
     def __init__(self, kind, front, body, relpath, state, key_id, mac):
         self.kind, self.front, self.body, self.relpath = kind, front, body, relpath
         self.state, self.key_id, self.mac = state, key_id, mac
+        self.own_seal = state == "sealed"   # the file's own seal holds: its front matter is what was sealed
+        self.placed = front.get("topic")    # the topic an entry or a version is placed under (see attributed)
 
     @property
     def number(self):
@@ -153,6 +157,15 @@ class Parsed:
     @property
     def entry_id(self):
         return self.front.get("id")
+
+
+def front_block(data):
+    """The bytes of the front matter of a file that begins with `---`: up to the line that closes it, or, when it does not close
+    within FRONT_LIMIT bytes (a copy that stopped half way), the first FRONT_LIMIT bytes. None for any other file."""
+    if not data.startswith(b"---\n"):
+        return None
+    end = data.find(b"\n---\n", 3, FRONT_LIMIT + 8)
+    return data[4:FRONT_LIMIT] if end < 0 else data[4:end]
 
 
 def keys_for(kind, front):
@@ -301,11 +314,16 @@ def slug_of(title, number, taken):
 
 def attributed(parsed, number):
     """`parsed`, an entry or a version of a topic's text, as it counts when it is read under topic `number` (the number of the
-    topic whose folder holds it): sealed only when its own sealed front matter names that topic, else changed. The folder is no
-    seal; an entry's own `topic` is. A file that is not sealed stays what it is."""
+    topic whose folder holds it), as a copy that says where it is placed. The folder is no seal, and an entry's own `topic` is
+    one only while the entry's own seal holds: a file that is foreign, or changed because its seal fails, is placed under the topic
+    of the folder that holds it, since its text is untrusted and must not choose where it appears. A file whose seal holds is
+    placed under its own `topic`, and counts as sealed only when that is `number`; else it is changed."""
+    copy = Parsed(parsed.kind, parsed.front, parsed.body, parsed.relpath, parsed.state, parsed.key_id, parsed.mac)
+    copy.own_seal = parsed.own_seal
+    copy.placed = parsed.front.get("topic") if parsed.own_seal else number
     if parsed.state == "sealed" and parsed.front.get("topic") != number:
-        return Parsed(parsed.kind, parsed.front, parsed.body, parsed.relpath, "changed", parsed.key_id, parsed.mac)
-    return parsed
+        copy.state = "changed"
+    return copy
 
 
 # ---------------------------------------------------------------- the store
@@ -336,6 +354,9 @@ class LocalStore:
         return storage.link_new_record_file(os.path.join(folder, RECORD_FILE), data)
 
     # ------------------------------------------------------------ files
+    def forget_cache(self):
+        self._cache.clear()
+
     def path(self, relpath):
         return os.path.join(self.folder, *relpath.split("/"))
 
@@ -486,7 +507,7 @@ class LocalStore:
         """The row of an entry as a comment. Its topic is its own sealed `topic`, never the folder it was found in."""
         created = parsed.front["created"]
         updated = created if parsed.state != "changed" else self.edited_stamp(parsed, mtime_ns, created)
-        topic = parsed.front["topic"]
+        topic = parsed.placed
         return {"id": entry_no, "node_id": parsed.entry_id, "issue_url": self.api_issue(topic),
                 "html_url": self.address(topic, entry_no), "user": {"login": self.author_of(parsed)}, "body": parsed.body,
                 "created_at": created, "updated_at": updated, "state_seal": parsed.state}
@@ -553,7 +574,7 @@ class LocalStore:
         for parsed, number, mtime in self.read_entries(relpath):
             changed = parsed.state == "changed"
             rows.append({
-                "url": self.address(parsed.front["topic"], number), "created": parsed.front["created"], "body": parsed.body,
+                "url": self.address(parsed.placed, number), "created": parsed.front["created"], "body": parsed.body,
                 "author": self.author_of(parsed),
                 "last_edited": self.edited_stamp(parsed, mtime, parsed.front["created"]) if changed else None,
                 "editor": None, "edit_total": 1 if changed else 0, "edit_editors": [None] if changed else [],
@@ -663,22 +684,38 @@ class LocalStore:
                 return entry_id
         raise Refused("recortex: a version of the text could not be made.")
 
-    def _numbers_in_use(self):
-        """The highest topic number that any topic file carries, read or not, sealed or not: a file that was changed or written
-        elsewhere keeps its number, because a number used twice stops the sync. A file that does not read is looked at for its
-        number line alone."""
-        highest = 1
-        names_ = [(HUB_FILE, self.scan())] + [("%s/%s" % (TOPICS_FOLDER, row[0]), None) for row in self.scan(TOPICS_FOLDER)
-                                                if row[3] == "file" and row[0].endswith(".md")]
-        for relpath, listing in names_:
+    def _next_number(self):
+        """The number of the next topic: the smallest number above the highest number that a topic file whose own seal holds
+        carries, that no other topic file carries. A file that was changed, written elsewhere or does not read keeps its number
+        out of use (a number used twice stops the sync) but never moves the counter: its text is untrusted, and a planted
+        `number: 999999999` must not push the record to the most topics there can be. A number is looked for only in a file that
+        begins with `---` and only inside its front matter. A topic file (a slug and .md, or hub.md) that exists and cannot be
+        read safely is refused, with one fixed line; other names (a sync tool's copies) are not topic files."""
+        sealed, other = {1}, set()
+        names_ = [HUB_FILE] + ["%s/%s" % (TOPICS_FOLDER, row[0]) for row in self.scan(TOPICS_FOLDER)
+                               if row[3] != "dir" and row[0].endswith(".md") and SLUG.fullmatch(row[0][:-3])]
+        for relpath in names_:
             try:
                 data = storage.read_record_file(self.path(relpath), FILE_LIMIT)
             except storage.StorageError:
+                raise record_store.RecordFolderError(UNREADABLE_TOPIC, "unreadable")
+            if data is None:
                 continue
-            found = re.search(rb"^number: ([1-9][0-9]{0,8})\r?$", data[:FRONT_LIMIT + 64], re.M) if data else None
+            try:
+                parsed = parse_file(data, relpath, self.record_id)
+            except Unread:
+                parsed = None
+            if parsed is not None and parsed.state == "sealed" and parsed.kind in ("hub", "topic"):
+                sealed.add(parsed.number)
+                continue
+            block = front_block(data)
+            found = re.search(rb"^number: ([1-9][0-9]{0,8})$", block, re.M) if block else None
             if found:
-                highest = max(highest, int(found.group(1)))
-        return highest
+                other.add(int(found.group(1)))
+        number = max(sealed) + 1
+        while number in other or number in sealed:
+            number += 1
+        return number
 
     def create_issue(self, title, labels, body=None, body_file=None):
         text = self._text(body, body_file)
@@ -692,7 +729,7 @@ class LocalStore:
                 number, relpath, kind = 1, HUB_FILE, "hub"
                 tries = [relpath]
             else:
-                number = self._numbers_in_use() + 1
+                number = self._next_number()
                 if number > NUMBER_MAX:
                     raise Refused("recortex: the record holds the most topics there can be.")
                 kind = "topic"
