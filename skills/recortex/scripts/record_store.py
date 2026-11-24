@@ -125,6 +125,21 @@ def github_account_state(timeout):
     return ("ready", login) if recortex.LOGIN.fullmatch(login) else ("unnamed", None)
 
 
+def address_of(repo, issue, entry=None):
+    """The address of a topic (`entry` None) or of an entry in the text of the record, from checked integers: the GitHub
+    address for a GitHub name, `#N` or `#N/ID` for a local one. A pure function of the name: it opens nothing, so a hook
+    can use it."""
+    if is_local(repo):
+        return "#%d" % issue if entry is None else "#%d/%d" % (issue, entry)
+    base = "https://github.com/%s/issues/%d" % (repo, issue)
+    return base if entry is None else "%s#issuecomment-%d" % (base, entry)
+
+
+def api_issue_of(repo, issue):
+    """The address of a topic as an entry's `issue_url` names it (what the stores' reads carry)."""
+    return ("local:%s/issues/%d" if is_local(repo) else "https://api.github.com/repos/%s/issues/%d") % (repo, issue)
+
+
 class GithubStore:
     """The record in GitHub issues. Every method builds the argument list the call site built before, and passes it to
     recortex.gh; what it returns is what gh returned, parsed no further than the call site parsed it."""
@@ -183,6 +198,9 @@ class GithubStore:
         if op == "reopen":
             (number,) = args
             return ["issue", "reopen", str(number), "--repo", repo]
+        if op == "list_entries":
+            (issue,) = args
+            return ["api", "--paginate", "repos/%s/issues/%d/comments?per_page=100" % (repo, issue)]
         raise ValueError("no such operation: %s" % op)
 
     def show(self, op, *args, note="", **kwargs):
@@ -194,9 +212,11 @@ class GithubStore:
         args = ["api", "user"] + (["--hostname", "github.com"] if host else []) + ["--jq", ".login"]
         return recortex.gh(args, timeout=timeout).strip()
 
-    def account_state(self, timeout):
-        """(state, login) as recortex.gh_account returns them."""
-        return github_account_state(timeout)
+    def account_state(self, timeout=None):
+        """(state, login) as recortex.gh_account returns them (called the way the scripts called it)."""
+        if timeout is None or timeout == recortex.GH_CHECK_SECONDS:
+            return recortex.gh_account()
+        return recortex.gh_account(timeout)
 
     def read_issue(self, number, timeout=60, jq=None):
         args = ["api", "repos/%s/issues/%d" % (self.repo, number)] + (["--jq", jq] if jq else [])
@@ -207,8 +227,7 @@ class GithubStore:
         return json.loads(recortex.gh(["api", "repos/%s/issues/comments/%s" % (self.repo, cid)], timeout=timeout))
 
     def list_entries(self, issue, timeout=60):
-        return recortex.gh(["api", "--paginate", "repos/%s/issues/%d/comments?per_page=100" % (self.repo, issue)],
-                           timeout=timeout)
+        return recortex.gh(self.command("list_entries", issue), timeout=timeout)
 
     def hub_entries(self, hub, timeout=60):
         """The newest comments of the hub, newest first, as recortex.read_hub_comments describes them."""
@@ -345,11 +364,16 @@ class GithubStore:
         return "gh api repos/%s/issues/%s" % (self.repo, number)
 
     def address(self, issue, entry=None):
-        base = "https://github.com/%s/issues/%d" % (self.repo, issue)
-        return base if entry is None else "%s#issuecomment-%d" % (base, entry)
+        return address_of(self.repo, issue, entry)
 
     def api_issue(self, issue):
-        return "https://api.github.com/repos/%s/issues/%d" % (self.repo, issue)
+        return api_issue_of(self.repo, issue)
+
+    def parse_address(self, text):
+        """(issue, entry or 0) of an address this store made (address()), or None."""
+        match = re.compile(r"https://github\.com/" + re.escape(self.repo) + r"/issues/([1-9][0-9]*)"
+                           r"(?:#issuecomment-([1-9][0-9]*))?", re.I).fullmatch(text) if isinstance(text, str) else None
+        return None if match is None else (int(match[1]), int(match[2] or 0))
 
     def safe_address(self, text):
         return text if isinstance(text, str) and re.fullmatch(r"https://github\.com/[\w./#-]+", text) else None
