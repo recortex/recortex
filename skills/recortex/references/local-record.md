@@ -60,6 +60,10 @@ When the brief says that files in the record folder were not read, say so in one
 
 Each question shows counts and fixed words, never the text. Ask them one by one, as every question that waits for the user (SKILL.md, "What needs the user's yes").
 
+## A folder above the record that others can write
+
+When the brief says the record is not read because a folder above it can be replaced by another account, ask the question of `trust` for that folder: `acts.py ask trust --scope record`. It is the same question and the same trust as for the folders above Claude Code's transcripts: on a yes, `observer.py trust-ancestor --record --failing --yes` trusts each folder exactly as it is (its owner, group and mode); a change of any of them refuses the record again.
+
 ## What the operations are
 
 Every script reads and writes the record through one interface, `record_store`, with two implementations. Its operations are `account_state`, `address`, `api_issue`, `close`, `command`, `create_issue`, `created_number`, `edit_body`, `find_issues`, `histories`, `hub_entries`, `is_missing`, `list_entries`, `list_labels`, `parse_address`, `post_entry`, `posted_id`, `read_back`, `read_entry`, `read_issue`, `reopen`, `require`, `safe_address`, `set_labels`, `show`, `supports`, `versions` and `whoami`; a local record also has `adopt_plan` and `adopt`, which the `adopt` question uses; GitHub's own extras (`create_label`, `edit_label`, `pin`, `is_pinned`, `visibility`, `dump`, `dump_commands`, `github`) are off for a local record. A dry run prints, for a local record, the same steps in plain words (`local record: post an entry on #3`) where a GitHub record prints the `gh` command.

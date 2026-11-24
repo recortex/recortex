@@ -429,15 +429,43 @@ class Undo(Act):
         return [str(values["act"])]
 
 
-def trust_rows(root, path=None):
+def record_folder(root):
+    """The real folder of the project's local record where it is meant to be, from the project file alone: the record's own folder,
+    `.recortex` of the project, or the folder this machine's row binds. None for a project with no local record."""
+    import storage
+    try:
+        config = recortex.load_config()
+    except (OSError, ValueError, SystemExit):
+        return None
+    repo = config.get("repo")
+    if not record_store.is_local(repo) or config.get("store") != "local":
+        return None
+    record_id = record_store.LOCAL_NAME.fullmatch(repo).group(1)
+    if config.get("place") == "project":
+        return storage.record_path(root)
+    rows = storage.record_bindings(record_id)
+    if rows:   # the folder this machine's row binds (a folder of the user's own is "own" in the project file)
+        return rows[-1]["path"]
+    if config.get("place") == "own":
+        return os.path.join(storage.records_top(), storage.PRIVATE, names.RECORDS, record_id)
+    return None
+
+
+def trust_rows(root, path=None, record=False):
     """(every folder the capture check refuses, the ones to trust): all the trustable ones, or the one at `path`. None when
-    `path` is not an absolute, normalized, plain folder above the project's transcripts."""
+    `path` is not an absolute, normalized, plain folder above the project's transcripts (or, with `record`, above the project's
+    local record: the same question, the same trust, for the folders on the way to the record folder)."""
     import observer_sources
-    failing = observer_sources.failing(root)
+    folder = None
+    if record:
+        folder = record_folder(root)
+        if folder is None:
+            return None
+    failing = observer_sources.failing(root, folder)
     rows = failing
     if path is not None:
         if not (os.path.isabs(path) and os.path.normpath(path) == path and os.path.isdir(path) and not os.path.islink(path)
-                and observer_sources._above(path, observer_sources.project_directory(root))):
+                and observer_sources._above(path, folder or observer_sources.project_directory(root))):
             return None
         rows = [row for row in failing if row["path"] == path and row["trustable"]]
     return failing, [row for row in rows if row["trustable"]]
@@ -456,30 +484,39 @@ class Trust(Act):
         return {"rows": rows}
 
     def parse(self, args, ctx):
-        if len(args.values) > 1:
-            raise ActError("acts: trust takes at most one folder.")
-        found = trust_rows(ctx.root, args.values[0] if args.values else None)
+        if len(args.values) > 1 or args.scope not in (None, "record"):
+            raise ActError("acts: trust takes at most one folder, and --scope record for the folders above a local record.")
+        record = args.scope == "record"
+        found = trust_rows(ctx.root, args.values[0] if args.values else None, record)
         if found is None:
-            raise ActError("acts: that is not a folder above Claude Code's transcripts that trust-ancestor can trust.")
+            raise ActError("acts: that is not a folder above Claude Code's transcripts that trust-ancestor can trust."
+                           if not record else "acts: that is not a folder above this project's local record that trust-ancestor can "
+                           "trust.")
         values = self._values(found[1])
         if values is None:
             raise ActError("acts: no folder above Claude Code's transcripts needs trusting, or one holds characters "
                            "recortex does not print.")
         values["path"] = args.values[0] if args.values else ""
+        if record:
+            values["record"] = True
         return values
 
     def from_command(self, words, ctx):
         call = observer_call(words)
         if call is None or call[1] != "trust-ancestor" or "--yes" not in call[2]:
             return None
+        record = "--record" in call[2]
         if "--list" in call[2] or option_value(call[2], "--forget") is not None:
             return None
         rest = positionals(call[2])
         path = rest[0] if rest else None
         if (path is None) == ("--failing" not in call[2]) or len(rest) > 1:
             return None
-        found = trust_rows(ctx.root, path)
-        return None if found is None else self._values(found[1])
+        found = trust_rows(ctx.root, path, record)
+        values = None if found is None else self._values(found[1])
+        if values is not None and record:
+            values["record"] = True
+        return values
 
     def text(self, values):
         rows = values["rows"]
@@ -494,7 +531,8 @@ class Trust(Act):
                 "its group where the group may write, can put another folder in its place.%s" % (shown, world))
 
     def options(self, values):
-        words = ("observer.py", "trust-ancestor") + ((values["path"],) if values.get("path") else ("--failing",)) + ("--yes",)
+        words = ("observer.py", "trust-ancestor") + (("--record",) if values.get("record") else ()) + (
+            (values["path"],) if values.get("path") else ("--failing",)) + ("--yes",)
         # the label carries a short token of the folders it is for, so that words typed for one set of folders are no answer
         # for another
         return [option("Trust these folders %s" % self.value(values)[:8],
@@ -505,7 +543,7 @@ class Trust(Act):
         return digest(self.kind, [[row["path"], row["uid"], row["gid"], row["mode"]] for row in values["rows"]])
 
     def ask_words(self, values):
-        return [values["path"]] if values.get("path") else []
+        return (["--scope", "record"] if values.get("record") else []) + ([values["path"]] if values.get("path") else [])
 
 
 class Hosts(Act):

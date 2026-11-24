@@ -49,7 +49,8 @@ class LocalActsBox(base.ActsBox):
         patcher = mock.patch.object(local_store, "now", side_effect=self.tick)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.config = {"repo": LOCAL, "hub": 1, "store": "local", "place": self.place, "profiles": ["software"]}
+        self.config = {"repo": LOCAL, "hub": 1, "store": "local", "place": "own" if self.place == "chosen" else self.place,
+                       "profiles": ["software"]}
         with open(os.path.join(self.project, ".recortex.json"), "w") as handle:
             json.dump(self.config, handle)
         self.folder_path = self.make_record(self.project)
@@ -63,6 +64,13 @@ class LocalActsBox(base.ActsBox):
         self.assertFalse(os.path.exists(self.gh_log), "a gh call was started for a local record")
 
     def make_record(self, project):
+        if self.place == "chosen":
+            parent = os.path.join(self.base, "chosen-parent")
+            os.mkdir(parent, 0o755)
+            path = storage.check_record_folder(os.path.join(parent, "rec"), "chosen", create=True)
+            local_store.LocalStore.create(path, LOCAL_ID, "sample project", ["software"])
+            storage.bind_record(LOCAL_ID, path, "chosen")
+            return path
         if self.place == "project":
             path = storage.check_record_folder(storage.record_path(project), "project", create=True)
         else:
@@ -179,6 +187,77 @@ class ActTableTests(LocalActsBox):
         other = dict(values, path="1" * 64)
         self.assertNotEqual(act.value(values), act.value(other))
         self.assertNotIn(self.folder_path, json.dumps(values))
+
+
+class TrustAboveTests(LocalActsBox):
+    """8.2: a folder above the record that another account could replace is trusted through the question of `trust`, as exactly as it
+    is, and not through a question of its own."""
+
+    place = "chosen"
+
+    def setUp(self):
+        super().setUp()
+        self.parent = os.path.dirname(self.folder_path)
+        os.chmod(self.parent, 0o777)
+
+    def refused_kind(self):
+        with self.assertRaises(record_store.StoreError) as caught:
+            self.store
+        return caught.exception.kind
+
+    def command_trust(self, *words):
+        return self.command("observer.py", "trust-ancestor", "--record", *words)
+
+    def test_the_record_is_refused_and_the_question_is_the_one_of_trust_with_the_folder_above_it(self):
+        self.assertEqual("ancestor-permissions", self.refused_kind())
+        code, printed = self.ask_main("trust", "--scope", "record", "--json")
+        self.assertEqual(0, code, printed)
+        body = json.loads(printed)
+        self.assertEqual("trust", body["id"])
+        self.assertIn(self.parent, body["question"])
+        yes = [item for item in body["options"] if item["answer"] == "yes"][0]
+        self.assertIn("observer.py trust-ancestor --record --failing --yes", yes["run"][0])
+        code, printed = self.ask_main("trust", "--scope", "elsewhere")
+        self.assertEqual(1, code)
+
+    def test_without_a_record_or_for_a_folder_that_is_not_above_it_nothing_is_asked(self):
+        code, printed = self.ask_main("trust", "--scope", "record", "/")
+        self.assertEqual(1, code)
+        code, printed = self.ask_main("trust", "--scope", "record", self.folder_path)   # the record folder itself is no ancestor
+        self.assertEqual(1, code)
+        with open(os.path.join(self.project, ".recortex.json"), "w") as handle:
+            json.dump({"repo": base.REPO, "hub": 1}, handle)
+        code, printed = self.ask_main("trust", "--scope", "record")
+        self.assertEqual(1, code)
+
+    def test_a_yes_trusts_the_folder_as_it_is_and_a_change_of_its_mode_refuses_the_record_again(self):
+        values = acts.ACTS["trust"].parse(mock.Mock(values=[], scope="record", path=None), acts.Context())
+        self.assertEqual([self.parent], [row["path"] for row in values["rows"]])
+        self.yes("trust", values)
+        command = self.command_trust("--failing", "--yes")
+        self.assertIsNone(self.hook(command))
+        self.assertTrue(self.said("trust", values))
+        code, result = self.run_observer("trust-ancestor", "--record", "--failing", "--yes")
+        self.assertEqual(0, code, result)
+        self.assertTrue(result["approved"])
+        self.assertEqual(LOCAL_ID, self.store.record_id)   # the record opens now
+        os.chmod(self.parent, 0o757)   # the folder is no longer as it was trusted, and others may still write it
+        self.assertEqual("ancestor-permissions", self.refused_kind())
+
+    def test_without_the_users_answer_nothing_is_trusted(self):
+        code, result = self.run_observer("trust-ancestor", "--record", "--failing", "--yes")
+        self.assertEqual(1, code)
+        self.assertIn("trust_unanswered", result["code"])
+        self.assertEqual("ancestor-permissions", self.refused_kind())
+        code, result = self.run_observer("trust-ancestor", "--record", "--failing")   # without --yes it only shows
+        self.assertEqual(0, code)
+        self.assertFalse(result["approved"])
+
+    def test_a_subagents_call_records_no_grant(self):
+        values = acts.ACTS["trust"].parse(mock.Mock(values=[], scope="record", path=None), acts.Context())
+        self.yes("trust", values)
+        self.assertEqual(base.pretool_guard.SUBAGENT_DENIAL, self.hook(self.command_trust("--failing", "--yes"), agent_id="a1"))
+        self.assertFalse(self.said("trust", values))
 
 
 class InProjectStateTests(LocalActsBox):

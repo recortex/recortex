@@ -287,12 +287,13 @@ def _world(info):
     return bool(info.st_mode & stat.S_IWOTH) and not info.st_mode & stat.S_ISVTX
 
 
-def failing(project_root):
+def failing(project_root, folder=None):
     """The folders the walk to the transcript refuses now, for `observer.py trust-ancestor --failing`: path, code, boundary,
     uid, gid, mode (four octal digits), `trustable` (see _trustable) and `world` (all may write, no sticky bit). A folder
-    the user trusted and that still matches is not among them. [] when there is no problem or the walk cannot be made."""
+    the user trusted and that still matches is not among them. [] when there is no problem or the walk cannot be made. With
+    `folder` the walk is the one from a local record's folder (the same rule, the same trust), not from the transcripts'."""
     try:
-        folder = project_directory(project_root)
+        folder = folder or project_directory(project_root)
         trust = Trust()
         rows, current = [], folder
         while True:
@@ -316,13 +317,13 @@ class TrustError(ValueError):
     """Fixed code only."""
 
 
-def trust_add(rows, project_root):
+def trust_add(rows, project_root, folder=None):
     """Trust each folder of `rows` (dicts with a "path", or paths) exactly as it is now: its owner, group and mode are read
     again here and stored with their HMAC, under the lock of the file, which is never replaced when it cannot be read. A
     folder that is not a directory above the project folder, or is a link, is refused whole (TrustError "not-an-ancestor"),
     as is a file that would hold more than 64. Returns the entries stored: {path: entry}."""
     import field_sheet
-    folder = project_directory(project_root)
+    folder = folder or project_directory(project_root)
     paths = [row["path"] if isinstance(row, dict) else row for row in rows]
     storage.user_key(create=True)   # the HMAC of an entry needs the user key
     stored = {}

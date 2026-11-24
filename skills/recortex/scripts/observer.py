@@ -63,6 +63,7 @@ def parser():
                            "session)")
     trust.add_argument("path", nargs="?", metavar="PATH", help="the folder (an absolute path)")
     trust.add_argument("--failing", action="store_true", help="every folder the capture check refuses now")
+    trust.add_argument("--record", action="store_true", help="the folders above the project's local record, not the transcripts'")
     trust.add_argument("--list", action="store_true", help="what is trusted, and whether each still matches")
     trust.add_argument("--forget", metavar="PATH", help="remove one entry")
     trust.add_argument("--yes", action="store_true", help="trust them (without it nothing is changed)")
@@ -754,7 +755,7 @@ def trust_ancestor(args):
         emit({"action": "trust-ancestor", "forgotten": gone})
         return 0 if gone else 1
     import acts
-    found = acts.trust_rows(root, None if args.failing else args.path)
+    found = acts.trust_rows(root, None if args.failing else args.path, args.record)
     if found is None:
         emit({"code": "not-an-ancestor"}); return 1
     failing, chosen_rows = found
@@ -765,18 +766,20 @@ def trust_ancestor(args):
     stored = False
     if args.yes:
         values = acts.ACTS["trust"]._values(chosen_rows)
+        if values is not None and args.record:
+            values["record"] = True
         if values is None:   # a path with characters the question does not print: no answer can be for it
             emit({"code": "trust_unanswerable", "note": "A folder path holds characters recortex does not print."}); return 1
         if not acts.allowed("trust", values):   # on the user's own terminal it needs none, and spends one
             emit(acts.refusal("trust", values, root)); return 1
         try:
-            observer_sources.trust_add(chosen_rows, root)
+            observer_sources.trust_add(chosen_rows, root, acts.record_folder(root) if args.record else None)
         except observer_sources.TrustError as error:
             emit({"code": str(error)}); return 1
         stored = True
-        note = "Trusted as shown. Run observer.py status to see whether notes can be taken now."
+        note = "Trusted as shown." if args.record else "Trusted as shown. Run observer.py status to see whether notes can be taken now."
     emit({"action": "trust-ancestor", "entries": _trust_rows(rows), "approved": stored, "note": note,
-          "capture_preflight": observer_sources.preflight(root)})
+          "capture_preflight": None if args.record else observer_sources.preflight(root)})
     return 0
 
 
